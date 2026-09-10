@@ -1,8 +1,8 @@
 ## 1. Establish the shared contract and parallel base — coordinator
 
-- [ ] 1.1 Encode the design's installation states, safe identity/session DTOs, browser success/failure status and cookie outcomes, error mappings and frozen service/view signatures in contract fixtures; verify JSON/HTML adapters share transport-neutral domain types without importing web code into the CLI.
-- [ ] 1.2 Add injectable CLI input/prompt and isolated server/view test seams while preserving existing entry-point behavior; verify current checks pass and no fixture or unauthenticated management endpoint is exposed in the production binary.
-- [ ] 1.3 Pin compatible password-hashing and terminal-input dependencies, land the common-base change, and assign exclusive backend/web/CLI files plus isolated ports/database names/homes/reports; verify each lane can compile and run its focused fixtures before dispatch.
+- [x] 1.1 Encode the design's installation states, safe identity/session DTOs, browser success/failure status and cookie outcomes, error mappings and frozen service/view signatures in contract fixtures; verify JSON/HTML adapters share transport-neutral domain types without importing web code into the CLI.
+- [x] 1.2 Add injectable CLI input/prompt and isolated server/view test seams while preserving existing entry-point behavior; verify current checks pass and no fixture or unauthenticated management endpoint is exposed in the production binary.
+- [x] 1.3 Pin compatible password-hashing and terminal-input dependencies, land the common-base change, and assign exclusive backend/web/CLI files plus isolated ports/database names/homes/reports; verify each lane can compile and run its focused fixtures before dispatch.
 
 Sections 2–3 are the backend lane. Sections 4 and 5 can run in parallel with that lane after section 1, using the frozen contracts rather than waiting for live endpoints. The coordinator alone updates this checklist and shared dependency/tooling files. Section 6 requires the integrated lanes.
 

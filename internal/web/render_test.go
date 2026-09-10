@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/a-h/templ"
+	"github.com/heurema/clavis/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -49,13 +50,15 @@ func TestReadinessRendering(t *testing.T) {
 	for _, ready := range []bool{true, false} {
 		status := http.StatusServiceUnavailable
 		heading := "Database unavailable"
+		state := platform.DependencyUnavailable
 		if ready {
 			status = http.StatusOK
 			heading = "Your environment is ready"
+			state = platform.Ready
 		}
 		response := httptest.NewRecorder()
 		response.Header().Set("X-Clavis-Fragment", "readiness")
-		require.NoError(t, Render(response, httptest.NewRequest(http.MethodGet, "/ui/readiness", nil), status, Readiness(ready)))
+		require.NoError(t, Render(response, httptest.NewRequest(http.MethodGet, "/ui/readiness", nil), status, Readiness(platform.Readiness{State: state})))
 		assert.Equal(t, status, response.Code)
 		assert.Contains(t, response.Body.String(), heading)
 		assert.Contains(t, response.Body.String(), `data-readiness-state=`)

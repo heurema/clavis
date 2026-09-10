@@ -1,6 +1,7 @@
 package web
 
 import (
+	"github.com/heurema/clavis/internal/platform"
 	"github.com/heurema/clavis/internal/web/ui/alert"
 	"github.com/heurema/clavis/internal/web/ui/badge"
 	"github.com/heurema/clavis/internal/web/ui/button"
@@ -113,8 +114,8 @@ templ Page() {
 	</html>
 }
 
-templ Readiness(ready bool) {
-	if ready {
+templ Readiness(readiness platform.Readiness) {
+	if readiness.Ready() {
 		@statusContent("ready")
 	} else {
 		@statusContent("database-unavailable")

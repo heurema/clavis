@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/heurema/clavis/internal/config"
+	"github.com/heurema/clavis/internal/platform"
 	"github.com/heurema/clavis/internal/web"
 )
 
@@ -23,6 +24,24 @@ type Database interface {
 }
 
 func Handler(checkTimeout time.Duration, database Database, logger *slog.Logger) http.Handler {
+	// Preserve the existing runtime until the initialization service is wired.
+	return HandlerWithReadiness(checkTimeout, platform.CheckFunc(func(ctx context.Context) platform.Readiness {
+		state := platform.DependencyUnavailable
+		if databaseReady(ctx, checkTimeout, database) {
+			state = platform.Ready
+		}
+		return platform.Readiness{State: state}
+	}), logger)
+}
+
+// HandlerWithReadiness is the injection boundary shared by real initialization
+// and isolated fixtures. Public documents never invoke the checker.
+func HandlerWithReadiness(checkTimeout time.Duration, checker platform.Checker, logger *slog.Logger) http.Handler {
+	check := func(ctx context.Context) platform.Readiness {
+		ctx, cancel := context.WithTimeout(ctx, checkTimeout)
+		defer cancel()
+		return checker.Check(ctx)
+	}
 	router := chi.NewRouter()
 	router.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,14 +63,12 @@ func Handler(checkTimeout time.Duration, database Database, logger *slog.Logger)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 	})
 	router.Get("/health/ready", func(w http.ResponseWriter, r *http.Request) {
-		if !databaseReady(r.Context(), checkTimeout, database) {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-				"status": "not_ready",
-				"error":  map[string]string{"code": "DEPENDENCY_UNAVAILABLE", "message": "Database unavailable"},
-			})
-			return
+		result := check(r.Context())
+		status := http.StatusServiceUnavailable
+		if result.Ready() {
+			status = http.StatusOK
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+		writeJSON(w, status, result.Response())
 	})
 	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		if err := web.Render(w, r, http.StatusOK, web.Page()); err != nil {
@@ -59,13 +76,13 @@ func Handler(checkTimeout time.Duration, database Database, logger *slog.Logger)
 		}
 	})
 	router.Get("/ui/readiness", func(w http.ResponseWriter, r *http.Request) {
-		ready := databaseReady(r.Context(), checkTimeout, database)
+		result := check(r.Context())
 		status := http.StatusServiceUnavailable
-		if ready {
+		if result.Ready() {
 			status = http.StatusOK
 		}
 		w.Header().Set("X-Clavis-Fragment", "readiness")
-		if err := web.Render(w, r, status, web.Readiness(ready)); err != nil {
+		if err := web.Render(w, r, status, web.Readiness(result)); err != nil {
 			logger.Error("web_response_failed", "code", "WEB_RESPONSE_FAILED")
 		}
 	})

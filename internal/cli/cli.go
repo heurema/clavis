@@ -11,9 +11,16 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
-// Run is the only command output/exit boundary. Library usage errors and help
-// are buffered so an invalid invocation always produces one JSON document.
+// Run preserves the stdout-only entry point for callers that do not need input.
 func Run(ctx context.Context, args []string, stdout io.Writer) int {
+	return RunWithIO(ctx, args, IO{Stdout: stdout})
+}
+
+// RunWithIO is the command output/exit boundary. Library usage errors and help
+// are buffered so an invalid invocation always produces one JSON document.
+func RunWithIO(ctx context.Context, args []string, streams IO) int {
+	streams = streams.withDefaults()
+	stdout := streams.Stdout
 	var help bytes.Buffer
 	var result *Result
 	format := "json"
@@ -27,7 +34,7 @@ func Run(ctx context.Context, args []string, stdout io.Writer) int {
 	}
 	command := &urfave.Command{
 		Name: "clavis", Usage: "Controlled access for your agents",
-		Writer: &help, ErrWriter: io.Discard,
+		Reader: streams.Stdin, Writer: &help, ErrWriter: io.Discard,
 		ExitErrHandler: func(context.Context, *urfave.Command, error) {},
 		OnUsageError:   func(context.Context, *urfave.Command, error, bool) error { return invalid },
 		Flags: []urfave.Flag{

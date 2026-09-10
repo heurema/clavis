@@ -11,7 +11,9 @@ import (
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	code := cli.Run(ctx, os.Args, os.Stdout)
+	code := cli.RunWithIO(ctx, os.Args, cli.IO{
+		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
+	})
 	stop()
 	os.Exit(code)
 }
