@@ -154,12 +154,22 @@ func (s *checksumStore) ListMigrations(ctx context.Context, db goosedb.DBTxConn)
 	if err != nil {
 		return nil, err
 	}
-	_, err = validateLedger(rows, s.migrations)
+	n, err := validateLedger(rows, s.migrations)
 	closeErr := rows.Close()
 	if err != nil || closeErr != nil {
 		return nil, errors.Join(err, closeErr)
 	}
-	return s.Store.ListMigrations(ctx, db)
+	// Validation proves the ledger is zero followed by exactly this applied
+	// manifest prefix. Goose 3.28's public Store returns only version/applied,
+	// in descending ledger-id order (including zero), so no second read is
+	// needed. Readiness can keep using just the validated count without DTOs.
+	result := make([]*goosedb.ListMigrationsResult, 0, n+1)
+	for i := n - 1; i >= 0; i-- {
+		result = append(result, &goosedb.ListMigrationsResult{
+			Version: int64(s.migrations[i].version), IsApplied: true,
+		})
+	}
+	return append(result, &goosedb.ListMigrationsResult{Version: 0, IsApplied: true}), nil
 }
 
 // Goose holds this session on the same connection as its SQL transactions.

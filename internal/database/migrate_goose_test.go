@@ -18,8 +18,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
+	goosedb "github.com/pressly/goose/v3/database"
 	"github.com/stretchr/testify/require"
 )
+
+// Arbitrary filesystem migrations are a test seam, not a production entrypoint.
+func migrateFS(ctx context.Context, pool *pgxpool.Pool, root fs.FS) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	migrations, err := migrationManifest(root)
+	if err != nil {
+		return err
+	}
+	return migrateValidated(ctx, pool, root, migrations)
+}
 
 func TestGooseOwnsVersioningAndSQLParsing(t *testing.T) {
 	pool := testPool(t)
@@ -79,10 +91,13 @@ func TestGooseManifestRejectsNontransactionalAndMutableInputs(t *testing.T) {
 		"-- +goose envsub on",
 	} {
 		t.Run(directive, func(t *testing.T) {
-			_, err := migrationManifest(fstest.MapFS{
+			files := fstest.MapFS{
 				"001_bad.sql": {Data: []byte(directive + "\n-- +goose Up\nSELECT 1;")},
-			})
+			}
+			_, err := migrationManifest(files)
 			require.ErrorIs(t, err, errSchema)
+			// Rejection must precede even opening the database adapter.
+			require.ErrorIs(t, migrateFS(t.Context(), nil, files), errSchema)
 		})
 	}
 	for _, files := range []fstest.MapFS{
@@ -92,6 +107,7 @@ func TestGooseManifestRejectsNontransactionalAndMutableInputs(t *testing.T) {
 	} {
 		_, err := migrationManifest(files)
 		require.ErrorIs(t, err, errSchema)
+		require.ErrorIs(t, migrateFS(t.Context(), nil, files), errSchema)
 	}
 }
 
@@ -127,19 +143,34 @@ func TestGooseRejectsExperimentalAndCorruptedLedgers(t *testing.T) {
 		require.False(t, present)
 	})
 	for name, corruption := range map[string]string{
+		"empty ledger":            `DELETE FROM goose_db_version`,
 		"missing checksum column": `ALTER TABLE goose_db_version DROP COLUMN checksum`,
 		"missing checksum":        `UPDATE goose_db_version SET checksum=NULL WHERE version_id=1`,
 		"missing zero":            `DELETE FROM goose_db_version WHERE version_id=0`,
 		"modified zero":           `UPDATE goose_db_version SET checksum='modified' WHERE version_id=0`,
+		"missing zero checksum":   `UPDATE goose_db_version SET checksum=NULL WHERE version_id=0`,
+		"unapplied zero":          `UPDATE goose_db_version SET is_applied=false WHERE version_id=0`,
+		"reordered zero":          `UPDATE goose_db_version SET id=100 WHERE version_id=0`,
 		"down record":             `UPDATE goose_db_version SET is_applied=false WHERE version_id=1`,
 		"duplicate":               `INSERT INTO goose_db_version(version_id,is_applied,checksum) SELECT version_id,is_applied,checksum FROM goose_db_version WHERE version_id=1`,
 		"unknown version":         `UPDATE goose_db_version SET version_id=99 WHERE version_id=1`,
+		"negative version":        `UPDATE goose_db_version SET version_id=-1 WHERE version_id=1`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			pool := testPool(t)
 			require.NoError(t, Migrate(t.Context(), pool))
 			execSQL(t, pool, corruption)
-			err := Migrate(t.Context(), pool)
+			db := migrationDB(pool)
+			defer func() { require.NoError(t, db.Close()) }()
+			base, err := goosedb.NewStore(goosedb.DialectPostgres, goose.DefaultTablename)
+			require.NoError(t, err)
+			store := &checksumStore{Store: base, migrations: embeddedMigrations()}
+			counted := &countingMigrationDB{DBTxConn: db}
+			got, err := store.ListMigrations(t.Context(), counted)
+			require.Error(t, err)
+			require.Nil(t, got)
+			require.Equal(t, []string{migrationRowsSQL}, counted.queries)
+			err = Migrate(t.Context(), pool)
 			require.Error(t, err)
 			require.True(t, schemaFailure(err))
 			require.Equal(t, platform.SchemaError, NewInitializer(pool, "", "").Check(t.Context()).State)

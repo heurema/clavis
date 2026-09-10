@@ -106,20 +106,19 @@ func migrationManifest(root fs.FS) ([]migration, error) {
 func rollback(ctx context.Context, tx pgx.Tx) { _ = tx.Rollback(ctx) }
 
 func Migrate(ctx context.Context, pool *pgxpool.Pool) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	migrations := embeddedMigrations()
 	root, err := fs.Sub(migrationFiles, "migrations")
 	if err != nil {
 		return err
 	}
-	return migrateFS(ctx, pool, root)
+	return migrateValidated(ctx, pool, root, migrations)
 }
 
-func migrateFS(ctx context.Context, pool *pgxpool.Pool, root fs.FS) error {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	migrations, err := migrationManifest(root)
-	if err != nil {
-		return err
-	}
+// Callers validate the manifest before Goose can execute any SQL.
+// Production uses the immutable embedded cache; tests inject fresh manifests.
+func migrateValidated(ctx context.Context, pool *pgxpool.Pool, root fs.FS, migrations []migration) error {
 	store, err := goosedb.NewStore(goosedb.DialectPostgres, goose.DefaultTablename)
 	if err != nil {
 		return err
