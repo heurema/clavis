@@ -24,6 +24,7 @@ function fixture(t) {
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   for (const path of [
     "web/styles",
+    "web/scripts",
     "internal/web/ui/utils",
     "internal/web/ui/icon",
   ])
@@ -31,6 +32,8 @@ function fixture(t) {
   for (const path of [
     "web/package.json",
     "web/styles/app.css",
+    "web/scripts/appearance.js",
+    "web/scripts/readiness.js",
     "internal/web/ui/utils/templui.go",
     "internal/web/ui/icon/icon.templ",
   ])
@@ -62,8 +65,10 @@ test("asset preparation is deterministic and packages only the public inputs", (
   const first = snapshot(assets)
   assert.deepEqual(Object.keys(first), [
     "app.css",
+    "appearance.js",
     "htmx.min.js",
     "notices.txt",
+    "readiness.js",
   ])
   assert.match(first["app.css"], /\.sr-only/)
   assert.match(first["app.css"], /\.p-6/)
@@ -94,6 +99,10 @@ test("asset preparation is deterministic and packages only the public inputs", (
 })
 
 for (const [name, damage] of [
+  [
+    "missing application script",
+    (directory) => rmSync(join(directory, "web/scripts/readiness.js")),
+  ],
   [
     "missing stylesheet",
     (directory) => rmSync(join(directory, "web/styles/app.css")),

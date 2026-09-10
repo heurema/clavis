@@ -91,6 +91,11 @@ export function buildWebAssets(root = projectRoot) {
     if (!statSync(output).isFile() || statSync(output).size === 0)
       throw new Error("Tailwind did not produce a stylesheet")
     copyFileSync(htmx, join(staging, "htmx.min.js"))
+    for (const name of ["appearance.js", "readiness.js"]) {
+      const source = join(root, "web/scripts", name)
+      readRequired(source)
+      copyFileSync(source, join(staging, name))
+    }
     writeFileSync(
       join(staging, "notices.txt"),
       notices.map(([name, text]) => `${name}\n\n${text}`).join("\n\n---\n\n") +

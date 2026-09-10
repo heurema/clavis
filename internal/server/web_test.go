@@ -59,7 +59,7 @@ func TestInitialDocumentDoesNotCheckDatabase(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.Contains(t, response.Body.String(), "<html")
-	assert.Contains(t, response.Body.String(), "Readiness has not been checked.")
+	assert.Contains(t, response.Body.String(), "Checking your environment")
 	assert.Equal(t, "text/html; charset=utf-8", response.Header().Get("Content-Type"))
 	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 	assert.Empty(t, response.Header().Get("X-Clavis-Fragment"))
@@ -96,7 +96,7 @@ func TestHTMLReadiness(t *testing.T) {
 		}
 		assert.Equal(t, expected, response.Code)
 		assert.Contains(t, response.Body.String(), text)
-		assert.Contains(t, response.Body.String(), `id="readiness"`)
+		assert.Contains(t, response.Body.String(), `data-readiness-state=`)
 		assert.Equal(t, "readiness", response.Header().Get("X-Clavis-Fragment"))
 		assert.Equal(t, "text/html; charset=utf-8", response.Header().Get("Content-Type"))
 		assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))

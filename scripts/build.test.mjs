@@ -25,7 +25,13 @@ function fixture(t, webTools = true) {
   mkdirSync(join(root, ".local"), { recursive: true })
   const directory = mkdtempSync(join(root, ".local/build-test-"))
   t.after(() => rmSync(directory, { recursive: true, force: true }))
-  for (const path of ["cmd", "internal", "scripts", "web/styles"]) {
+  for (const path of [
+    "cmd",
+    "internal",
+    "scripts",
+    "web/styles",
+    "web/scripts",
+  ]) {
     cpSync(join(root, path), join(directory, path), {
       recursive: true,
       filter: (source) =>
@@ -117,8 +123,10 @@ async function checkCopiedServer(directory) {
     }
     assert.ok(running, `Copied server did not start: ${output}`)
     for (const [path, status, type, text] of [
-      ["/", 200, "text/html", "Readiness has not been checked."],
+      ["/", 200, "text/html", "Environment setup"],
       ["/assets/app.css", 200, "text/css", ".sr-only"],
+      ["/assets/appearance.js", 200, "text/javascript", "clavis.appearance"],
+      ["/assets/readiness.js", 200, "text/javascript", "htmx:before:response"],
       ["/assets/htmx.min.js", 200, "text/javascript", "htmx"],
       ["/assets/notices.txt", 200, "text/plain", "Cole Bemis"],
       ["/ui/readiness", 503, "text/html", "Database unavailable"],
@@ -169,7 +177,7 @@ test("server builds from clean assets and runs as a copied executable", async (t
       "stale generated source",
       "internal/web/page.templ",
       readFileSync(join(directory, "internal/web/page.templ"), "utf8").replace(
-        "Readiness has not been checked.",
+        "Environment setup",
         "Changed without generation.",
       ),
     ],

@@ -58,7 +58,7 @@ func TestReadinessRendering(t *testing.T) {
 		require.NoError(t, Render(response, httptest.NewRequest(http.MethodGet, "/ui/readiness", nil), status, Readiness(ready)))
 		assert.Equal(t, status, response.Code)
 		assert.Contains(t, response.Body.String(), heading)
-		assert.Contains(t, response.Body.String(), `id="readiness"`)
+		assert.Contains(t, response.Body.String(), `data-readiness-state=`)
 		assert.Equal(t, "readiness", response.Header().Get("X-Clavis-Fragment"))
 		assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 	}
@@ -72,7 +72,7 @@ func TestPageAssetsAreEmbedded(t *testing.T) {
 	assert.Contains(t, response.Body.String(), `<html lang="en">`)
 	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 	references := regexp.MustCompile(`(?:src|href)="(/assets/[^"]+)"`).FindAllStringSubmatch(response.Body.String(), -1)
-	require.Len(t, references, 3)
+	require.Len(t, references, 5)
 	for _, reference := range references {
 		asset := httptest.NewRecorder()
 		ServeAsset(asset, httptest.NewRequest(http.MethodGet, reference[1], nil))

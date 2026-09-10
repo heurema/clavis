@@ -1,11 +1,12 @@
 SHELL := /bin/sh
 export PATH := $(CURDIR)/.tools/node/bin:$(CURDIR)/.tools/pnpm/node_modules/.bin:$(PATH)
+export PLAYWRIGHT_BROWSERS_PATH := $(CURDIR)/.tools/playwright
 # Make 3.81 looks up direct recipe executables using its original PATH.
 # env resolves the runtimes using the exported project-local PATH instead.
 NODE := /usr/bin/env node
 PNPM := /usr/bin/env pnpm
 
-.PHONY: setup dev dev-db dev-api build build-server build-cli build-web-assets generate-web check-web-generated check lint-go format test-mutation smoke down reset-db
+.PHONY: setup dev dev-db dev-api build build-server build-cli build-web-assets generate-web check-web-generated check lint-go format test-web test-mutation smoke down reset-db
 
 setup:
 	@$(NODE) scripts/check-tools.mjs
@@ -13,6 +14,7 @@ setup:
 	$(PNPM) --dir web install --frozen-lockfile
 	$(NODE) scripts/golangci-lint.mjs install
 	$(NODE) scripts/templ.mjs install
+	$(PNPM) --dir web exec playwright install chromium
 	$(MAKE) build-web-assets
 
 dev-db:
@@ -66,6 +68,9 @@ format:
 
 test-mutation:
 	$(NODE) scripts/mutation.mjs
+
+test-web: build-server
+	$(PNPM) --dir web test
 
 smoke: build
 	$(NODE) scripts/smoke.mjs
