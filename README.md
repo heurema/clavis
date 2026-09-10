@@ -19,8 +19,11 @@ cp -n .env.example .env
 make dev-db
 ```
 
-Run `make dev` to start the Go server (`make dev-api` remains an alias).
-Development commands load settings from `.env`; stop the server with Ctrl-C.
+Run `make dev` to build and start the Go server (`make dev-api` is an alias).
+Development commands load `.env` as data, not shell code; existing environment
+values take precedence. Stop the server with Ctrl-C. There is no file watcher:
+after editing Go or browser scripts/styles, stop and rerun `make dev`. After
+editing `.templ` files, run `make generate-web` before restarting.
 Open `http://127.0.0.1:8080` for the setup page.
 The same server exposes JSON health endpoints at `/health/live` and
 `/health/ready`, independently of HTML rendering.
@@ -35,12 +38,12 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make generate-web` | Explicitly regenerate checked-in templ Go source and ignored assets |
 | `make build-web-assets` | Rebuild only ignored CSS, scripts and embedded attribution notices |
 | `make check-web-generated` | Check template formatting and generated-source consistency without rewriting files |
-| `make check` | Run formatting checks, linters, tests, and builds |
+| `make check` | Run non-mutating source checks, linters, tests, and builds |
 | `make test-web` | Build the server and run Chromium behavior/layout tests |
 | `make lint-go` | Run golangci-lint |
 | `make format` | Format maintained Go, templates and JavaScript; regenerate templ Go source |
 | `make smoke` | Test the standalone server in Chromium with real database/API/CLI outage, recovery and cleanup |
-| `make test-mutation` | Run Go mutation testing and report survivors |
+| `make test-mutation` | Prepare embedded inputs, run isolated Go mutation testing and report survivors |
 | `make down` | Stop the database and keep its data |
 | `make reset-db` | Delete the local Clavis database and its data |
 
@@ -65,10 +68,23 @@ To exercise failure cleanup, run `CLAVIS_SMOKE_FAIL=after-start make smoke` or
 the summary must still report `"cleanup": "passed"`, removed temporary runtime
 files and stopped server processes. The second case covers the restarted server.
 
-`web/` now holds only pinned development dependencies for CSS, htmx and code
-validation. UI source lives in `internal/web/`; commit `.templ` files together
+`make test-mutation` checks generated templates and prepares assets before
+copying Go sources and embedded inputs into an isolated temporary directory.
+It targets handwritten configuration, CLI, server and web behavior, excluding
+generated templates, copied UI components and test fixtures. A compatibility
+probe must distinguish a known detected mutation from a known survivor before
+the application run is accepted. Results and survivors go to ignored
+`reports/mutation-summary.json` and `reports/mutations.json`; a completed run
+is not a claim that every mutation was detected. Tool failures or the default
+600-second deadline return nonzero. Optional `CLAVIS_MUTATION_WORKERS` and
+`CLAVIS_MUTATION_TIMEOUT_SECONDS` adjust concurrency and the execution bound.
+
+`web/` holds pinned development dependencies, styles, application scripts and
+browser tests, not a separately deployed application. UI source lives in
+`internal/web/`; commit `.templ` files together
 with generated `*_templ.go` files. Copied-source attribution is in source comments,
-including upstream copyright and permission notices.
+including upstream copyright and permission notices; the build packages those
+notices at `/assets/notices.txt`.
 
 Node.js, pnpm and templ are development tools, not runtime requirements for the
 built Go executables. `make build-server` uses `CGO_ENABLED=0`; copy `bin/server`

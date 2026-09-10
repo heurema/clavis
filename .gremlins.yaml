@@ -13,6 +13,6 @@ unleash:
   exclude-files:
     - '(^|/)cmd/'
     - '(^|/)internal/(buildinfo|database)/'
-    - '(^|/)internal/web/ui/'
+    - '(^|/)internal/web/(ui|testdata)/'
     - '(_test|_gen|_templ|\.gen)\.go$'
     - '(^|/)(generated|sqlc)/'

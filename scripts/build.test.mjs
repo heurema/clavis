@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { spawn, spawnSync } from "node:child_process"
+import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
 import {
   copyFileSync,
@@ -156,6 +156,130 @@ async function checkCopiedServer(directory) {
   }
 }
 
+function descendants(parent) {
+  if (!parent) return []
+  const processes = execFileSync("ps", ["-eo", "pid=,ppid="], {
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/).map(Number))
+  const found = [parent]
+  for (const pid of found)
+    for (const [child, ppid] of processes) if (ppid === pid) found.push(child)
+  return found
+}
+
+function signalProcess(pid, signal) {
+  try {
+    process.kill(pid, signal)
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error
+  }
+}
+
+async function checkDevelopment(directory, target, signal) {
+  const port = await freePort()
+  const databasePort = await freePort()
+  const origin = `http://127.0.0.1:${port}`
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("CLAVIS_")),
+  )
+  const settings = {
+    CLAVIS_HTTP_ADDR: `127.0.0.1:${port}`,
+    CLAVIS_DATABASE_URL: `postgres://unused:unused@127.0.0.1:${databasePort}/unused?sslmode=disable`,
+    CLAVIS_DB_CHECK_TIMEOUT: "100ms",
+    CLAVIS_SHUTDOWN_TIMEOUT: "1s",
+    CLAVIS_LOG_LEVEL: "info",
+  }
+  if (target === "dev") {
+    writeFileSync(
+      join(directory, ".env"),
+      [
+        ...Object.entries(settings).map(([key, value]) => `${key}=${value}`),
+        "CLAVIS_LOG_LEVEL=invalid-from-file",
+        "CLAVIS_UNUSED=$(touch dotenv-executed)",
+      ].join("\n"),
+    )
+    // Existing environment values must override .env; shell syntax is data.
+    env.CLAVIS_LOG_LEVEL = "info"
+  } else {
+    Object.assign(env, settings)
+  }
+  const child = spawn("make", [target], {
+    cwd: directory,
+    env,
+    detached: true,
+  })
+  let output = "",
+    pids = []
+  child.stdout.on("data", (chunk) => (output += chunk))
+  child.stderr.on("data", (chunk) => (output += chunk))
+  const finished = new Promise((resolve) => {
+    child.once("error", (error) => resolve({ error }))
+    child.once("close", (code) => resolve({ code }))
+  })
+  try {
+    let running = false
+    for (let attempt = 0; attempt < 150; attempt++) {
+      try {
+        const response = await fetch(`${origin}/health/live`, {
+          signal: AbortSignal.timeout(200),
+        })
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), { status: "alive" })
+        running = true
+        break
+      } catch {
+        if (child.exitCode !== null) break
+        await delay(100)
+      }
+    }
+    assert.ok(running, `make ${target} did not start: ${output}`)
+    pids = descendants(child.pid)
+    for (const [path, status, type, text] of [
+      ["/", 200, "text/html", "Environment setup"],
+      ["/health/ready", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
+    ]) {
+      const response = await fetch(`${origin}${path}`, {
+        signal: AbortSignal.timeout(2_000),
+      })
+      assert.equal(response.status, status)
+      assert.ok(response.headers.get("content-type").startsWith(type))
+      assert.ok((await response.text()).includes(text))
+    }
+    assert.equal(existsSync(join(directory, "dotenv-executed")), false)
+    // Model Ctrl-C / terminal termination, including the Make and Node group.
+    signalProcess(-child.pid, signal)
+    let forced = false
+    const timer = setTimeout(() => {
+      forced = true
+      for (const pid of pids) signalProcess(pid, "SIGKILL")
+    }, 5_000)
+    try {
+      const result = await finished
+      assert.ifError(result.error)
+      assert.equal(forced, false, `make ${target} required forced cleanup`)
+      assert.match(output, /"msg":"server_stopped"/)
+      for (const pid of pids)
+        assert.throws(() => process.kill(pid, 0), { code: "ESRCH" })
+      await assert.rejects(
+        fetch(`${origin}/health/live`, {
+          signal: AbortSignal.timeout(200),
+        }),
+      )
+    } finally {
+      clearTimeout(timer)
+    }
+  } finally {
+    // Even a failed assertion must not leave the detached Go child behind.
+    for (const pid of new Set([...pids, ...descendants(child.pid)].reverse()))
+      signalProcess(pid, "SIGKILL")
+    await finished
+    rmSync(join(directory, ".env"), { force: true })
+  }
+}
+
 test("server builds from clean assets and runs as a copied executable", async (t) => {
   const directory = fixture(t)
   assert.equal(existsSync(join(directory, "internal/web/assets")), false)
@@ -169,6 +293,29 @@ test("server builds from clean assets and runs as a copied executable", async (t
   )
   assert.deepEqual(readdirSync(join(directory, "bin")), ["server"])
   await checkCopiedServer(directory)
+
+  for (const [target, signal] of [
+    ["dev", "SIGINT"],
+    ["dev-api", "SIGTERM"],
+  ])
+    await t.test(`${target} serves UI/API and cleans up on ${signal}`, () =>
+      checkDevelopment(directory, target, signal),
+    )
+  await t.test("development fails without database configuration", () => {
+    const result = spawnSync(process.execPath, ["scripts/dev.mjs", "api"], {
+      cwd: directory,
+      env: Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([key]) => !key.startsWith("CLAVIS_"),
+        ),
+      ),
+      encoding: "utf8",
+      timeout: 5_000,
+    })
+    assert.ifError(result.error)
+    assert.equal(result.status, 2)
+    assert.match(result.stderr, /CLAVIS_DATABASE_URL is required/)
+  })
 
   const binary = digest(join(directory, "bin/server"))
   for (const [name, path, damaged] of [

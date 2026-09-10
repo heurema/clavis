@@ -1,12 +1,10 @@
 import { createHash, randomUUID } from "node:crypto"
 import { spawn } from "node:child_process"
 import {
-  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -14,6 +12,11 @@ import {
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
+import {
+  copyMutationInputs,
+  goSources,
+  isMutationTarget,
+} from "./mutation-inputs.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 const reports = join(root, "reports")
@@ -44,29 +47,14 @@ let temporaryRoot, workspace, active, timeoutTimer, forcedStop
 const deadline = Date.now() + timeout
 const appendLog = (chunk) => writeFileSync(logPath, chunk, { flag: "a" })
 
-function files(directory) {
-  if (!existsSync(directory)) return []
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(directory, entry.name)
-    return entry.isDirectory()
-      ? files(path)
-      : entry.isFile() && entry.name.endsWith(".go")
-        ? [path]
-        : []
-  })
-}
-const source = [...files(join(root, "cmd")), ...files(join(root, "internal"))]
+const source = goSources(root)
 const hashes = new Map(
   source.map((path) => [
     path,
     createHash("sha256").update(readFileSync(path)).digest("hex"),
   ]),
 )
-const eligible = (path) =>
-  /^internal\/(config|cli|server)\//.test(relative(root, path)) &&
-  !/(_test|_gen|\.gen)\.go$/.test(path) &&
-  !/(^|\/)(generated|sqlc)\//.test(path) &&
-  !/^\/\/ Code generated .* DO NOT EDIT\.$/m.test(readFileSync(path, "utf8"))
+const eligible = (path) => isMutationTarget(root, path)
 const escapeRegex = (path) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
 function stop(signal) {
@@ -135,13 +123,7 @@ try {
   temporaryRoot = mkdtempSync(join(tmpdir(), "clavis-mutation-"))
   workspace = join(temporaryRoot, "source")
   mkdirSync(workspace)
-  for (const path of ["go.mod", "go.sum", ".gremlins.yaml"])
-    cpSync(join(root, path), join(workspace, path))
-  for (const path of source) {
-    const destination = join(workspace, relative(root, path))
-    mkdirSync(join(destination, ".."), { recursive: true })
-    cpSync(path, destination)
-  }
+  copyMutationInputs(root, workspace, source)
   console.log("[mutation] Running baseline tests in an isolated copy")
   await execute("go", ["test", "./..."])
   const targets = source.filter(eligible)
