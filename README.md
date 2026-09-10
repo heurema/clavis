@@ -39,7 +39,7 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make test-web` | Build the server and run Chromium behavior/layout tests |
 | `make lint-go` | Run golangci-lint |
 | `make format` | Format maintained Go, templates and JavaScript; regenerate templ Go source |
-| `make smoke` | Test the real database, API and CLI, including outage/recovery and cleanup |
+| `make smoke` | Test the standalone server in Chromium with real database/API/CLI outage, recovery and cleanup |
 | `make test-mutation` | Run Go mutation testing and report survivors |
 | `make down` | Stop the database and keep its data |
 | `make reset-db` | Delete the local Clavis database and its data |
@@ -50,10 +50,20 @@ for deadlines, stalled bodies, cancellation and safe failure handling. It also
 checks appearance, keyboard controls and desktop/mobile layouts. Screenshots and
 traces are written under ignored `reports/`.
 
-The real-database smoke report still identifies its API/CLI-only scope; browser
-outage/recovery smoke integration is the next migration milestone. Build tests
-run a copied server in an otherwise empty directory without frontend tools and
-verify its HTML, assets and JSON endpoints.
+`make smoke` copies only the server executable into a fresh temporary directory
+and runs it there with an empty executable search path. Chromium, JSON health
+requests and the CLI use that server's origin; third-party browser requests are
+blocked. It verifies embedded assets, notices, keyboard controls and appearance,
+then stops/restarts an isolated PostgreSQL database and the copied server.
+The loaded page must recover through explicit retry without a reload. The runner
+has a 180-second execution deadline, followed by cleanup of its own resources.
+It leaves existing development processes, database containers and volumes alone.
+Logs, screenshots, a browser trace and `smoke-summary.json` go under `reports/`.
+
+To exercise failure cleanup, run `CLAVIS_SMOKE_FAIL=after-start make smoke` or
+`CLAVIS_SMOKE_FAIL=after-restart make smoke`. These deliberately exit nonzero;
+the summary must still report `"cleanup": "passed"`, removed temporary runtime
+files and stopped server processes. The second case covers the restarted server.
 
 `web/` now holds only pinned development dependencies for CSS, htmx and code
 validation. UI source lives in `internal/web/`; commit `.templ` files together

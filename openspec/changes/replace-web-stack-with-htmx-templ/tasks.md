@@ -22,10 +22,10 @@
 
 ## 4. Verify single-binary deployment and recovery
 
-- [ ] 4.1 Change the smoke runner to start a copied server executable from an empty temporary directory and use that same origin for the browser and JSON requests; verify styles, scripts, icons, notices, theme and retry load with third-party requests blocked and without frontend tools in the server process's executable search path.
-- [ ] 4.2 Preserve real PostgreSQL outage/recovery and CLI doctor coverage against the copied server; verify liveness remains available, readiness changes 200/503 correctly, and database recovery updates the loaded browser without reload.
-- [ ] 4.3 Replace the fresh-navigation API-down smoke case with an already-loaded page losing its server, then restarting at the same address; verify a safe failed check followed by successful explicit retry without reload, and document the deliberate fresh-navigation limitation.
-- [ ] 4.4 Track temporary directories and every restarted server process in smoke cleanup; verify normal completion and the existing injected-failure path remove only smoke-owned processes/resources and preserve developer database volumes.
+- [x] 4.1 Change the smoke runner to start a copied server executable from an empty temporary directory and use that same origin for the browser and JSON requests; verify styles, scripts, icons, notices, theme and retry load with third-party requests blocked and without frontend tools in the server process's executable search path.
+- [x] 4.2 Preserve real PostgreSQL outage/recovery and CLI doctor coverage against the copied server; verify liveness remains available, readiness changes 200/503 correctly, and database recovery updates the loaded browser without reload.
+- [x] 4.3 Replace the fresh-navigation API-down smoke case with an already-loaded page losing its server, then restarting at the same address; verify a safe failed check followed by successful explicit retry without reload, and document the deliberate fresh-navigation limitation.
+- [x] 4.4 Track temporary directories and every restarted server process in smoke cleanup; verify normal completion and the existing injected-failure path remove only smoke-owned processes/resources and preserve developer database volumes.
 
 ## 5. Retire the React workflow and update documentation
 
