@@ -14,8 +14,10 @@ func TestPublicAssets(t *testing.T) {
 		name, contentType string
 	}{
 		{"app.css", "text/css; charset=utf-8"},
+		{"appearance.js", "text/javascript; charset=utf-8"},
 		{"htmx.min.js", "text/javascript; charset=utf-8"},
 		{"notices.txt", "text/plain; charset=utf-8"},
+		{"readiness.js", "text/javascript; charset=utf-8"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := httptest.NewRecorder()

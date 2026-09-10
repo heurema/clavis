@@ -14,11 +14,11 @@
 
 ## 3. Replace the setup page and its browser behavior
 
-- [ ] 3.1 Recreate the Clavis shell/status page with templ and the selected templUI controls; restore pinned Playwright 1.63.0 and verify responsive layout, real labels and service states against bootstrap commit `4e27c5a0645858bb2ebdcc9c06e27a4cc75a12c3` without adding unimplemented product screens.
-- [ ] 3.2 Implement the initial htmx check, manual retry, a shared cancellation scope, checking state and five-second deadline including body reads; verify browser cases for ready, known 503, timeout, a stalled body, superseded responses, and absence of polling or automatic retries.
-- [ ] 3.3 Gate readiness swaps by expected status, content type and the application fragment marker, and render safe local failure messages; verify unexpected 200/500 bodies, absent markers and unrecognized redirect results containing sentinel secrets never enter the DOM.
-- [ ] 3.4 Preserve `clavis.appearance`, system appearance changes and blocked-storage fallback with embedded application scripts; verify persistence, reload behavior and in-memory interaction without introducing additional persisted state.
-- [ ] 3.5 Keep retry/theme controls and announcements usable across partial replacements, load component scripts once, and cover inserted controls in an isolated fixture where needed; verify keyboard focus, Space/Enter behavior, accessible names and a single action after repeated initialization.
+- [x] 3.1 Recreate the Clavis shell/status page with templ and the selected templUI controls; restore pinned Playwright 1.63.0 and verify responsive layout, real labels and service states against bootstrap commit `4e27c5a0645858bb2ebdcc9c06e27a4cc75a12c3` without adding unimplemented product screens.
+- [x] 3.2 Implement the initial htmx check, manual retry, a shared cancellation scope, checking state and five-second deadline including body reads; verify browser cases for ready, known 503, timeout, a stalled body, superseded responses, and absence of polling or automatic retries.
+- [x] 3.3 Gate readiness swaps by expected status, content type and the application fragment marker, and render safe local failure messages; verify unexpected 200/500 bodies, absent markers and unrecognized redirect results containing sentinel secrets never enter the DOM.
+- [x] 3.4 Preserve `clavis.appearance`, system appearance changes and blocked-storage fallback with embedded application scripts; verify persistence, reload behavior and in-memory interaction without introducing additional persisted state.
+- [x] 3.5 Keep retry/theme controls and announcements usable across partial replacements, load component scripts once, and cover inserted controls in an isolated fixture where needed; verify keyboard focus, Space/Enter behavior, accessible names and a single action after repeated initialization.
 
 ## 4. Verify single-binary deployment and recovery
 

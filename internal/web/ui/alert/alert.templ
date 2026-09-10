@@ -4,7 +4,8 @@ import "github.com/heurema/clavis/internal/web/ui/utils"
 
 // templUI v1.13.2; MIT notices are in ../utils/templui.go.
 // Source: https://github.com/templui/templui/blob/75ff269e4b13e65e2ebc973835dea91e1112cca1/components/alert/alert.templ
-// Local changes: utility import path. No component scripts are required.
+// Local changes: utility import path; configurable role for use inside a stable
+// polite status region without duplicate assertive announcements. No scripts.
 
 type Variant string
 
@@ -18,6 +19,7 @@ type Props struct {
 	Class      string
 	Attributes templ.Attributes
 	Variant    Variant
+	Role       string
 }
 
 type TitleProps struct {
@@ -51,7 +53,11 @@ templ Alert(props ...Props) {
 				p.Class,
 			),
 		}
-		role="alert"
+		if p.Role != "" {
+			role={ p.Role }
+		} else {
+			role="alert"
+		}
 		{ p.Attributes... }
 	>
 		{ children... }

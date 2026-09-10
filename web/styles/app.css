@@ -51,6 +51,30 @@
   --ring: #93c5fd;
 }
 
+.status-success {
+  border-color: #86efac;
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.status-warning {
+  border-color: #fcd34d;
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.dark .status-success {
+  border-color: #166534;
+  background: #052e16;
+  color: #86efac;
+}
+
+.dark .status-warning {
+  border-color: #92400e;
+  background: #451a03;
+  color: #fcd34d;
+}
+
 @layer base {
   * {
     border-color: var(--border);

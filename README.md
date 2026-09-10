@@ -3,9 +3,9 @@
 Clavis is a CLI-first platform by heurema for controlled access to operational
 systems by people and agents.
 
-Currently, it provides a Go API and CLI with external PostgreSQL, plus a minimal
-server-rendered setup page. The old web application has been removed; automatic
-readiness checks, in-page retry and appearance controls are still being rebuilt.
+Currently, it provides a Go API and CLI with external PostgreSQL, plus an
+embedded templ/htmx setup page with readiness checks, in-page retry and light/dark
+appearance. There is no separate frontend server or deployable web bundle.
 Authentication, permissions, and external integrations are planned.
 
 ## Quick start
@@ -21,7 +21,7 @@ make dev-db
 
 Run `make dev` to start the Go server (`make dev-api` remains an alias).
 Development commands load settings from `.env`; stop the server with Ctrl-C.
-Open `http://127.0.0.1:8080` for the setup page and its readiness link.
+Open `http://127.0.0.1:8080` for the setup page.
 The same server exposes JSON health endpoints at `/health/live` and
 `/health/ready`, independently of HTML rendering.
 
@@ -36,6 +36,7 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make build-web-assets` | Rebuild only ignored CSS, scripts and embedded attribution notices |
 | `make check-web-generated` | Check template formatting and generated-source consistency without rewriting files |
 | `make check` | Run formatting checks, linters, tests, and builds |
+| `make test-web` | Build the server and run Chromium behavior/layout tests |
 | `make lint-go` | Run golangci-lint |
 | `make format` | Format maintained Go, templates and JavaScript; regenerate templ Go source |
 | `make smoke` | Test the real database, API and CLI, including outage/recovery and cleanup |
@@ -43,10 +44,16 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make down` | Stop the database and keep its data |
 | `make reset-db` | Delete the local Clavis database and its data |
 
-Browser smoke verification will return with the interactive setup page. The
-current smoke report explicitly identifies its API/CLI-only scope. Build tests
-already run a copied server in an otherwise empty directory without frontend
-tools and verify its HTML, assets and JSON endpoints.
+`make setup` installs pinned Playwright Chromium under `.tools/playwright`.
+`make test-web` exercises the built server, with controlled readiness responses
+for deadlines, stalled bodies, cancellation and safe failure handling. It also
+checks appearance, keyboard controls and desktop/mobile layouts. Screenshots and
+traces are written under ignored `reports/`.
+
+The real-database smoke report still identifies its API/CLI-only scope; browser
+outage/recovery smoke integration is the next migration milestone. Build tests
+run a copied server in an otherwise empty directory without frontend tools and
+verify its HTML, assets and JSON endpoints.
 
 `web/` now holds only pinned development dependencies for CSS, htmx and code
 validation. UI source lives in `internal/web/`; commit `.templ` files together
@@ -66,9 +73,16 @@ Missing or stale generated templates fail the server build without rewriting the
 Run `make generate-web` explicitly after editing templates.
 
 The setup document and assets remain available when PostgreSQL is unavailable.
-HTML readiness at `/ui/readiness` returns 200 or a safe 503 fragment. If the Go
-server is stopped, fresh navigation receives the browser's connection error;
-there is no independent frontend or offline fallback.
+Checks run on page entry and explicit retry, not polling or focus/reconnect.
+Each check has a five-second deadline including body reads; a new retry cancels
+the previous check. HTML readiness at `/ui/readiness` returns 200 or a safe 503
+fragment. Only recognized HTML responses can replace the status region.
+
+An already-loaded page can report server loss and recover through retry once the
+server returns. If the Go server is stopped, fresh navigation receives the
+browser's connection error; there is no independent frontend or offline fallback.
+Appearance is the only persisted browser preference (`clavis.appearance`); with
+storage blocked, the switch still works for the lifetime of the loaded page.
 
 After building, check the running API with:
 

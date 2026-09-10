@@ -9,11 +9,13 @@
     "pnpm": "12.3.4"
   },
   "scripts": {
-    "lint": "cd .. && oxlint --config web/.oxlintrc.json --deny-warnings scripts",
+    "test": "playwright test",
+    "lint": "cd .. && oxlint --config web/.oxlintrc.json --deny-warnings scripts web/scripts web/tests web/playwright.config.mjs",
     "format:check": "prettier --config .prettierrc.json --check . ../scripts",
     "format": "prettier --config .prettierrc.json --write . ../scripts"
   },
   "devDependencies": {
+    "@playwright/test": "1.63.0",
     "@tailwindcss/cli": "4.3.3",
     "htmx.org": "4.0.0",
     "oxlint": "1.82.0",
