@@ -22,14 +22,10 @@ import (
 )
 
 type Database interface {
-	Ping(context.Context) error
 	Close()
 }
 
 func Handler(checkTimeout time.Duration, database Database, logger *slog.Logger) http.Handler {
-	if pool, ok := database.(*pgxpool.Pool); ok {
-		return HandlerWithReadiness(checkTimeout, store.NewInitializer(pool, "", ""), logger)
-	}
 	if checker, ok := database.(platform.Checker); ok {
 		return HandlerWithReadiness(checkTimeout, checker, logger)
 	}
@@ -41,7 +37,7 @@ func Handler(checkTimeout time.Duration, database Database, logger *slog.Logger)
 // HandlerWithReadiness is the injection boundary shared by real initialization
 // and isolated fixtures. Public documents never invoke the checker.
 func HandlerWithReadiness(checkTimeout time.Duration, checker platform.Checker, logger *slog.Logger) http.Handler {
-	adapter, _ := newAuthHTTP("http://127.0.0.1", checker, nil, AuthViews{})
+	adapter, _ := newAuthHTTP("http://127.0.0.1", nil, AuthViews{})
 	return handler(checkTimeout, checker, logger, adapter)
 }
 
@@ -50,7 +46,7 @@ func HandlerWithAuth(checkTimeout time.Duration, checker platform.Checker, servi
 	if service == nil || recorder == nil || checker == nil {
 		return nil, &auth.Error{Code: auth.InvalidArgument}
 	}
-	adapter, err := newAuthHTTP(origin, checker, service, views)
+	adapter, err := newAuthHTTP(origin, service, views)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +132,7 @@ func Serve(ctx context.Context, listener net.Listener, cfg config.Config, databa
 	workerCtx, cancelWorker := context.WithCancel(ctx)
 	defer cancelWorker()
 	workerDone := make(chan struct{})
-	httpHandler := Handler(cfg.DBCheckTimeout, database, logger)
+	var httpHandler http.Handler
 	if pool, ok := database.(*pgxpool.Pool); ok {
 		initializer := store.NewInitializer(pool, cfg.BootstrapUsername, cfg.BootstrapPasswordFile)
 		service, err := store.NewLocalAuth(pool, initializer, cfg.SessionTTL)
@@ -153,6 +149,7 @@ func Serve(ctx context.Context, listener net.Listener, cfg config.Config, databa
 		}
 		go func() { defer close(workerDone); initializer.Run(workerCtx) }()
 	} else {
+		httpHandler = Handler(cfg.DBCheckTimeout, database, logger)
 		close(workerDone)
 	}
 	server := &http.Server{

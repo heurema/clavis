@@ -19,6 +19,7 @@ import (
 
 	"github.com/a-h/templ"
 	"github.com/heurema/clavis/internal/auth"
+	store "github.com/heurema/clavis/internal/database"
 	"github.com/heurema/clavis/internal/platform"
 	"github.com/heurema/clavis/internal/web"
 	"github.com/stretchr/testify/require"
@@ -117,6 +118,140 @@ func requestAuth(handler http.Handler, method, path, body string, headers http.H
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
+}
+
+func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
+	for _, state := range []platform.State{
+		platform.DependencyUnavailable, platform.Initializing, platform.SetupRequired,
+		platform.BootstrapFailed, platform.SchemaError,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			calls := 0
+			checker := platform.CheckFunc(func(ctx context.Context) platform.Readiness {
+				calls++
+				_, bounded := ctx.Deadline()
+				require.True(t, bounded)
+				return platform.Readiness{State: state}
+			})
+			// An unready real service must never reach its pool, even directly.
+			service, err := store.NewLocalAuth(nil, checker, auth.DefaultSessionTTL)
+			require.NoError(t, err)
+			recorder := &backendFixture{}
+			healthCalls := 0
+			health := platform.CheckFunc(func(ctx context.Context) platform.Readiness {
+				healthCalls++
+				return checker.Check(ctx)
+			})
+			handler, err := HandlerWithAuth(time.Second, health, service, recorder, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			require.NoError(t, err)
+			code := (platform.Readiness{State: state}).Response().Error.Code
+			for _, tc := range []struct {
+				method, path, body string
+				headers            http.Header
+				status             int
+				code               string
+				checks             int
+			}{
+				{"POST", auth.LoginPath, `{"username":"personal-admin","password":"valid test password"}`, http.Header{"Content-Type": {"application/json"}}, 503, code, 1},
+				{"GET", auth.WhoAmIPath, "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}, 503, code, 1},
+				{"POST", auth.LogoutPath, "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}, 503, code, 1},
+				{"POST", "/api/admin/users/not-a-user/sessions/revoke", "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}, 503, code, 1},
+				{"POST", "/login", "username=personal-admin&password=valid+test+password", http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}, 503, code, 1},
+				{"GET", "/admin", "", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 503, code, 1},
+				{"POST", "/logout", "", http.Header{"Origin": {"http://127.0.0.1"}, "Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 503, auth.ServiceUnavailable, 1},
+				{"POST", auth.LoginPath, "{}", http.Header{"Origin": {"https://attacker.invalid"}, "Content-Type": {"application/json"}}, 403, auth.Forbidden, 0},
+				{"POST", auth.LoginPath, "{}", http.Header{"Content-Type": {"application/json"}}, 400, auth.InvalidArgument, 0},
+				{"POST", auth.LogoutPath, "unexpected", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}, 400, auth.InvalidArgument, 0},
+				{"GET", auth.WhoAmIPath, "", http.Header{}, 401, auth.Unauthenticated, 0},
+			} {
+				calls = 0
+				response := requestAuth(handler, tc.method, tc.path, tc.body, tc.headers)
+				require.Equal(t, tc.status, response.Code, tc.path)
+				require.Contains(t, response.Body.String(), tc.code, tc.path)
+				require.Equal(t, tc.checks, calls, tc.path)
+				require.Zero(t, healthCalls, "authentication must invoke the service's checker")
+				if tc.path != "/logout" {
+					require.Empty(t, response.Header().Get("Set-Cookie"))
+				}
+			}
+			for _, call := range []func() error{
+				func() error {
+					_, err := service.Login(t.Context(), auth.LoginInput{Username: "personal-admin", Password: "valid test password", Kind: auth.CLI, Peer: netip.MustParseAddr("127.0.0.1")})
+					return err
+				},
+				func() error { _, err := service.Authenticate(t.Context(), fixtureToken, auth.CLI); return err },
+				func() error {
+					return service.Logout(t.Context(), auth.Session{ID: fixtureIdentity.User.ID, Identity: fixtureIdentity})
+				},
+				func() error {
+					return service.RevokeUserSessions(t.Context(), auth.Session{ID: fixtureIdentity.User.ID, Identity: fixtureIdentity}, fixtureIdentity.User.ID)
+				},
+			} {
+				calls = 0
+				err := call()
+				status, failure := auth.FailureFor(err)
+				require.Equal(t, 503, status)
+				require.Equal(t, code, failure.Error.Code)
+				require.Equal(t, 1, calls)
+			}
+			calls = 0
+			response := requestAuth(handler, "GET", "/health/ready", "", http.Header{})
+			require.Equal(t, 503, response.Code)
+			require.Equal(t, 1, calls, "public health must still invoke its checker")
+			require.Equal(t, 1, healthCalls)
+		})
+	}
+}
+
+func TestHandlerWithAuthRequiresCompleteComposition(t *testing.T) {
+	checker := platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
+	fixture := &backendFixture{}
+	for _, tc := range []struct {
+		checker  platform.Checker
+		service  auth.Service
+		recorder auth.EventRecorder
+	}{
+		{nil, fixture, fixture},
+		{checker, nil, fixture},
+		{checker, fixture, nil},
+	} {
+		handler, err := HandlerWithAuth(time.Second, tc.checker, tc.service, tc.recorder, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		require.Nil(t, handler)
+		require.Error(t, err)
+		status, failure := auth.FailureFor(err)
+		require.Equal(t, 400, status)
+		require.Equal(t, auth.InvalidArgument, failure.Error.Code)
+	}
+}
+
+func TestNilServiceFixturesFailClosed(t *testing.T) {
+	checker := platform.CheckFunc(func(context.Context) platform.Readiness {
+		t.Fatal("protected fixtures must not rely on a readiness check")
+		return platform.Readiness{State: platform.Ready}
+	})
+	handler := HandlerWithReadiness(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	for _, tc := range []struct {
+		method, path, body string
+		headers            http.Header
+	}{
+		{"POST", auth.LoginPath, `{"username":"personal-admin","password":"valid test password"}`, http.Header{"Content-Type": {"application/json"}}},
+		{"GET", auth.WhoAmIPath, "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}},
+		{"POST", auth.LogoutPath, "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}},
+		{"POST", "/api/admin/users/" + fixtureIdentity.User.ID + "/sessions/revoke", "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}},
+		{"POST", "/login", "username=personal-admin&password=valid+test+password", http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}},
+		{"GET", "/admin", "", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}},
+		{"POST", "/logout", "", http.Header{"Origin": {"http://127.0.0.1"}, "Cookie": {developmentCookie + "=" + string(fixtureToken)}}},
+	} {
+		response := requestAuth(handler, tc.method, tc.path, tc.body, tc.headers)
+		require.Equal(t, 503, response.Code, tc.path)
+		require.NotContains(t, response.Body.String(), string(fixtureToken))
+		require.NotContains(t, response.Body.String(), "valid test password")
+		if tc.path != "/logout" {
+			require.Empty(t, response.Header().Get("Set-Cookie"))
+		} else {
+			require.Equal(t, -1, response.Result().Cookies()[0].MaxAge)
+		}
+	}
 }
 
 func TestStrictJSONCredentialsAndAnonymousAudits(t *testing.T) {

@@ -37,9 +37,7 @@ test("mutation targets include handwritten web behavior, not generated/vendor/fi
   assert(targets.some((path) => path.startsWith("internal/server/")))
   assert(
     !targets.some((path) =>
-      /(^cmd\/|\/ui\/|\/testdata\/|\/authtest\/|\/sqlc\/|_test\.go$|_templ\.go$)/.test(
-        path,
-      ),
+      /(^cmd\/|\/ui\/|\/testdata\/|\/sqlc\/|_test\.go$|_templ\.go$)/.test(path),
     ),
   )
 })

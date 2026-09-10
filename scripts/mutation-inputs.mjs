@@ -29,7 +29,6 @@ export function isMutationTarget(root, path) {
     /^internal\/(auth|database|platform|config|cli|server|web)\//.test(name) &&
     !/^internal\/web\/(ui|testdata)\//.test(name) &&
     !/(^|\/)testdata\//.test(name) &&
-    !name.startsWith("internal/auth/authtest/") &&
     !/(_test|_gen|_templ|\.gen)\.go$/.test(name) &&
     !/(^|\/)(generated|sqlc)\//.test(name) &&
     !/^\/\/ Code generated .* DO NOT EDIT\.$/m.test(readFileSync(path, "utf8"))

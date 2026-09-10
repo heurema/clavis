@@ -62,8 +62,7 @@ func (c Config) validate() error {
 	if err != nil || host == "" {
 		return &Error{"CLAVIS_HTTP_ADDR", "INVALID_ADDRESS"}
 	}
-	p, err := strconv.Atoi(port)
-	if err != nil || p < 0 || p > 65535 {
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
 		return &Error{"CLAVIS_HTTP_ADDR", "INVALID_PORT"}
 	}
 	u, err := url.Parse(c.DatabaseURL)
@@ -82,7 +81,9 @@ func (c Config) validate() error {
 	if c.SessionTTL < auth.MinSessionTTL || c.SessionTTL > auth.MaxSessionTTL {
 		return &Error{"CLAVIS_SESSION_TTL", "INVALID_DURATION"}
 	}
-	if _, err := c.ResolvePublicOrigin(c.HTTPAddr); err != nil {
+	// A port-zero bind address is valid here; only the actual listener can
+	// supply a derived public origin after binding.
+	if _, err := c.configuredPublicOrigin(host); err != nil {
 		return err
 	}
 	switch c.LogLevel {
@@ -93,17 +94,35 @@ func (c Config) validate() error {
 	return nil
 }
 
-// ResolvePublicOrigin is called again with listener.Addr before serving so a
-// port-zero loopback listener gets its actual origin. Host/forwarded headers
-// never participate in this decision.
+// ResolvePublicOrigin uses the actual listener.Addr before serving so a
+// port-zero loopback bind gets its assigned port. Host/forwarded headers never
+// participate in this decision.
 func (c Config) ResolvePublicOrigin(address string) (string, error) {
-	host, _, err := net.SplitHostPort(address)
-	loopback := err == nil && net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return "", &Error{"CLAVIS_PUBLIC_URL", "INVALID_ORIGIN"}
+	}
+	origin, err := c.configuredPublicOrigin(host)
+	if err != nil || origin != "" {
+		return origin, err
+	}
+	// Listener addresses may use mapped IPv4 notation. Resolve those to the
+	// ordinary IPv4 form reported by a bound TCP listener.
+	if ip := net.ParseIP(host); ip != nil {
+		host = ip.String()
+	}
+	return CanonicalOrigin("http://" + net.JoinHostPort(host, port))
+}
+
+// An empty origin means that a loopback listener may derive it after binding.
+func (c Config) configuredPublicOrigin(host string) (string, error) {
+	ip := net.ParseIP(host)
+	loopback := ip != nil && ip.IsLoopback()
 	if c.PublicURL == "" {
 		if !loopback {
 			return "", &Error{"CLAVIS_PUBLIC_URL", "REQUIRED"}
 		}
-		return CanonicalOrigin("http://" + address)
+		return "", nil
 	}
 	origin, err := CanonicalOrigin(c.PublicURL)
 	if err != nil {
@@ -116,41 +135,11 @@ func (c Config) ResolvePublicOrigin(address string) (string, error) {
 }
 
 func CanonicalOrigin(value string) (string, error) {
-	failure := &Error{"CLAVIS_PUBLIC_URL", "INVALID_ORIGIN"}
-	u, err := url.Parse(value)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil ||
-		u.Hostname() == "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" ||
-		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.ContainsAny(value, "\\?#") {
-		return "", failure
+	origin, err := auth.CanonicalOrigin(value)
+	if err != nil {
+		return "", &Error{"CLAVIS_PUBLIC_URL", "INVALID_ORIGIN"}
 	}
-	host := strings.ToLower(u.Hostname())
-	if strings.Contains(host, "%") {
-		return "", failure
-	}
-	ip := net.ParseIP(host)
-	if u.Scheme == "http" && (ip == nil || !ip.IsLoopback()) {
-		return "", failure
-	}
-	if ip != nil {
-		host = ip.String()
-	}
-	port := u.Port()
-	if port != "" {
-		n, err := strconv.Atoi(port)
-		if err != nil || n < 0 || n > 65535 {
-			return "", failure
-		}
-		port = strconv.Itoa(n)
-	}
-	if (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
-		port = ""
-	}
-	if port != "" {
-		host = net.JoinHostPort(host, port)
-	} else if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	return u.Scheme + "://" + host, nil
+	return origin, nil
 }
 
 func (c Config) Level() slog.Level {

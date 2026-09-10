@@ -13,7 +13,6 @@ unleash:
   exclude-files:
     - '(^|/)cmd/'
     - '(^|/)internal/buildinfo/'
-    - '(^|/)internal/auth/authtest/'
     - '(^|/)internal/web/(ui|testdata)/'
     - '(^|/)testdata/'
     - '(_test|_gen|_templ|\.gen)\.go$'

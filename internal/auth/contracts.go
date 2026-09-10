@@ -89,6 +89,9 @@ type Session struct {
 	Identity
 }
 
+// Service owns readiness: every method must fail closed when its store is not
+// ready, including direct calls without an HTTP adapter. A prior readiness or
+// authentication result never replaces current authority checks for mutations.
 type Service interface {
 	Login(context.Context, LoginInput) (LoginResponse, error)
 	Authenticate(context.Context, Secret, Kind) (Session, error)

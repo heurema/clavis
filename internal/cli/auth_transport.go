@@ -4,54 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"mime"
-	"net"
 	"net/http"
-	"net/netip"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/heurema/clavis/internal/auth"
 )
-
-func canonicalOrigin(raw string) (string, error) {
-	u, err := validateURL(raw)
-	if err != nil || (u.Path != "" && u.Path != "/") || u.RawPath != "" || strings.Contains(raw, "#") {
-		return "", errors.New("invalid origin")
-	}
-	host := strings.ToLower(u.Hostname())
-	if strings.Contains(host, "%") || strings.HasSuffix(u.Host, ":") {
-		return "", errors.New("invalid origin")
-	}
-	ip, ipErr := netip.ParseAddr(host)
-	if ipErr == nil {
-		host = ip.String()
-	}
-	if u.Scheme == "http" && (ipErr != nil || !ip.IsLoopback()) {
-		return "", errors.New("HTTPS required")
-	}
-	port := u.Port()
-	if port != "" {
-		number, err := strconv.ParseUint(port, 10, 16)
-		if err != nil || number == 0 {
-			return "", errors.New("invalid port")
-		}
-		port = strconv.FormatUint(number, 10)
-	}
-	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
-		port = ""
-	}
-	if port != "" {
-		host = net.JoinHostPort(host, port)
-	} else if strings.Contains(host, ":") {
-		host = "[" + host + "]"
-	}
-	return (&url.URL{Scheme: u.Scheme, Host: host}).String(), nil
-}
 
 // strictJSON rejects ambiguous duplicate keys as well as unknown fields and
 // trailing values. Never expose the decoder's error (it may contain a secret).
@@ -126,10 +86,6 @@ func validIdentity(value auth.Identity) bool {
 		!value.ExpiresAt.IsZero() && offset == 0
 }
 
-func validToken(token auth.Secret) bool {
-	return auth.ValidToken(token)
-}
-
 type authTransport struct {
 	origin  string
 	timeout time.Duration
@@ -174,13 +130,13 @@ func (a authTransport) request(ctx context.Context, path string, token auth.Secr
 		return transportFailure(ctx)
 	}
 	defer func() { _ = response.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	data, err := io.ReadAll(io.LimitReader(response.Body, auth.MaxResponseBody+1))
 	if ctx.Err() != nil {
 		return transportFailure(ctx)
 	}
 	invalid := failure("INVALID_RESPONSE", "Server returned an invalid authentication response", nil)
 	contentType, _, typeErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if err != nil || len(data) > maxResponseBytes || typeErr != nil || contentType != "application/json" {
+	if err != nil || len(data) > auth.MaxResponseBody || typeErr != nil || contentType != "application/json" {
 		return &invalid
 	}
 	if response.StatusCode != http.StatusOK {
@@ -204,7 +160,7 @@ func (a authTransport) request(ctx context.Context, path string, token auth.Secr
 	valid := false
 	switch value := output.(type) {
 	case *auth.LoginResponse:
-		valid = validToken(value.Token) && validIdentity(value.Identity) && value.ExpiresAt.After(time.Now())
+		valid = auth.ValidToken(value.Token) && validIdentity(value.Identity) && value.ExpiresAt.After(time.Now())
 	case *auth.Identity:
 		valid = validIdentity(*value) && value.ExpiresAt.After(time.Now())
 	case *auth.Revocation:

@@ -13,6 +13,7 @@ import (
 	"net"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -36,7 +37,9 @@ type migration struct {
 	sum     string
 }
 
-func embeddedMigrations() []migration {
+// Embedded files are immutable; cache their validation and checksums, not
+// caller-owned slices. OnceValue also preserves a panic for invalid build data.
+var embeddedMigrationManifest = sync.OnceValue(func() []migration {
 	root, err := fs.Sub(migrationFiles, "migrations")
 	if err != nil {
 		panic(err)
@@ -46,6 +49,10 @@ func embeddedMigrations() []migration {
 		panic(err)
 	}
 	return migrations
+})
+
+func embeddedMigrations() []migration {
+	return slices.Clone(embeddedMigrationManifest())
 }
 
 // The manifest is an integrity policy, not a migration planner. Goose discovers,

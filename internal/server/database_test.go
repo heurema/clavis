@@ -59,19 +59,66 @@ func serverDatabase(t *testing.T) (*pgxpool.Pool, string, auth.Secret) {
 	return pool, path, password
 }
 
+func TestRealHTTPLoginFailsClosedBeforeInitializationAndAfterPoolClose(t *testing.T) {
+	pool, _, _ := serverDatabase(t)
+	checker := store.NewInitializer(pool, "", "")
+	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	require.NoError(t, err)
+	checks := 0
+	// Health has a separate counter: authentication must use the service's
+	// initializer, not the HTTP readiness checker.
+	health := platform.CheckFunc(func(ctx context.Context) platform.Readiness {
+		checks++
+		return checker.Check(ctx)
+	})
+	handler, err := HandlerWithAuth(time.Second, health, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	require.NoError(t, err)
+	reject := func(t *testing.T) {
+		t.Helper()
+		code := checker.Check(t.Context()).Response().Error.Code
+		for _, tc := range []struct {
+			path, body string
+			headers    http.Header
+		}{
+			{auth.LoginPath, `{"username":"personal-admin","password":"valid test password"}`, http.Header{"Content-Type": {"application/json"}}},
+			{"/login", "username=personal-admin&password=valid+test+password", http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}},
+		} {
+			response := requestAuth(handler, "POST", tc.path, tc.body, tc.headers)
+			require.Equal(t, 503, response.Code)
+			require.Contains(t, response.Body.String(), code)
+			require.Empty(t, response.Header().Get("Set-Cookie"))
+			require.NotContains(t, response.Body.String(), "valid test password")
+		}
+		require.Zero(t, checks)
+	}
+	t.Run("unmigrated", reject)
+	require.NoError(t, store.Migrate(t.Context(), pool))
+	require.Equal(t, platform.SetupRequired, checker.Attempt(t.Context()).State)
+	t.Run("uninitialized", reject)
+	pool.Close()
+	t.Run("unavailable", reject)
+}
+
 func TestRealHTTPAuthenticationEventsAndLockDeadlines(t *testing.T) {
 	pool, path, password := serverDatabase(t)
 	checker := store.NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	readinessCalls := 0
+	readiness := platform.CheckFunc(func(ctx context.Context) platform.Readiness {
+		readinessCalls++
+		return checker.Check(ctx)
+	})
+	service, err := store.NewLocalAuth(pool, readiness, auth.DefaultSessionTTL)
 	require.NoError(t, err)
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, readiness, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
 	require.NoError(t, err)
 	signIn := func() auth.LoginResponse {
+		before := readinessCalls
 		response := requestAuth(handler, "POST", auth.LoginPath, string(encoded), http.Header{"Content-Type": {"application/json"}})
 		require.Equal(t, 200, response.Code)
+		require.Equal(t, before+1, readinessCalls, "the real service checks readiness once; the adapter must not duplicate it")
 		var issued auth.LoginResponse
 		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &issued))
 		return issued

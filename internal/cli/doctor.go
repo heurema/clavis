@@ -11,10 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/platform"
 )
-
-const maxResponseBytes = 64 << 10
 
 func validateURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
@@ -53,12 +52,12 @@ func Doctor(ctx context.Context, baseURL string, timeout time.Duration) Result {
 		return failure("SERVER_UNREACHABLE", "Server could not be reached", Diagnosis{"unreachable", "unknown"})
 	}
 	defer func() { _ = response.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(response.Body, auth.MaxResponseBody+1))
 	if err != nil && ctx.Err() != nil {
 		return failure("TIMEOUT", "Readiness check did not complete", Diagnosis{"unknown", "unknown"})
 	}
 	invalid := failure("INVALID_RESPONSE", "Server returned an invalid readiness response", Diagnosis{"reachable", "unknown"})
-	if err != nil || len(body) > maxResponseBytes {
+	if err != nil || len(body) > auth.MaxResponseBody {
 		return invalid
 	}
 	var health struct {

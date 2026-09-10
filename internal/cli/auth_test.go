@@ -306,7 +306,7 @@ func TestCanonicalAuthOrigins(t *testing.T) {
 		"http://[0:0:0:0:0:0:0:1]:80":  "http://[::1]",
 		"https://[2001:0db8::1]:00444": "https://[2001:db8::1]:444",
 	} {
-		got, err := canonicalOrigin(raw)
+		got, err := auth.CanonicalOrigin(raw)
 		require.NoError(t, err)
 		require.Equal(t, want, got)
 	}
@@ -317,16 +317,41 @@ func TestCanonicalAuthOrigins(t *testing.T) {
 		"https://example.com:0", "https://example.com:65536", "https://example.com:",
 		"http://[::1%25lo0]", "http://2130706433", "file:///tmp/test",
 	} {
-		_, err := canonicalOrigin(raw)
+		_, err := auth.CanonicalOrigin(raw)
 		require.Error(t, err, raw)
+	}
+}
+
+func TestAuthOriginFailuresAreSafeBeforeCredentialInput(t *testing.T) {
+	for _, raw := range []string{
+		"http://secret.example", "https://user:secret@example.com",
+		"https://secret.example:0", "https://secret.example:", "https://secret.example/%zz",
+		"https://secret.example/base", "https://secret.example#", "https://secret.example?",
+		"http://[::ffff:192.0.2.1]",
+	} {
+		t.Run(raw, func(t *testing.T) {
+			var stdout bytes.Buffer
+			exit := RunWithIO(context.Background(), []string{
+				"clavis", "login", "--username=cli-test", "--server", raw,
+			}, IO{
+				Stdout: &stdout,
+				ReadPassword: func(context.Context, io.Reader, io.Writer) ([]byte, error) {
+					t.Fatal("invalid origins must be rejected before reading credentials")
+					return nil, nil
+				},
+			})
+			require.Equal(t, 2, exit)
+			require.Equal(t, "INVALID_ARGUMENT", decode(t, stdout.String()).Error.Code)
+			require.NotContains(t, stdout.String(), "secret")
+		})
 	}
 }
 
 func TestTokenEncodingAndCredentialEnvironmentIgnored(t *testing.T) {
 	token := testToken()
-	require.True(t, validToken(token))
+	require.True(t, auth.ValidToken(token))
 	for _, invalid := range []auth.Secret{"", token + "\n", token + "\r\n", token + "=", auth.Secret(strings.Repeat("x", 42))} {
-		require.False(t, validToken(invalid))
+		require.False(t, auth.ValidToken(invalid))
 	}
 	cliHome(t)
 	password := testToken()
@@ -395,7 +420,7 @@ func TestAuthTransportStrictResponses(t *testing.T) {
 		{"uppercase", 200, "application/json", strings.Replace(string(valid), `"token":`, `"TOKEN":`, 1)},
 		{"duplicate", 200, "application/json", strings.TrimSuffix(string(valid), "}") + `,"token":"sentinel"}`},
 		{"trailing", 200, "application/json", string(valid) + `{}`},
-		{"oversized", 200, "application/json", strings.Repeat(" ", maxResponseBytes) + string(valid)},
+		{"oversized", 200, "application/json", strings.Repeat(" ", auth.MaxResponseBody) + string(valid)},
 		{"wrong-type", 200, "text/html", string(valid)},
 		{"malformed", 200, "application/json", `{"token":"sentinel"`},
 		{"null", 200, "application/json", `null`},

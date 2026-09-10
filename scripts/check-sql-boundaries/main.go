@@ -202,9 +202,6 @@ func check(root string) ([]string, error) {
 			}
 			name = filepath.ToSlash(name)
 			if entry.IsDir() {
-				if name == "internal/auth/authtest" {
-					return filepath.SkipDir
-				}
 				return nil
 			}
 			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {

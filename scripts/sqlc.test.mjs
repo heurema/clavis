@@ -138,6 +138,48 @@ test("pinned sqlc generates and checks isolated complete file sets without input
   failsUnchanged(directory, "check", /./)
 })
 
+test("omit_unused_structs filters only unused models and preserves isolated query output", (t) => {
+  const directory = fixture(t)
+  writeFileSync(
+    join(directory, sqlInputs[1], "00002_details.sql"),
+    "-- +goose Up\nCREATE TABLE fixture_details (id bigint PRIMARY KEY, title text NOT NULL);\n-- +goose Down\nDROP TABLE fixture_details;\n",
+  )
+  writeFileSync(
+    join(directory, sqlInputs[2], "details.sql"),
+    "-- name: FindFixtureDetail :one\nSELECT * FROM fixture_details WHERE id = $1;\n",
+  )
+  const path = join(directory, "sqlc.yaml")
+  const config = JSON.parse(readFileSync(path, "utf8"))
+  config.sql[0].gen.go.omit_unused_structs = false
+  writeFileSync(path, JSON.stringify(config))
+  runSqlc(directory, "generate")
+  const unfiltered = snapshot(join(directory, sqlOutput))
+  const models = join(directory, sqlOutput, "models.go")
+  assert.match(readFileSync(models, "utf8"), /type Fixture struct/)
+  assert.match(readFileSync(models, "utf8"), /type FixtureDetail struct/)
+
+  config.sql[0].gen.go.omit_unused_structs = true
+  writeFileSync(path, JSON.stringify(config))
+  failsUnchanged(directory, "check", /models\.go/)
+  const inputs = snapshot(directory)
+  runSqlc(directory, "generate")
+  const generated = snapshot(directory)
+  for (const [path, value] of Object.entries(inputs))
+    if (!path.startsWith(`${sqlOutput}/`))
+      assert.deepEqual(generated[path], value)
+  const filtered = snapshot(join(directory, sqlOutput))
+  assert.deepEqual(Object.keys(filtered), Object.keys(unfiltered))
+  for (const [path, value] of Object.entries(unfiltered))
+    if (path !== "models.go")
+      assert.equal(filtered[path].content, value.content)
+  assert.doesNotMatch(readFileSync(models, "utf8"), /type Fixture struct/)
+  assert.match(readFileSync(models, "utf8"), /type FixtureDetail struct/)
+  runSqlc(directory, "check")
+  assert.deepEqual(snapshot(directory), generated)
+  rmSync(models)
+  failsUnchanged(directory, "check", /models\.go/)
+})
+
 test("wrong/missing tools and malformed pins fail closed even for install", (t) => {
   const directory = fixture(t)
   const binary = join(directory, ".tools/sqlc/bin/sqlc")
@@ -171,7 +213,9 @@ test("invalid SQL/config and escaping paths never modify source", (t) => {
   const directory = fixture(t)
   runSqlc(directory, "generate")
   const path = join(directory, "sqlc.yaml")
-  const valid = readFileSync(path, "utf8")
+  const config = JSON.parse(readFileSync(path, "utf8"))
+  config.sql[0].gen.go.omit_unused_structs = true
+  const valid = JSON.stringify(config)
   for (const edit of [
     (config) => {
       config.sql[0].gen.go.out = root
@@ -188,12 +232,29 @@ test("invalid SQL/config and escaping paths never modify source", (t) => {
     (config) => {
       config.sql[0].engine = "mysql"
     },
+    (config) => {
+      config.sql[0].gen.go.emit_sql_as_comment = true
+    },
+    (config) => {
+      config.sql[0].gen.plugin = {}
+    },
   ]) {
     const config = JSON.parse(valid)
     edit(config)
     writeFileSync(path, JSON.stringify(config))
     failsUnchanged(directory, "check", /./)
     failsUnchanged(directory, "generate", /./)
+  }
+  for (const value of ["true", 1, null, {}, []]) {
+    const config = JSON.parse(valid)
+    config.sql[0].gen.go.omit_unused_structs = value
+    writeFileSync(path, JSON.stringify(config))
+    for (const command of ["check", "generate"])
+      failsUnchanged(
+        directory,
+        command,
+        /Expected boolean.*omit_unused_structs/,
+      )
   }
   writeFileSync(path, "version: [broken")
   failsUnchanged(directory, "check", /JSON/)

@@ -75,7 +75,6 @@ func schemaVersions() { tx.QueryRow(ctx, migrationTablesSQL).Scan(&goose, &legac
 func TestScopedFixtures(t *testing.T) {
 	root := t.TempDir()
 	for _, path := range []string{
-		"internal/auth/authtest/fixture.go",
 		"internal/auth/store_test.go",
 		"internal/database/store_test.go",
 		"internal/database/testdata/maintained.go",

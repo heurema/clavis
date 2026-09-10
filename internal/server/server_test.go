@@ -38,6 +38,19 @@ func (d *fakeDatabase) Close() {
 	}
 }
 
+type closeOnlyDatabase struct{}
+
+func (*closeOnlyDatabase) Close() {}
+
+func TestCloseOnlyDatabaseFailsClosedWithoutChecker(t *testing.T) {
+	db := &closeOnlyDatabase{}
+	handler := Handler(time.Second, db, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/health/ready", nil))
+	require.Equal(t, 503, response.Code)
+	require.Contains(t, response.Body.String(), platform.CodeDependencyUnavailable)
+}
+
 func TestHealthAndRedaction(t *testing.T) {
 	var logs bytes.Buffer
 	var available atomic.Bool

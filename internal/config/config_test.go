@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"net"
 	"testing"
 	"time"
 
@@ -28,6 +29,8 @@ func TestLoad(t *testing.T) {
 		{"CLAVIS_HTTP_ADDR", ":80", "INVALID_ADDRESS"},
 		{"CLAVIS_HTTP_ADDR", "127.0.0.1:65536", "INVALID_PORT"},
 		{"CLAVIS_HTTP_ADDR", "127.0.0.1:-1", "INVALID_PORT"},
+		{"CLAVIS_HTTP_ADDR", "127.0.0.1:-0", "INVALID_PORT"},
+		{"CLAVIS_HTTP_ADDR", "127.0.0.1:+80", "INVALID_PORT"},
 		{"CLAVIS_HTTP_ADDR", "127.0.0.1:secret", "INVALID_PORT"},
 		{"CLAVIS_DB_CHECK_TIMEOUT", "secret", "INVALID_DURATION"},
 		{"CLAVIS_SHUTDOWN_TIMEOUT", "secret", "INVALID_DURATION"},
@@ -105,6 +108,77 @@ func TestCanonicalOriginAndBoundPort(t *testing.T) {
 	}
 	cfg := Config{HTTPAddr: "127.0.0.1:0"}
 	got, err := cfg.ResolvePublicOrigin("127.0.0.1:32123")
+	require.NoError(t, err)
+	require.Equal(t, "http://127.0.0.1:32123", got)
+}
+
+func TestPublicOriginConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		address, publicURL, want, code string
+	}{
+		{"127.0.0.1:0", "http://127.0.0.1:0", "", "INVALID_ORIGIN"},
+		{"127.0.0.1:0", "https://clavis.example:000", "", "INVALID_ORIGIN"},
+		{"[::1]:0", "http://[::1]:0", "", "INVALID_ORIGIN"},
+		{"127.0.0.1:0", "https://secret.example:", "", "INVALID_ORIGIN"},
+		{"127.0.0.1:0", "http://[::ffff:127.0.0.1]", "http://[::ffff:127.0.0.1]", ""},
+		{"127.0.0.1:0", "http://[::ffff:192.0.2.1]", "", "INVALID_ORIGIN"},
+		{"127.0.0.1:0", "https://[::ffff:127.0.0.1]:443", "https://[::ffff:127.0.0.1]", ""},
+		{"0.0.0.0:0", "", "", "REQUIRED"},
+		{"[::]:0", "", "", "REQUIRED"},
+		{"[::ffff:192.0.2.1]:0", "", "", "REQUIRED"},
+		{"localhost:0", "", "", "REQUIRED"},
+		{"0.0.0.0:0", "http://127.0.0.1:8080", "", "HTTPS_REQUIRED"},
+		{"0.0.0.0:0", "http://[::ffff:127.0.0.1]", "", "HTTPS_REQUIRED"},
+		{"[::]:0", "http://[::1]:8080", "", "HTTPS_REQUIRED"},
+		{"[::ffff:192.0.2.1]:0", "http://127.0.0.1", "", "HTTPS_REQUIRED"},
+		{"0.0.0.0:0", "http://secret.example", "", "INVALID_ORIGIN"},
+		{"0.0.0.0:0", "https://Clavis.Example:0443/", "https://clavis.example", ""},
+		{"[::]:0", "https://[2001:0db8::1]:00444", "https://[2001:db8::1]:444", ""},
+	} {
+		t.Run(tc.address+"/"+tc.publicURL, func(t *testing.T) {
+			input := map[string]string{
+				"CLAVIS_DATABASE_URL": "postgres://local@127.0.0.1/clavis",
+				"CLAVIS_HTTP_ADDR":    tc.address,
+				"CLAVIS_PUBLIC_URL":   tc.publicURL,
+			}
+			cfg, err := Load(input)
+			if tc.code != "" {
+				require.Equal(t, &Error{"CLAVIS_PUBLIC_URL", tc.code}, err)
+				require.NotContains(t, err.Error(), "secret")
+				_, err = (Config{PublicURL: tc.publicURL}).ResolvePublicOrigin(tc.address)
+				require.Equal(t, &Error{"CLAVIS_PUBLIC_URL", tc.code}, err)
+				return
+			}
+			require.NoError(t, err)
+			got, err := cfg.ResolvePublicOrigin(tc.address)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestEphemeralLoopbackOriginAfterBind(t *testing.T) {
+	for _, address := range []string{"127.0.0.1:0", "[::1]:0", "[::ffff:127.0.0.1]:0"} {
+		t.Run(address, func(t *testing.T) {
+			cfg, err := Load(map[string]string{
+				"CLAVIS_DATABASE_URL": "postgres://local@127.0.0.1/clavis",
+				"CLAVIS_HTTP_ADDR":    address,
+			})
+			require.NoError(t, err, "port zero must be accepted before binding")
+			_, err = cfg.ResolvePublicOrigin(address)
+			require.Error(t, err, "port zero cannot be published as an actual origin")
+			listener, err := net.Listen("tcp", cfg.HTTPAddr)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, listener.Close()) })
+			bound := listener.Addr().(*net.TCPAddr)
+			require.Positive(t, bound.Port)
+			got, err := cfg.ResolvePublicOrigin(bound.String())
+			require.NoError(t, err)
+			require.Equal(t, "http://"+bound.String(), got)
+		})
+	}
+	cfg := Config{}
+	got, err := cfg.ResolvePublicOrigin("[::ffff:127.0.0.1]:32123")
 	require.NoError(t, err)
 	require.Equal(t, "http://127.0.0.1:32123", got)
 }

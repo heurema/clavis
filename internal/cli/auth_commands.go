@@ -54,7 +54,7 @@ func storageFailure() Result {
 }
 
 func runAuth(ctx context.Context, operation string, command *urfave.Command, streams IO) Result {
-	origin, err := canonicalOrigin(command.String("server"))
+	origin, err := auth.CanonicalOrigin(command.String("server"))
 	timeout := command.Duration("timeout")
 	if err != nil || timeout <= 0 {
 		return failure("INVALID_ARGUMENT", "Use an HTTPS root origin (literal loopback HTTP is allowed) and a positive timeout", nil)

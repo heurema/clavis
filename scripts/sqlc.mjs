@@ -79,6 +79,7 @@ function validateConfig(root) {
       "out",
       "sql_package",
       "overrides",
+      "omit_unused_structs",
       "emit_json_tags",
       "emit_interface",
       "emit_empty_slices",
@@ -94,6 +95,11 @@ function validateConfig(root) {
     throw new Error(
       "Expected package sqlc, pgx/v5 and output internal/database/sqlc",
     )
+  if (
+    Object.hasOwn(go, "omit_unused_structs") &&
+    typeof go.omit_unused_structs !== "boolean"
+  )
+    throw new Error("Expected boolean Go generator option omit_unused_structs")
 }
 
 function files(directory, prefix = "") {

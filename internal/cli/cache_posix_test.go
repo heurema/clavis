@@ -121,7 +121,7 @@ func TestCacheRejectsUnsafeState(t *testing.T) {
 			case "corrupt":
 				require.NoError(t, os.WriteFile(path, []byte(`{`), 0600))
 			case "oversized":
-				require.NoError(t, os.WriteFile(path, make([]byte, maxResponseBytes+1), 0600))
+				require.NoError(t, os.WriteFile(path, make([]byte, auth.MaxResponseBody+1), 0600))
 			case "other-origin":
 				value.Origin = "https://other.example.test"
 				body, err = json.Marshal(value)

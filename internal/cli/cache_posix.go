@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/heurema/clavis/internal/auth"
 	"golang.org/x/sys/unix"
 )
 
@@ -189,10 +190,10 @@ func (c *credentialCache) read() (*cachedSession, error) {
 	if err := checkPrivate(fd, false, true); err != nil {
 		return nil, err
 	}
-	body, err := io.ReadAll(io.LimitReader(file, maxResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(file, auth.MaxResponseBody+1))
 	var value cachedSession
-	if err != nil || len(body) > maxResponseBytes || !strictJSON(body, &value) ||
-		value.Origin != c.origin || !validToken(value.Token) || !validIdentity(value.Identity) {
+	if err != nil || len(body) > auth.MaxResponseBody || !strictJSON(body, &value) ||
+		value.Origin != c.origin || !auth.ValidToken(value.Token) || !validIdentity(value.Identity) {
 		return nil, errors.New("invalid credential storage")
 	}
 	return &value, nil

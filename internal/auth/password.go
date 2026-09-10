@@ -29,10 +29,6 @@ const hashPrefix = "$clavis$1$argon2id$v=19$m=65536,t=3,p=1$"
 
 var hashSlots = make(chan struct{}, 2)
 
-type hashResult struct {
-	key []byte
-}
-
 func derive(ctx context.Context, password Secret, salt []byte) ([]byte, error) {
 	if ctx.Err() != nil {
 		return nil, &Error{Code: ServiceUnavailable}
@@ -42,10 +38,10 @@ func derive(ctx context.Context, password Secret, salt []byte) ([]byte, error) {
 	default:
 		return nil, &Error{Code: RateLimited, RetryAfter: time.Second}
 	}
-	result := make(chan hashResult, 1)
+	result := make(chan []byte, 1)
 	go func() {
 		defer func() { <-hashSlots }()
-		result <- hashResult{argon2.IDKey([]byte(password), salt, 3, 64*1024, 1, 32)}
+		result <- argon2.IDKey([]byte(password), salt, 3, 64*1024, 1, 32)
 	}()
 	select {
 	case <-ctx.Done():
@@ -54,7 +50,7 @@ func derive(ctx context.Context, password Secret, salt []byte) ([]byte, error) {
 		if ctx.Err() != nil {
 			return nil, &Error{Code: ServiceUnavailable}
 		}
-		return r.key, nil
+		return r, nil
 	}
 }
 

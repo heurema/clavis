@@ -21,7 +21,6 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/config"
-	"github.com/heurema/clavis/internal/platform"
 	"github.com/heurema/clavis/internal/web"
 )
 
@@ -39,7 +38,6 @@ type AuthViews struct {
 type authHTTP struct {
 	service  auth.Service
 	recorder auth.EventRecorder
-	checker  platform.Checker
 	origin   string
 	secure   bool
 	views    AuthViews
@@ -184,16 +182,11 @@ func (a *authHTTP) operation(next http.Handler) http.Handler {
 	})
 }
 
-func (a *authHTTP) ready(ctx context.Context) error {
-	if a.service == nil || a.checker == nil {
+// Service methods own readiness. The fixture-only composition has no service
+// and must reject protected requests without invoking one.
+func (a *authHTTP) requireService() error {
+	if a.service == nil {
 		return &auth.Error{Code: auth.ServiceUnavailable}
-	}
-	result := a.checker.Check(ctx)
-	if ctx.Err() != nil {
-		return &auth.Error{Code: auth.ServiceUnavailable}
-	}
-	if !result.Ready() {
-		return &auth.Error{Code: result.Response().Error.Code}
 	}
 	return nil
 }
@@ -385,7 +378,7 @@ func (a *authHTTP) loginJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	input, err := decodeLogin(r)
 	if err == nil {
-		err = a.ready(r.Context())
+		err = a.requireService()
 	}
 	if err != nil {
 		jsonFailure(w, err)
@@ -419,7 +412,7 @@ func (a *authHTTP) cliSession(r *http.Request) (auth.Session, error) {
 	if err != nil {
 		return auth.Session{}, err
 	}
-	if err = a.ready(r.Context()); err != nil {
+	if err = a.requireService(); err != nil {
 		return auth.Session{}, err
 	}
 	return a.authenticate(r, token, auth.CLI)
@@ -521,7 +514,7 @@ func (a *authHTTP) loginBrowser(w http.ResponseWriter, r *http.Request) {
 		a.loginFailure(w, r, "", &auth.Error{Code: auth.InvalidArgument})
 		return
 	}
-	if err := a.ready(r.Context()); err != nil {
+	if err := a.requireService(); err != nil {
 		a.loginFailure(w, r, values.Get("username"), err)
 		return
 	}
@@ -566,7 +559,7 @@ func (a *authHTTP) logoutBrowser(w http.ResponseWriter, r *http.Request) {
 		a.logoutResult(w, r, auth.LogoutOutcome(true, err))
 		return
 	}
-	err = a.ready(r.Context())
+	err = a.requireService()
 	if err == nil {
 		var session auth.Session
 		session, err = a.authenticate(r, token, auth.Browser)
@@ -600,7 +593,7 @@ func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
 	token, err := a.token(r)
 	var session auth.Session
 	if err == nil {
-		err = a.ready(r.Context())
+		err = a.requireService()
 	}
 	if err == nil {
 		session, err = a.authenticate(r, token, auth.Browser)
@@ -611,7 +604,7 @@ func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
 	a.adminResult(w, r, session, err)
 }
 
-func newAuthHTTP(origin string, checker platform.Checker, service auth.Service, views AuthViews) (*authHTTP, error) {
+func newAuthHTTP(origin string, service auth.Service, views AuthViews) (*authHTTP, error) {
 	canonical, err := config.CanonicalOrigin(origin)
 	if err != nil {
 		return nil, err
@@ -625,5 +618,5 @@ func newAuthHTTP(origin string, checker platform.Checker, service auth.Service, 
 	if views.Error == nil {
 		views.Error = web.AuthError
 	}
-	return &authHTTP{service: service, checker: checker, origin: canonical, secure: strings.HasPrefix(canonical, "https:"), views: views}, nil
+	return &authHTTP{service: service, origin: canonical, secure: strings.HasPrefix(canonical, "https:"), views: views}, nil
 }

@@ -42,7 +42,6 @@ func TestIconsEscapeDynamicClasses(t *testing.T) {
 		"refresh-cw":      icon.RefreshCw,
 		"server":          icon.Server,
 		"square-terminal": icon.SquareTerminal,
-		"loader-circle":   icon.LoaderCircle,
 	} {
 		t.Run(name, func(t *testing.T) {
 			var output bytes.Buffer
