@@ -36,6 +36,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
+    "@tailwindcss/cli": "4.3.3",
     "@tailwindcss/vite": "4.3.3",
     "@tanstack/router-plugin": "1.168.36",
     "@testing-library/dom": "10.4.1",
@@ -46,6 +47,7 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",
+    "htmx.org": "4.0.0",
     "jsdom": "30.0.1",
     "oxlint": "1.82.0",
     "oxlint-tsgolint": "7.0.2001",

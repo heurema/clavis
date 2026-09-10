@@ -1,3 +1,6 @@
+allowBuilds:
+  # Use the platform packages; do not run the native source-build fallback.
+  "@parcel/watcher": false
 minimumReleaseAgeExclude:
   - "@types/node@26.5.1"
   - "@types/react-dom@19.3.0"

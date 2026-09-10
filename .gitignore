@@ -3,6 +3,8 @@
 !.env.example
 .tools/
 bin/
+internal/web/assets/
+internal/web/.assets-*/
 # Local notes, reviews, validation results, and scratch files.
 .local/
 reports/
