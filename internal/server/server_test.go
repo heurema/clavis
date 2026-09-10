@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/heurema/clavis/internal/config"
+	"github.com/heurema/clavis/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,6 +26,12 @@ type fakeDatabase struct {
 }
 
 func (d *fakeDatabase) Ping(ctx context.Context) error { return d.ping(ctx) }
+func (d *fakeDatabase) Check(ctx context.Context) platform.Readiness {
+	if d.Ping(ctx) == nil {
+		return platform.Readiness{State: platform.Ready}
+	}
+	return platform.Readiness{State: platform.DependencyUnavailable}
+}
 func (d *fakeDatabase) Close() {
 	if d.closed != nil {
 		close(d.closed)

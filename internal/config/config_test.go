@@ -54,3 +54,57 @@ func TestLoad(t *testing.T) {
 		assert.Equal(t, expected, cfg.Level())
 	}
 }
+
+func TestAuthenticationConfigurationAndLazyBootstrap(t *testing.T) {
+	base := map[string]string{"CLAVIS_DATABASE_URL": "postgres://local@127.0.0.1/clavis",
+		"CLAVIS_BOOTSTRAP_USERNAME":      "OBSOLETE INVALID USER",
+		"CLAVIS_BOOTSTRAP_PASSWORD_FILE": "/obsolete/unreadable"}
+	cfg, err := Load(base)
+	require.NoError(t, err)
+	require.Equal(t, 8*time.Hour, cfg.SessionTTL)
+	require.Equal(t, base["CLAVIS_BOOTSTRAP_USERNAME"], cfg.BootstrapUsername)
+	for _, value := range []string{"4m", "25h", "secret", "0"} {
+		base["CLAVIS_SESSION_TTL"] = value
+		_, err := Load(base)
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "secret")
+	}
+	delete(base, "CLAVIS_SESSION_TTL")
+	for _, value := range []string{"5m", "24h"} {
+		base["CLAVIS_SESSION_TTL"] = value
+		_, err := Load(base)
+		require.NoError(t, err)
+	}
+	delete(base, "CLAVIS_SESSION_TTL")
+	base["CLAVIS_HTTP_ADDR"] = "0.0.0.0:8080"
+	_, err = Load(base)
+	require.Error(t, err)
+	base["CLAVIS_PUBLIC_URL"] = "http://127.0.0.1:8080"
+	_, err = Load(base)
+	require.Error(t, err)
+	base["CLAVIS_PUBLIC_URL"] = "https://clavis.example"
+	_, err = Load(base)
+	require.NoError(t, err)
+}
+
+func TestCanonicalOriginAndBoundPort(t *testing.T) {
+	for input, want := range map[string]string{
+		"https://Clavis.Example:443/": "https://clavis.example",
+		"http://127.0.0.1:80":         "http://127.0.0.1",
+		"http://[::1]:1234":           "http://[::1]:1234",
+		"https://[2001:0db8::1]:443":  "https://[2001:db8::1]",
+	} {
+		got, err := CanonicalOrigin(input)
+		require.NoError(t, err)
+		require.Equal(t, want, got)
+	}
+	for _, input := range []string{"http://localhost", "http://clavis.example", "https://user:secret@clavis.example", "https://clavis.example/path", "https://clavis.example?secret", "https://clavis.example#secret", "https://clavis.example:99999", "https://[fe80::1%25en0]"} {
+		_, err := CanonicalOrigin(input)
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "secret")
+	}
+	cfg := Config{HTTPAddr: "127.0.0.1:0"}
+	got, err := cfg.ResolvePublicOrigin("127.0.0.1:32123")
+	require.NoError(t, err)
+	require.Equal(t, "http://127.0.0.1:32123", got)
+}

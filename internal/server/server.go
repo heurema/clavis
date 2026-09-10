@@ -13,9 +13,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/config"
+	store "github.com/heurema/clavis/internal/database"
 	"github.com/heurema/clavis/internal/platform"
 	"github.com/heurema/clavis/internal/web"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Database interface {
@@ -24,19 +27,38 @@ type Database interface {
 }
 
 func Handler(checkTimeout time.Duration, database Database, logger *slog.Logger) http.Handler {
-	// Preserve the existing runtime until the initialization service is wired.
-	return HandlerWithReadiness(checkTimeout, platform.CheckFunc(func(ctx context.Context) platform.Readiness {
-		state := platform.DependencyUnavailable
-		if databaseReady(ctx, checkTimeout, database) {
-			state = platform.Ready
-		}
-		return platform.Readiness{State: state}
+	if pool, ok := database.(*pgxpool.Pool); ok {
+		return HandlerWithReadiness(checkTimeout, store.NewInitializer(pool, "", ""), logger)
+	}
+	if checker, ok := database.(platform.Checker); ok {
+		return HandlerWithReadiness(checkTimeout, checker, logger)
+	}
+	return HandlerWithReadiness(checkTimeout, platform.CheckFunc(func(context.Context) platform.Readiness {
+		return platform.Readiness{State: platform.DependencyUnavailable}
 	}), logger)
 }
 
 // HandlerWithReadiness is the injection boundary shared by real initialization
 // and isolated fixtures. Public documents never invoke the checker.
 func HandlerWithReadiness(checkTimeout time.Duration, checker platform.Checker, logger *slog.Logger) http.Handler {
+	adapter, _ := newAuthHTTP("http://127.0.0.1", checker, nil, AuthViews{})
+	return handler(checkTimeout, checker, logger, adapter)
+}
+
+// HandlerWithAuth is the explicit runtime/test composition boundary.
+func HandlerWithAuth(checkTimeout time.Duration, checker platform.Checker, service auth.Service, recorder auth.EventRecorder, origin string, views AuthViews, logger *slog.Logger) (http.Handler, error) {
+	if service == nil || recorder == nil || checker == nil {
+		return nil, &auth.Error{Code: auth.InvalidArgument}
+	}
+	adapter, err := newAuthHTTP(origin, checker, service, views)
+	if err != nil {
+		return nil, err
+	}
+	adapter.recorder = recorder
+	return handler(checkTimeout, checker, logger, adapter), nil
+}
+
+func handler(checkTimeout time.Duration, checker platform.Checker, logger *slog.Logger, adapter *authHTTP) http.Handler {
 	check := func(ctx context.Context) platform.Readiness {
 		ctx, cancel := context.WithTimeout(ctx, checkTimeout)
 		defer cancel()
@@ -88,13 +110,8 @@ func HandlerWithReadiness(checkTimeout time.Duration, checker platform.Checker, 
 	})
 	router.Get("/assets/*", web.ServeAsset)
 	router.Head("/assets/*", web.ServeAsset)
+	adapter.mount(router)
 	return router
-}
-
-func databaseReady(ctx context.Context, timeout time.Duration, database Database) bool {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	return database.Ping(ctx) == nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
@@ -110,11 +127,39 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 func Serve(ctx context.Context, listener net.Listener, cfg config.Config, database Database, logger *slog.Logger) error {
 	requests, cancelRequests := context.WithCancel(context.Background())
 	defer cancelRequests()
+	origin, err := cfg.ResolvePublicOrigin(listener.Addr().String())
+	if err != nil {
+		_ = listener.Close()
+		database.Close()
+		return err
+	}
+	workerCtx, cancelWorker := context.WithCancel(ctx)
+	defer cancelWorker()
+	workerDone := make(chan struct{})
+	httpHandler := Handler(cfg.DBCheckTimeout, database, logger)
+	if pool, ok := database.(*pgxpool.Pool); ok {
+		initializer := store.NewInitializer(pool, cfg.BootstrapUsername, cfg.BootstrapPasswordFile)
+		service, err := store.NewLocalAuth(pool, initializer, cfg.SessionTTL)
+		if err != nil {
+			_ = listener.Close()
+			database.Close()
+			return err
+		}
+		httpHandler, err = HandlerWithAuth(cfg.DBCheckTimeout, initializer, service, service, origin, AuthViews{}, logger)
+		if err != nil {
+			_ = listener.Close()
+			database.Close()
+			return err
+		}
+		go func() { defer close(workerDone); initializer.Run(workerCtx) }()
+	} else {
+		close(workerDone)
+	}
 	server := &http.Server{
-		Handler:           Handler(cfg.DBCheckTimeout, database, logger),
+		Handler:           httpHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      cfg.DBCheckTimeout + 5*time.Second,
+		WriteTimeout:      max(cfg.DBCheckTimeout, auth.OperationTimeout) + 5*time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    16 << 10,
 		BaseContext:       func(net.Listener) context.Context { return requests },
@@ -131,10 +176,16 @@ func Serve(ctx context.Context, listener net.Listener, cfg config.Config, databa
 	logger.Info("server_stopping")
 	grace, cancelGrace := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancelGrace()
+	cancelWorker()
 	if err := server.Shutdown(grace); err != nil {
 		logger.Warn("shutdown_deadline", "code", "SHUTDOWN_TIMEOUT")
 		cancelRequests()
 		_ = server.Close()
+	}
+	select {
+	case <-workerDone:
+	case <-grace.Done():
+		logger.Warn("initialization_close_deadline", "code", "SHUTDOWN_TIMEOUT")
 	}
 	closed := make(chan struct{})
 	go func() { database.Close(); close(closed) }()

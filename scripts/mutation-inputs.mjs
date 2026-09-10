@@ -6,6 +6,7 @@ import {
   readdirSync,
 } from "node:fs"
 import { join, relative } from "node:path"
+import { copySqlInputs } from "./sqlc.mjs"
 
 export function goSources(root) {
   function walk(directory) {
@@ -25,8 +26,10 @@ export function goSources(root) {
 export function isMutationTarget(root, path) {
   const name = relative(root, path)
   return (
-    /^internal\/(config|cli|server|web)\//.test(name) &&
+    /^internal\/(auth|database|platform|config|cli|server|web)\//.test(name) &&
     !/^internal\/web\/(ui|testdata)\//.test(name) &&
+    !/(^|\/)testdata\//.test(name) &&
+    !name.startsWith("internal/auth/authtest/") &&
     !/(_test|_gen|_templ|\.gen)\.go$/.test(name) &&
     !/(^|\/)(generated|sqlc)\//.test(name) &&
     !/^\/\/ Code generated .* DO NOT EDIT\.$/m.test(readFileSync(path, "utf8"))
@@ -34,7 +37,7 @@ export function isMutationTarget(root, path) {
 }
 
 export function copyMutationInputs(root, workspace, sources) {
-  // Mutate only Go, but compile against the same required embedded assets.
+  // Mutate only Go, but compile against the same embedded assets and schema.
   // Never copy .env, tools, reports or the developer's working directory.
   for (const path of [
     "go.mod",
@@ -43,6 +46,7 @@ export function copyMutationInputs(root, workspace, sources) {
     "internal/web/assets",
   ])
     cpSync(join(root, path), join(workspace, path), { recursive: true })
+  copySqlInputs(root, workspace)
   for (const path of sources) {
     const destination = join(workspace, relative(root, path))
     mkdirSync(join(destination, ".."), { recursive: true })

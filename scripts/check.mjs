@@ -11,11 +11,15 @@ function run(label, command, args) {
 }
 run("Toolchain", process.execPath, ["scripts/check-tools.mjs"])
 console.log("\n[check] Go formatting")
-const sources = ["cmd", "internal"].flatMap((directory) =>
-  readdirSync(directory, { recursive: true })
-    .filter((file) => file.endsWith(".go") && !file.endsWith("_templ.go"))
-    .map((file) => `${directory}/${file}`),
+const sources = ["cmd", "internal", "scripts/check-sql-boundaries"].flatMap(
+  (directory) =>
+    readdirSync(directory, { recursive: true })
+      .filter((file) => file.endsWith(".go") && !file.endsWith("_templ.go"))
+      .map((file) => `${directory}/${file}`),
 )
+run("Database generated source and persistence boundary", "make", [
+  "check-sql-boundaries",
+])
 const format = spawnSync("gofmt", ["-l", ...sources], {
   encoding: "utf8",
 })

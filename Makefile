@@ -6,7 +6,7 @@ export PLAYWRIGHT_BROWSERS_PATH := $(CURDIR)/.tools/playwright
 NODE := /usr/bin/env node
 PNPM := /usr/bin/env pnpm
 
-.PHONY: setup dev dev-db dev-api build build-server build-cli build-web-assets generate-web check-web-generated check lint-go format test-web test-mutation smoke down reset-db
+.PHONY: setup dev dev-db dev-api build build-server build-cli build-web-assets generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check lint-go format test-web test-mutation smoke down reset-db
 
 setup:
 	@$(NODE) scripts/check-tools.mjs
@@ -14,6 +14,7 @@ setup:
 	$(PNPM) --dir web install --frozen-lockfile
 	$(NODE) scripts/golangci-lint.mjs install
 	$(NODE) scripts/templ.mjs install
+	$(MAKE) install-sqlc
 	$(PNPM) --dir web exec playwright install chromium
 	$(MAKE) build-web-assets
 
@@ -25,7 +26,7 @@ dev: build-server
 
 dev-api: dev
 
-build-server: check-web-generated
+build-server: check-db-generated check-web-generated
 	$(MAKE) build-web-assets
 	@mkdir -p bin
 	@set -eu; output=$$(mktemp -d bin/.server-XXXXXX); \
@@ -54,6 +55,18 @@ build-web-assets:
 check-web-generated:
 	$(NODE) scripts/check-web-generated.mjs
 
+install-sqlc:
+	$(NODE) scripts/sqlc.mjs install
+
+generate-db:
+	$(NODE) scripts/sqlc.mjs generate
+
+check-db-generated:
+	$(NODE) scripts/sqlc.mjs check
+
+check-sql-boundaries: check-db-generated
+	go run ./scripts/check-sql-boundaries
+
 check:
 	$(NODE) scripts/check.mjs
 
@@ -61,12 +74,12 @@ lint-go:
 	$(NODE) scripts/golangci-lint.mjs run --config .golangci.yml ./...
 
 format:
-	find cmd internal -name '*.go' ! -name '*_templ.go' -exec gofmt -w {} +
+	find cmd internal scripts/check-sql-boundaries -name '*.go' ! -name '*_templ.go' ! -path 'internal/database/sqlc/*' -exec gofmt -w {} +
 	$(NODE) scripts/templ.mjs fmt internal/web
 	$(MAKE) generate-web
 	$(PNPM) --dir web format
 
-test-mutation: check-web-generated
+test-mutation: check-db-generated check-web-generated
 	$(MAKE) build-web-assets
 	$(NODE) scripts/mutation.mjs
 

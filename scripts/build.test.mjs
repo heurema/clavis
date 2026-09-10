@@ -39,7 +39,13 @@ function fixture(t, webTools = true) {
         !source.includes("/.assets-"),
     })
   }
-  for (const path of ["Makefile", "go.mod", "go.sum", "web/package.json"])
+  for (const path of [
+    "Makefile",
+    "go.mod",
+    "go.sum",
+    ...(webTools ? [".sqlc-version", "sqlc.yaml"] : []),
+    "web/package.json",
+  ])
     copyFileSync(join(root, path), join(directory, path))
   if (webTools) {
     symlinkSync(join(root, ".tools"), join(directory, ".tools"), "dir")
@@ -319,6 +325,12 @@ test("server builds from clean assets and runs as a copied executable", async (t
 
   const binary = digest(join(directory, "bin/server"))
   for (const [name, path, damaged] of [
+    ["missing database generated source", "internal/database/sqlc/db.go", null],
+    [
+      "stale database generated source",
+      "internal/database/sqlc/db.go",
+      `${readFileSync(join(directory, "internal/database/sqlc/db.go"), "utf8")}\n// stale\n`,
+    ],
     ["missing generated source", "internal/web/page_templ.go", null],
     [
       "stale generated source",
@@ -359,10 +371,17 @@ test("server builds from clean assets and runs as a copied executable", async (t
   }
 })
 
-test("CLI builds without web sources or tools and publishes only successful builds", (t) => {
+test("CLI builds without web or SQL sources or tools and publishes only successful builds", (t) => {
   const directory = fixture(t, false)
-  for (const path of ["web", "internal/web", "scripts"])
-    rmSync(join(directory, path), { recursive: true })
+  for (const path of [
+    "web",
+    "internal/web",
+    "internal/database",
+    "sqlc.yaml",
+    ".sqlc-version",
+    "scripts",
+  ])
+    rmSync(join(directory, path), { recursive: true, force: true })
   execute(directory, "make", ["build-cli", "NODE=false", "PNPM=false"])
   execute(directory, join(directory, "bin/clavis"), ["--help"])
   const binary = digest(join(directory, "bin/clavis"))

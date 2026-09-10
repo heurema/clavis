@@ -1,17 +1,14 @@
 package web
 
 import (
-	"regexp"
 	"strconv"
 
 	"github.com/heurema/clavis/internal/auth"
 )
 
 // Retain only canonical, bounded usernames, never arbitrary submitted text.
-var displayUsername = regexp.MustCompile(`^[a-z][a-z0-9._-]{2,63}$`)
-
 func retainedUsername(value string) string {
-	if len(value) <= 64 && displayUsername.MatchString(value) {
+	if auth.ValidUsername(value) {
 		return value
 	}
 	return ""

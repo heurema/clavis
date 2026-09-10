@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs"
 import { execFileSync } from "node:child_process"
+import { fileURLToPath } from "node:url"
+import { pinnedVersion } from "./sqlc.mjs"
 
 const expectedNode = readFileSync(
   new URL("../.node-version", import.meta.url),
@@ -14,6 +16,10 @@ const manifest = JSON.parse(
 )
 const expectedPnpm = manifest.packageManager.split("@")[1]
 try {
+  // Setup runs before tool installation; validate the pin, not binary presence.
+  console.log(
+    `sqlc pin ${pinnedVersion(fileURLToPath(new URL("../", import.meta.url)))}`,
+  )
   for (const [name, actual, expected] of [
     ["Node.js", process.versions.node, expectedNode],
     [
