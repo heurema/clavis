@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.tools/
+bin/
+# Local notes, reviews, validation results, and scratch files.
+.local/
+reports/
+web/node_modules/
+web/dist/
+web/src/routeTree.gen.ts
+web/.tanstack/
+web/test-results/
+web/playwright-report/
+*.tsbuildinfo
+.DS_Store

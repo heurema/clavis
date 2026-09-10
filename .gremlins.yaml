@@ -1,0 +1,17 @@
+silent: false
+unleash:
+  integration: false
+  dry-run: false
+  workers: 2
+  # v0.6.0 emits an invalid single argument "-cpu 1" for nonzero values.
+  # The wrapper sets GOMAXPROCS=1 instead.
+  test-cpu: 0
+  timeout-coefficient: 3
+  threshold:
+    efficacy: 0
+    mutant-coverage: 0
+  exclude-files:
+    - '(^|/)cmd/'
+    - '(^|/)internal/(buildinfo|database)/'
+    - '(_test|_gen|\.gen)\.go$'
+    - '(^|/)(generated|sqlc)/'

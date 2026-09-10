@@ -1,0 +1,11 @@
+version: "2"
+
+run:
+  timeout: 3m
+  concurrency: 2
+  modules-download-mode: readonly
+
+linters:
+  default: standard
+  exclusions:
+    generated: strict

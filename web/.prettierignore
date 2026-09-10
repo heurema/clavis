@@ -1,0 +1,8 @@
+node_modules
+dist
+src/routeTree.gen.ts
+.tanstack
+pnpm-lock.yaml
+test-results
+playwright-report
+public/licenses

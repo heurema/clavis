@@ -1,0 +1,196 @@
+## Purpose
+
+Give contributors a reproducible starting point for building the platform, with runnable server, CLI, and web applications and clear evidence that their local environment works.
+
+## ADDED Requirements
+
+### Requirement: Documented and reproducible project setup
+
+The project SHALL document its selected technologies, required runtime and package-manager versions, environment setup, build commands, and validation commands. The initial baseline SHALL select the latest stable releases available when established, record the verification date and exact versions, and verify the assembled toolchain before declaring bootstrap complete. Dependency installation SHALL use committed dependency metadata and lockfiles and SHALL reject incompatible frozen installations rather than silently changing dependencies.
+
+The README SHALL remain concise and cover the project's purpose, current scope, prerequisites, quick start, essential commands, and a CLI usage example. Detailed technical decisions SHALL remain in the project specifications and design. Local reviews, validation results, generated reports, and scratch files SHALL remain outside maintained project documentation and SHALL be excluded from version control.
+
+#### Scenario: A contributor starts from a clean checkout
+- **WHEN** a contributor with the documented prerequisites follows the setup instructions
+- **THEN** the contributor can install dependencies, start the local database and applications, and run the documented checks without undocumented configuration or access to an external company system
+
+#### Scenario: Dependency metadata does not match the lockfile
+- **WHEN** a contributor runs the documented frozen frontend installation with inconsistent package metadata and lockfile
+- **THEN** installation exits unsuccessfully and identifies the inconsistency without rewriting the lockfile
+
+#### Scenario: Establish and reproduce the version baseline
+- **WHEN** the initial toolchain and dependencies are selected
+- **THEN** the documented baseline identifies the selected stable versions and verification date
+- **AND** subsequent routine setup reproduces those committed versions without automatically upgrading to newer releases
+
+#### Scenario: Keep local execution records out of the checkout
+- **WHEN** a contributor creates review notes, validation results, generated reports, or scratch files
+- **THEN** those artifacts are stored in designated Git-ignored local directories and are not included in maintained project documentation or tracked repository files
+
+### Requirement: Independently buildable application entry points
+
+The project SHALL provide separately buildable server and CLI executables and a web application build. The CLI executable SHALL be named `clavis`. The CLI's local help and version operations SHALL work without a running server, database, or frontend runtime.
+
+#### Scenario: Build the application outputs
+- **WHEN** a contributor runs the documented build command with dependencies installed
+- **THEN** separate server and `clavis` executables and a web asset bundle are produced
+
+#### Scenario: Use local CLI commands offline
+- **WHEN** the contributor invokes CLI help or version while the server and database are stopped
+- **THEN** the command succeeds without a network request
+
+### Requirement: Predictable configuration failures
+
+The server SHALL validate required configuration before accepting requests. Missing or malformed required configuration SHALL cause a nonzero exit with a useful error category, without revealing credential values. Temporary database unavailability with otherwise valid configuration SHALL be represented through readiness rather than preventing the liveness endpoint from starting.
+
+#### Scenario: Required database configuration is missing
+- **WHEN** the server starts without its required database connection setting
+- **THEN** it exits unsuccessfully and identifies the missing setting without accepting requests
+
+#### Scenario: The configured database is temporarily unavailable
+- **WHEN** the server starts with syntactically valid configuration while the database cannot be reached
+- **THEN** the server serves liveness requests and reports that it is not ready
+
+### Requirement: Independent liveness and readiness
+
+The server SHALL expose `GET /health/live` and `GET /health/ready`. Liveness SHALL return HTTP 200 with `{"status":"alive"}` while the process can serve requests. Readiness SHALL complete within a documented timeout and return HTTP 200 with `{"status":"ready"}` only when the configured platform database is reachable. Database failure or timeout SHALL return HTTP 503 with status `not_ready` and error code `DEPENDENCY_UNAVAILABLE`. Responses SHALL exclude connection strings and internal error details.
+
+#### Scenario: The database is available
+- **WHEN** a client requests readiness and the configured database responds within the timeout
+- **THEN** the server returns HTTP 200 with status `ready`
+
+#### Scenario: The database stops responding
+- **WHEN** a client requests readiness while the database is unavailable or exceeds the timeout
+- **THEN** readiness returns HTTP 503 with status `not_ready` and code `DEPENDENCY_UNAVAILABLE` within the documented bound
+- **AND** liveness continues to return HTTP 200 while the process can serve requests
+
+#### Scenario: The database recovers
+- **WHEN** the database becomes reachable after a readiness failure
+- **THEN** a subsequent readiness request succeeds without restarting the server
+
+### Requirement: Bounded graceful shutdown
+
+The server SHALL stop accepting new work, allow in-flight requests to finish within a documented grace period, and release its resources when it receives a termination signal. Shutdown SHALL complete within that bound even when a dependency is unavailable.
+
+#### Scenario: Stop the server with an in-flight request
+- **WHEN** a termination signal arrives while a request is in progress
+- **THEN** the server stops accepting new work and either completes the request within the grace period or cancels it when the grace period expires
+- **AND** the process terminates within the documented bound
+
+### Requirement: Structured CLI diagnostics
+
+The CLI SHALL provide a `doctor` operation that checks server readiness using a configurable server URL and timeout. The default output SHALL be exactly one JSON document on stdout, using the envelope `schemaVersion`, `ok`, `data`, and `error`. Version 1 results SHALL distinguish a ready system, an unavailable database, an unreachable or unresponsive server, an invalid server response, and invalid arguments. Diagnostic text SHALL NOT corrupt JSON output.
+
+The CLI SHALL exit with code 0 for success, code 1 for a failed diagnostic operation, and code 2 for invalid arguments or configuration. The doctor data SHALL include `api` and `database` states; an unchecked database SHALL be `unknown`.
+
+#### Scenario: Diagnose a working environment
+- **WHEN** the CLI runs `doctor` against a ready server
+- **THEN** it exits with code 0 and returns `schemaVersion: 1`, `ok: true`, `data.api: "reachable"`, `data.database: "ready"`, and `error: null`
+
+#### Scenario: Diagnose an unavailable database
+- **WHEN** the server returns the documented database readiness failure
+- **THEN** the CLI exits with code 1 and returns `ok: false`, `data.api: "reachable"`, `data.database: "unavailable"`, and error code `DEPENDENCY_UNAVAILABLE`
+
+#### Scenario: Diagnose an unreachable or timed-out server
+- **WHEN** the server connection fails or the configured request deadline expires
+- **THEN** the CLI exits with code 1 within the configured timeout, returns error code `SERVER_UNREACHABLE` or `TIMEOUT` as appropriate, and reports the database state as `unknown`
+
+#### Scenario: Reject an unexpected server response
+- **WHEN** the server returns an undocumented status/body combination or malformed JSON
+- **THEN** the CLI exits with code 1 and returns error code `INVALID_RESPONSE` without claiming database readiness or printing the response body
+
+#### Scenario: Reject invalid arguments
+- **WHEN** the CLI receives an unknown command, an invalid server URL, an unsupported output format, or an invalid timeout
+- **THEN** it exits with code 2 and returns error code `INVALID_ARGUMENT` in a single JSON document using the default format
+
+### Requirement: Web foundation displays actual readiness
+
+The web application SHALL provide a consistent application shell with a setup/status page. The page SHALL retrieve readiness from the configured server and represent loading, ready, dependency unavailable, and server unavailable states separately. It SHALL support retrying a failed check without reloading the application and SHALL NOT present placeholder data as an operational integration.
+
+#### Scenario: Load the page with a ready server
+- **WHEN** a user opens the setup/status page while the server and database are available
+- **THEN** the page transitions from loading to a ready state using the server response
+
+#### Scenario: Distinguish a dependency failure from a server failure
+- **WHEN** the server returns its documented dependency failure or cannot be reached
+- **THEN** the page explains the corresponding state and offers a retry action
+
+#### Scenario: Recover through the retry action
+- **WHEN** the user retries after the failed dependency or server has recovered
+- **THEN** the page updates to ready without a browser reload
+
+### Requirement: Usable visual foundation
+
+The web shell SHALL use a consistent set of shared controls, support light and dark appearance, and expose keyboard focus and accessible names for its interactive controls. Status information SHALL remain understandable without relying on color alone. Appearance preference SHALL persist across page reloads in the same browser.
+
+#### Scenario: Operate the shell with a keyboard
+- **WHEN** a user navigates the appearance and retry controls using the keyboard
+- **THEN** focus is visible, the controls have accessible names, and their actions can be completed without a pointer
+
+#### Scenario: Retain the selected appearance
+- **WHEN** a user selects light or dark appearance and reloads the page
+- **THEN** the application restores that preference and status labels remain readable
+
+### Requirement: Local infrastructure isolation
+
+The documented local setup SHALL run a dedicated platform database and bind published development services to loopback by default. Stopping local database infrastructure SHALL preserve its data unless the contributor explicitly invokes a documented reset operation. Setup and checks SHALL NOT require production credentials, Google, an external identity provider, or an AI model account.
+
+#### Scenario: Restart the local database
+- **WHEN** a contributor stops and restarts local database infrastructure without invoking reset
+- **THEN** the existing development database volume is reused
+
+#### Scenario: Inspect the default local configuration
+- **WHEN** a contributor uses the documented example configuration
+- **THEN** the server, web development server, and published database port listen only on loopback interfaces
+
+### Requirement: Operational output protects configuration
+
+Server operational logs SHALL be structured and SHALL distinguish service startup, shutdown, and request outcome. Logs and diagnostic responses SHALL NOT include database credentials, connection strings, request bodies, arbitrary query parameters, or raw dependency responses. Unauthenticated bootstrap endpoints SHALL expose only readiness information and SHALL NOT provide access to business data or administration.
+
+#### Scenario: A dependency error contains a credential value
+- **WHEN** a database or configuration failure internally includes a credential or connection string
+- **THEN** the emitted logs and public diagnostic output include only an allowed error category and safe message
+
+#### Scenario: A caller supplies extra data to a health request
+- **WHEN** a request to a health endpoint includes a sensitive query parameter or body
+- **THEN** the server does not write that value to its logs
+
+### Requirement: Repeatable quality and smoke checks
+
+The project SHALL provide documented non-interactive commands for formatting checks, static analysis, tests, builds, and an end-to-end bootstrap smoke check. A failing check SHALL return a nonzero exit status. The smoke check SHALL exercise the real local server and database, verify CLI diagnostics and browser readiness, and clean up only the temporary resources it creates.
+
+#### Scenario: Validate the project from a clean installation
+- **WHEN** a contributor runs the quality and smoke commands with the documented prerequisites
+- **THEN** the checks verify the application builds and that the CLI and browser can observe the real server/database readiness
+
+#### Scenario: A required check fails
+- **WHEN** a test, static check, build, or smoke assertion fails
+- **THEN** the corresponding command exits unsuccessfully and identifies the failing stage
+
+#### Scenario: Smoke cleanup leaves developer resources intact
+- **WHEN** the smoke check completes or fails
+- **THEN** it terminates its own processes and temporary database resources without removing the contributor's normal development database volume
+
+### Requirement: Focused mutation testing
+
+The project SHALL provide a documented, non-interactive mutation-testing command separate from ordinary quality and smoke checks. The command SHALL test selected handwritten backend behavior using the existing Go tests, exclude generated code and test files from mutation targets, and produce a machine-readable report that distinguishes detected, surviving, uncovered, timed-out, and non-viable mutations. The initial bootstrap SHALL report findings without imposing a numerical mutation-score threshold.
+
+The command SHALL fail with a nonzero exit status if the baseline tests fail or the tool cannot complete the analysis. A run with no eligible mutations SHALL explicitly report that state without claiming test effectiveness. The command SHALL use documented resource bounds and leave application source unchanged after completion or failure.
+
+#### Scenario: Evaluate tests for selected backend logic
+- **WHEN** a contributor runs mutation testing with passing baseline tests and eligible mutations in the configured scope
+- **THEN** the command produces a machine-readable report identifying each mutation's location and outcome
+- **AND** surviving mutations remain visible even though the initial reporting mode does not enforce a numerical score threshold
+
+#### Scenario: Exclude generated and test code
+- **WHEN** generated query code or test files exist alongside the selected application logic
+- **THEN** the command does not mutate those files or include them as mutation targets in its score
+
+#### Scenario: Detect an invalid or incomplete run
+- **WHEN** baseline tests fail, the tool is incompatible with the selected runtime, or the overall analysis cannot complete within its configured bound
+- **THEN** the command exits unsuccessfully with a useful diagnostic and does not present a partial or previous report as a successful current run
+
+#### Scenario: Preserve source and report an empty scope
+- **WHEN** a mutation run completes or fails, including a run with no eligible mutations
+- **THEN** application source retains its original contents
+- **AND** a run with no eligible mutations explicitly reports that state without claiming a successful mutation score
