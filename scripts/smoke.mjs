@@ -25,6 +25,8 @@ const children = new Set()
 const deadline = Date.now() + 180_000
 const summary = {
   project,
+  scope: "api-cli",
+  browser: "pending embedded UI implementation",
   status: "running",
   startedAt: new Date().toISOString(),
 }
@@ -159,6 +161,9 @@ for (const signal of ["SIGINT", "SIGTERM"])
 
 try {
   console.log(`[smoke] Isolated project ${project}; 180 second bound`)
+  console.log(
+    "[smoke] API/CLI coverage only; embedded browser verification is pending",
+  )
   before = await snapshot()
   // Docker can reassign a published port of zero when the database restarts.
   env.CLAVIS_DB_PORT = String(await freePort())
@@ -197,40 +202,50 @@ try {
   assert.equal(doctor.schemaVersion, 1)
   assert.equal(doctor.ok, true)
   assert.equal(doctor.data.database, "ready")
-  const webPort = await freePort()
-  const webURL = `http://127.0.0.1:${webPort}`
-  start(
-    process.execPath,
-    [
-      join(root, "web/node_modules/vite/bin/vite.js"),
-      "preview",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      String(webPort),
-      "--strictPort",
-    ],
-    "web",
-    { cwd: join(root, "web"), env: { ...env, CLAVIS_API_PROXY: apiURL } },
-  )
-  await waitHTTP(webURL, 200)
   if (process.env.CLAVIS_SMOKE_FAIL === "after-start")
     throw new Error("Injected smoke failure after resources started")
-  const browserEnv = {
-    ...env,
-    CLAVIS_SMOKE_PROJECT: project,
-    CLAVIS_SMOKE_COMPOSE: join(root, "compose.yaml"),
-    CLAVIS_SMOKE_API_URL: apiURL,
-    CLAVIS_SMOKE_WEB_URL: webURL,
-    CLAVIS_SMOKE_REPORTS: reports,
-    CLAVIS_SMOKE_CLI: join(root, "bin/clavis"),
-  }
-  await execute("pnpm", ["--dir", "web", "test:browser"], "browser", {
-    env: { ...browserEnv, CLAVIS_SMOKE_PHASE: "recovery" },
-  })
-  console.log(
-    "[smoke] Real API, CLI, browser, database outage/recovery and appearance passed",
+
+  await execute("docker", [...compose, "stop", "db"], "database-stop")
+  await waitHTTP(`${apiURL}/health/live`, 200)
+  await waitHTTP(`${apiURL}/health/ready`, 503)
+  const databaseUnavailable = JSON.parse(
+    await execute(
+      join(root, "bin/clavis"),
+      ["doctor", "--server", apiURL],
+      "doctor-database-unavailable",
+      {},
+      1,
+    ),
   )
+  assert.equal(databaseUnavailable.ok, false)
+  assert.deepEqual(databaseUnavailable.data, {
+    api: "reachable",
+    database: "unavailable",
+  })
+  await execute(
+    "docker",
+    [...compose, "up", "-d", "--wait", "--wait-timeout", "45"],
+    "database-restart",
+  )
+  assert.equal(
+    await execute(
+      "docker",
+      [...compose, "port", "db", "5432"],
+      "database-restarted-port",
+    ),
+    binding,
+  )
+  await waitHTTP(`${apiURL}/health/ready`, 200)
+  const recovered = JSON.parse(
+    await execute(
+      join(root, "bin/clavis"),
+      ["doctor", "--server", apiURL],
+      "doctor-recovered",
+    ),
+  )
+  assert.equal(recovered.ok, true)
+  assert.equal(recovered.data.database, "ready")
+  console.log("[smoke] Real API, CLI and database outage/recovery passed")
   await stop(api)
   const unavailable = JSON.parse(
     await execute(
@@ -242,12 +257,6 @@ try {
     ),
   )
   assert.equal(unavailable.data.api, "unreachable")
-  await execute(
-    "pnpm",
-    ["--dir", "web", "test:browser"],
-    "browser-unreachable",
-    { env: { ...browserEnv, CLAVIS_SMOKE_PHASE: "unreachable" } },
-  )
   summary.status = "passed"
 } catch (error) {
   summary.status = "failed"
@@ -257,7 +266,7 @@ try {
 } finally {
   cleaning = true
   try {
-    for (const child of [...children]) await stop(child)
+    for (const child of children) await stop(child)
     if (composeStarted)
       await execute(
         "docker",

@@ -5,32 +5,36 @@ export PATH := $(CURDIR)/.tools/node/bin:$(CURDIR)/.tools/pnpm/node_modules/.bin
 NODE := /usr/bin/env node
 PNPM := /usr/bin/env pnpm
 
-.PHONY: setup setup-browser dev-db dev-api dev-web build build-server check lint-go format test-mutation smoke down reset-db
+.PHONY: setup dev dev-db dev-api build build-server build-cli generate-web check-web-generated check lint-go format test-mutation smoke down reset-db
 
 setup:
 	@$(NODE) scripts/check-tools.mjs
 	go mod download
 	$(PNPM) --dir web install --frozen-lockfile
 	$(NODE) scripts/golangci-lint.mjs install
-
-setup-browser:
-	$(PNPM) --dir web setup:browser
+	$(NODE) scripts/templ.mjs install
 
 dev-db:
 	$(NODE) scripts/dev.mjs db
 
-dev-api: build-server
+dev: build-server
 	$(NODE) scripts/dev.mjs api
 
-dev-web:
-	$(NODE) scripts/dev.mjs web
+dev-api: dev
 
 build-server:
 	go build -trimpath -o bin/server ./cmd/server
 
-build: build-server
+build-cli:
 	go build -trimpath -o bin/clavis ./cmd/clavis
-	$(PNPM) --dir web build
+
+build: build-server build-cli
+
+generate-web:
+	$(NODE) scripts/templ.mjs generate -path internal/web
+
+check-web-generated:
+	$(NODE) scripts/check-web-generated.mjs
 
 check:
 	$(NODE) scripts/check.mjs
@@ -39,7 +43,9 @@ lint-go:
 	$(NODE) scripts/golangci-lint.mjs run --config .golangci.yml ./...
 
 format:
-	gofmt -w cmd internal
+	find cmd internal -name '*.go' ! -name '*_templ.go' -exec gofmt -w {} +
+	$(NODE) scripts/templ.mjs fmt internal/web
+	$(MAKE) generate-web
 	$(PNPM) --dir web format
 
 test-mutation:

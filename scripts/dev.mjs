@@ -18,11 +18,10 @@ const actions = {
   down: ["docker", ...compose, "down"],
   reset: ["docker", ...compose, "down", "--volumes"],
   api: ["./bin/server"],
-  web: ["pnpm", "--dir", "web", "dev"],
 }
 const command = actions[process.argv[2]]
 if (!command) {
-  console.error("Choose db, api, web, down, or reset.")
+  console.error("Choose db, api, down, or reset.")
   process.exit(2)
 }
 if (process.argv[2] === "api" && !process.env.CLAVIS_DATABASE_URL) {

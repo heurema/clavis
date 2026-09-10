@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process"
+import { readdirSync } from "node:fs"
 
 function run(label, command, args) {
   console.log(`\n[check] ${label}`)
@@ -10,7 +11,12 @@ function run(label, command, args) {
 }
 run("Toolchain", process.execPath, ["scripts/check-tools.mjs"])
 console.log("\n[check] Go formatting")
-const format = spawnSync("gofmt", ["-l", "cmd", "internal"], {
+const sources = ["cmd", "internal"].flatMap((directory) =>
+  readdirSync(directory, { recursive: true })
+    .filter((file) => file.endsWith(".go") && !file.endsWith("_templ.go"))
+    .map((file) => `${directory}/${file}`),
+)
+const format = spawnSync("gofmt", ["-l", ...sources], {
   encoding: "utf8",
 })
 if (format.status !== 0 || format.stdout.trim()) {
@@ -18,15 +24,14 @@ if (format.status !== 0 || format.stdout.trim()) {
   console.error("[check] Run make format to format source explicitly.")
   process.exit(1)
 }
+run("Template formatting and generated source", "make", ["check-web-generated"])
+run("Template tooling tests", process.execPath, [
+  "--test",
+  "scripts/templ.test.mjs",
+])
 run("Go lint (including vet)", "make", ["lint-go"])
 run("Go tests", "go", ["test", "./..."])
-run("Frontend formatting", "pnpm", ["--dir", "web", "format:check"])
-run("Frontend type checking and route generation", "pnpm", [
-  "--dir",
-  "web",
-  "typecheck",
-])
-run("Frontend lint", "pnpm", ["--dir", "web", "lint"])
-run("Frontend tests", "pnpm", ["--dir", "web", "test"])
+run("JavaScript/tooling formatting", "pnpm", ["--dir", "web", "format:check"])
+run("JavaScript/tooling lint", "pnpm", ["--dir", "web", "lint"])
 run("Production builds", "make", ["build"])
 console.log("\n[check] All checks passed.")

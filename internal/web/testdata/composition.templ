@@ -1,0 +1,51 @@
+package testdata
+
+import (
+	"github.com/heurema/clavis/internal/web/ui/alert"
+	"github.com/heurema/clavis/internal/web/ui/badge"
+	"github.com/heurema/clavis/internal/web/ui/button"
+	"github.com/heurema/clavis/internal/web/ui/card"
+	"github.com/heurema/clavis/internal/web/ui/icon"
+	switchcomp "github.com/heurema/clavis/internal/web/ui/switch"
+)
+
+// Composition is a render-only compatibility fixture, not a product route.
+templ Composition(message string) {
+	@card.Card(card.Props{ID: "component-fixture"}) {
+		@card.Header() {
+			@card.Title() {
+				Component compatibility
+			}
+			@card.Description() {
+				{ message }
+			}
+		}
+		@card.Content() {
+			@badge.Badge() {
+				Setup
+			}
+			@alert.Alert() {
+				@icon.Database()
+				@alert.Title() {
+					Database
+				}
+				@alert.Description() {
+					{ message }
+				}
+			}
+		}
+		@card.Footer() {
+			@button.Button(button.Props{
+				ID:         "retry",
+				Attributes: templ.Attributes{"hx-get": "/ui/readiness"},
+			}) {
+				@icon.RefreshCw()
+				Check again
+			}
+			@switchcomp.Switch(switchcomp.Props{
+				ID:         "appearance",
+				Attributes: templ.Attributes{"aria-label": "Dark appearance"},
+			})
+		}
+	}
+}
