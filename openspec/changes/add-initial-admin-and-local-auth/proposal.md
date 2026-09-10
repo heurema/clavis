@@ -4,7 +4,8 @@ Clavis now serves a verified, self-contained setup UI, but has no persisted user
 
 ## What Changes
 
-- Add embedded, versioned PostgreSQL schema migrations and startup initialization that do not withhold HTTP liveness or the public setup document during database outages.
+- Integrate the previously selected Goose v3 migration engine and sqlc query generator with the first persisted schema. Goose applies embedded SQL migrations during startup; sqlc generates native pgx v5 methods from named application queries. Initialization does not withhold HTTP liveness or the public setup document during database outages.
+- Check in sqlc output with its SQL/configuration sources, add explicit generation and non-mutating consistency checks, and prevent handwritten application SQL from becoming a parallel persistence path.
 - Accept an initial administrator username and a password-file path through deployment configuration. Create the account and durable initialization marker atomically, once per platform database. Subsequent starts ignore bootstrap inputs; redeployment is not password rotation or account recovery.
 - Add local password authentication, opaque server-side sessions, sign-out, expiry, current identity and administrator revocation of a user's sessions. Check the current account state and administrator role on each protected request.
 - Extend the existing setup page with actual initialization states and a sign-in link. Add local sign-in and a minimal protected administrator shell; do not add browser-based account creation.
@@ -17,7 +18,7 @@ Clavis now serves a verified, self-contained setup UI, but has no persisted user
 
 ### New Capabilities
 
-- `platform-initialization`: embedded schema lifecycle, unattended bootstrap, durable one-time initialization and safe retries.
+- `platform-initialization`: Goose-owned embedded schema lifecycle, sqlc-backed application persistence, unattended bootstrap, durable one-time initialization and safe retries.
 - `local-authentication`: password verification, browser sign-in, server-side sessions, protected administrator access, revocation and safe authentication events.
 - `cli-authentication`: local CLI sign-in/out, current identity, protected session persistence and administrative session revocation.
 
@@ -32,7 +33,7 @@ Clavis now serves a verified, self-contained setup UI, but has no persisted user
 - UI: `internal/web` templates and generated Go, maintained browser assets and browser fixtures/tests.
 - Client: `internal/cli`, the client entry point where needed for terminal input, and authentication transport/storage tests.
 - Tooling: real-database smoke fixtures must initialize isolated installations, and documentation must distinguish one-time bootstrap inputs from ongoing credentials.
-- Dependencies: retain pgx, chi, templ and urfave/cli; add pinned password-hashing and terminal-input libraries as needed. No new runtime service is required.
+- Dependencies: retain pgx, chi, templ and urfave/cli; integrate the selected Goose 3.28.0 runtime library and sqlc 1.31.1 development tool, with pinned password-hashing and terminal-input libraries. No new runtime service or external migration executable is required.
 
 ## Non-goals
 

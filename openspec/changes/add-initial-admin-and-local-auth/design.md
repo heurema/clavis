@@ -1,10 +1,12 @@
 ## Context
 
-The current server opens a lazy pgx pool, starts HTTP without waiting for PostgreSQL, and exposes ping-based readiness alongside a public templ/htmx setup page. There is no schema, user store, authentication middleware or session cache. `internal/server.Handler` owns route registration; `internal/web` owns buffered HTML rendering and generated templates. The CLI has one output/exit boundary, bounded doctor requests and no input abstraction.
+At the start of this change, the server opens a lazy pgx pool, starts HTTP without waiting for PostgreSQL, and exposes ping-based readiness alongside a public templ/htmx setup page. There is no schema, user store, authentication middleware or session cache. `internal/server.Handler` owns route registration; `internal/web` owns buffered HTML rendering and generated templates. The CLI has one output/exit boundary, bounded doctor requests and no input abstraction.
+
+The original stack decision already selected sqlc targeting pgx v5 and Goose v3 for integration with the first persisted schema. Those choices remain binding; pgx is the driver, not a substitute for query generation or a migration engine. Versions rechecked for this change remain sqlc 1.31.1 and Goose 3.28.0.
 
 The user selected automated installation as the default: deployment configuration supplies a personal initial administrator username and a password file; normal server startup initializes once. No manual bootstrap command, public first-admin endpoint or browser setup secret is required.
 
-This is an identity foundation, not completion of the PRD's authentication or administration scope. The settings below are concrete design defaults for review, not existing implementation behavior.
+This is an identity foundation, not completion of the PRD's authentication or administration scope. The settings below are the approved defaults for this milestone.
 
 ## Goals / Non-Goals
 
@@ -30,17 +32,27 @@ Use one bounded attempt at a time (30 seconds maximum), with jittered retry back
 
 Alternatives: a separate initialization job gives deployment tools a useful completion boundary, but adds a required installation step; browser setup introduces another privileged endpoint and proof-of-ownership secret. Neither is necessary for the selected unattended default.
 
-### 2. Embed ordered transactional SQL migrations with pgx
+### 2. Use Goose migrations and sqlc application queries
 
-Add immutable, numbered SQL files under `internal/database/migrations`, embedded in the server. Track applied version and content checksum. Serialize each migration transaction using a fixed PostgreSQL transaction-scoped advisory lock; acquire the same lock for bootstrap. Re-read the schema/version after acquiring the lock. Lock waiting counts against the attempt deadline. Transaction rollback leaves no recorded successful version or partial DDL; a checksum mismatch or schema newer than the binary fails closed.
+Add immutable, numbered Goose SQL files under `internal/database/migrations`, embedded in the server. Goose 3.28.0's provider owns parsing, ordering, execution, version tracking and transaction commit/rollback, using pgx's `database/sql` adapter. Call the library from the existing bounded initialization worker; no external Goose executable or extra operator command is required. The later-approved automatic startup flow changes the original deployment-step timing, not the selected tools.
 
-Use the existing pgx dependency rather than adding an ORM or shelling out to an external migration executable. Limit this runner to forward, transactional SQL; do not implement a general migration framework or automatic down migrations.
+Use `goose_db_version` as the sole migration ledger. A small decorator around Goose's default PostgreSQL store adds/stamps the embedded migration checksum in the same Goose-owned transaction. Do not retain a parallel custom migration engine or `schema_migrations` ledger. Reject unknown/newer versions, checksum mismatches and a legacy experimental custom ledger instead of adopting or repairing them silently. Forward transactional migrations only; no automatic down migration.
+
+A Goose session locker holds the fixed PostgreSQL advisory key for the provider operation; native bootstrap transactions acquire that same key with a transaction-scoped lock. The two scopes conflict on the same database key, serializing migration and bootstrap across processes. Re-read committed version state after locking. Lock acquisition counts against the attempt deadline; release/discard must prevent returning a locked connection to a pool after cancellation.
+
+Goose uses one transient dedicated `database/sql` connection cloned from the application's pgx connection configuration, with one maximum open connection, no idle connections and closure at attempt end. It does not borrow a session from the application pool: database/sql cancellation can discard a wrapper before a custom locker gets a chance to close the underlying pooled session. A dedicated connection avoids returning a session-scoped migration lock to application traffic and preserves the same DSN/startup parameters without a custom connector framework.
+
+All application persistence SQL lives in named files under `internal/database/queries`. Root `sqlc.yaml` generates the checked-in `internal/database/sqlc` package using pgx v5 and the Goose migrations as schema input. Handwritten authentication, initialization, audit and throttle code calls generated typed methods through native pgx transaction bindings. Keep Begin/Commit/Rollback orchestration in the service, but do not retain inline application SQL, generic raw-query wrappers or manual application-row scanning alongside sqlc. Direct fixture SQL remains confined to tests against disposable databases.
+
+The only handwritten migration-control SQL exception is the explicit Goose metadata adapter in `internal/database/migration_metadata.go`: ledger presence/version/checksum operations and provider advisory locking. It cannot query or mutate `users`, `sessions`, `installation`, `auth_events` or `login_limits`, and cannot expose a generic query escape hatch. This implements Goose's supported store/locker extension points, not an alternative application persistence layer.
+
+Pin the sqlc development tool in `.sqlc-version`; `make generate-db` explicitly regenerates output, while `make check-db-generated` compares the complete generated file set from an isolated input copy without rewriting source or generated Go. Setup installs the exact tool; server builds/checks fail on missing, stale or unexpected generated output. CLI-only compilation remains Go-only. A Go-AST contract check rejects direct query/scan paths in maintained application persistence code, with narrowly inventoried migration-metadata allowances rather than a blanket file exemption. It is a maintainability guard, not a security sandbox. Mutation targets retain handwritten database/authentication logic and exclude generated sqlc code.
 
 The initial platform schema contains:
 
 | Table | Responsibility |
 |---|---|
-| `schema_migrations` | Applied version and checksum |
+| `goose_db_version` | Goose-owned applied version history with transactional checksum metadata |
 | `installation` | Singleton with a durable `initialized_at`, independent of the number of remaining administrators |
 | `users` | Random stable UUID, unique username, password hash, `admin`/`member` role, disabled flag and timestamps |
 | `sessions` | Token digest, user UUID, `browser`/`cli` kind, creation/expiry and revocation timestamps |
@@ -206,4 +218,4 @@ Backend, web and CLI are parallel implementation lanes, not independently comple
 
 ## Open Questions
 
-No bootstrap-flow decision remains open. The exact HTTP/configuration names, fixed lifetime and password/throttle defaults above are proposed review defaults to freeze in the foundation PR, not independent choices for implementation threads. Account recovery, Google/OIDC, retention policy and broad management remain explicit follow-up changes; this milestone alone is not pilot readiness.
+No decision remains open within this milestone. The HTTP/configuration names, fixed lifetime and password/throttle defaults above are approved shared contracts, not independent choices for implementation threads. Account recovery, Google/OIDC, retention policy and broad management remain explicit follow-up changes; this milestone alone is not pilot readiness.

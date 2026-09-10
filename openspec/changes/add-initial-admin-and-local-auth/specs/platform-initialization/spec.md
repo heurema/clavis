@@ -2,7 +2,7 @@
 
 ### Requirement: Embedded transactional schema initialization
 
-The server SHALL embed ordered, checksummed platform SQL migrations and apply them without external migration executables. Concurrent instances SHALL serialize migrations and recheck the applied version under a database lock. Each successful version SHALL commit atomically with its migration record. Failed, changed or unsupported migrations SHALL NOT be treated as a ready schema or automatically rolled back through destructive down migrations.
+The server SHALL embed ordered, checksummed Goose SQL migrations and apply them through the pinned Goose v3 library without external migration executables. Goose SHALL own migration execution and version tracking, with one ledger rather than a parallel custom migration engine. Concurrent instances SHALL serialize migration and bootstrap on the same database advisory key and recheck committed versions after locking. Each successful version and checksum SHALL commit atomically with its Goose migration record. Failed, changed or unsupported migrations SHALL NOT be treated as a ready schema or automatically rolled back through destructive down migrations.
 
 #### Scenario: Start a copied executable on a fresh platform database
 - **WHEN** the server starts with a fresh configured platform database and valid deployment inputs
@@ -16,6 +16,42 @@ The server SHALL embed ordered, checksummed platform SQL migrations and apply th
 - **WHEN** transactional SQL fails, an applied checksum differs or the database schema is newer than supported
 - **THEN** readiness remains unavailable with a safe schema category
 - **AND** failed SQL does not leave a successfully recorded version or partial committed migration
+
+#### Scenario: Reject an incompatible experimental ledger
+- **WHEN** a database contains the former custom migration ledger rather than the supported Goose ledger
+- **THEN** initialization fails closed without silently adopting, deleting or rebaselining application data
+
+### Requirement: sqlc-backed application persistence
+
+Application SQL for users, sessions, installation, audit events, readiness schema checks and login limits SHALL live in named SQL files. The pinned sqlc tool SHALL generate typed native pgx v5 methods using the Goose SQL migrations as schema input. Handwritten persistence code SHALL use those methods with the existing transaction/context boundaries, not inline application SQL, generic raw-query helpers or manual application-row scanning.
+
+Goose's narrowly scoped ledger/checksum/advisory-lock adapter SHALL remain separate from application queries and SHALL NOT access application tables or provide an unrestricted query interface. Test fixture SQL SHALL remain isolated from production data-access paths.
+
+#### Scenario: Bootstrap and authentication share generated transaction queries
+- **WHEN** bootstrap, authentication, revocation, audit or throttle persistence runs
+- **THEN** application queries execute through sqlc-generated methods bound to the intended pgx transaction
+- **AND** rollback, deadlines, authorization and atomic audit behavior remain intact
+
+#### Scenario: Handwritten application queries are reintroduced
+- **WHEN** maintained application persistence code adds a direct query/scan path outside generated code
+- **THEN** the repository contract check fails instead of accepting a second persistence implementation
+- **AND** the Goose adapter does not provide a blanket exemption for application SQL
+
+### Requirement: Reproducible checked-in query generation
+
+The repository SHALL pin sqlc and commit generated Go with its SQL/configuration inputs. Explicit generation SHALL update the output; routine consistency checks and server builds SHALL reject missing, stale or unexpected generated files without rewriting maintained or generated source. Generated sqlc files SHALL be excluded from mutation targets while handwritten persistence behavior remains eligible. CLI-only builds SHALL remain Go-only and independent of sqlc and SQL source files.
+
+#### Scenario: Check generated query consistency
+- **WHEN** a query, migration or generation configuration changes without matching generated Go, or a generated file is missing/extra
+- **THEN** the check and server build fail nonzero without repairing the checkout implicitly
+
+#### Scenario: Reproduce query output
+- **WHEN** explicit generation runs using pinned inputs
+- **THEN** it produces the matching generated file set and a subsequent non-mutating check succeeds
+
+#### Scenario: Build the CLI without database-generation tools
+- **WHEN** the CLI-only build runs without sqlc or SQL inputs
+- **THEN** it succeeds using only the Go toolchain and its client dependencies
 
 ### Requirement: Atomic unattended administrator bootstrap
 
