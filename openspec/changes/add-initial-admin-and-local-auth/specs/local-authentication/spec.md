@@ -115,6 +115,8 @@ Credential-processing and protected operations SHALL use a five-second context d
 
 The system SHALL persist safe bootstrap, sign-in and session-administration events, including denied/failed attempts when storage is available. Events SHALL contain only documented identifiers and outcome metadata, not submitted unknown usernames, passwords, session tokens/digests, cookies, request bodies or raw errors. Successful mutations and their events SHALL commit together. Storage failure SHALL NOT be represented as successful durable auditing.
 
+Sign-in/logout/revocation rejections before service invocation SHALL use an explicit recorder with allowlisted action/outcome metadata and absent identifiers for anonymous requests. Service-owned outcomes SHALL NOT be recorded twice by the adapter. Valid-origin browser logout with no cookie or a single malformed cookie SHALL remain idempotent local cleanup without a database/audit dependency; rejected API mutations and ambiguous browser credentials SHALL NOT use that exemption.
+
 #### Scenario: Successful or denied session administration
 - **WHEN** a user attempts session revocation
 - **THEN** the outcome is recorded with safe actor/target identifiers and an allowlisted action/result
@@ -127,3 +129,15 @@ The system SHALL persist safe bootstrap, sign-in and session-administration even
 #### Scenario: Audit storage fails
 - **WHEN** the required event cannot be persisted
 - **THEN** no successful credential/session mutation is reported and output describes safe unavailability
+
+#### Scenario: An authentication adapter rejects a request
+- **WHEN** a sign-in or session-mutation request is rejected for invalid input, origin or API credentials before reaching the service and event storage is available
+- **THEN** one safe rejection event is recorded without credential lookup or untrusted payload fields
+
+#### Scenario: Idempotent local browser logout during an outage
+- **WHEN** a valid-origin browser logout has no cookie or a single malformed cookie while the database is unavailable
+- **THEN** the cookie is cleared and the browser is redirected to login without a database query or required event write
+
+#### Scenario: Recording an origin rejection fails
+- **WHEN** an invalid-origin mutation is rejected but its required event cannot be persisted
+- **THEN** the response reports safe 503 without clearing cookies, revoking sessions or claiming durable auditing

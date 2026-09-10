@@ -103,6 +103,10 @@ Use generic invalid-credentials results for nonexistent, disabled and wrong-pass
 
 Record bootstrap, sign-in outcomes, logout and administrative revocation using safe event categories and known UUIDs only. Do not persist submitted unknown usernames, passwords, tokens, digests, cookies, CSRF values, bodies, query strings or raw driver errors. Successful credential/session mutations and their events commit together; inability to persist required events prevents successful mutation. If storage is unavailable, return safe unavailability and log only an application-owned category; do not claim a durable event was recorded.
 
+An explicit `auth.EventRecorder` dependency covers sign-in/logout/revocation attempts rejected by HTTP adapters before service invocation: invalid or oversized input, origin checks and absent/malformed API mutation credentials. Keep `auth.Service` unchanged; the recorder accepts only allowlisted action/outcome values and optional validated actor/target/session UUIDs, with recorder-owned timestamps. Early anonymous rejections leave IDs absent rather than looking up a rejected credential. Use the same operation deadline; service-invoked operations own their existing events so one rejection is not recorded twice. Public document/health GETs and unmatched routes are outside this event boundary.
+
+The valid-origin browser logout path with no cookie or a single malformed cookie remains idempotent local cleanup: clear the cookie and redirect without querying the database or writing an event. It is not a rejected authenticated mutation. Ambiguous browser credentials and rejected API mutations are not exempt. If persistence of a required rejection event fails, return safe 503 while preserving the original security effect: an invalid-origin request still cannot clear a cookie or revoke a session.
+
 Alternatives: JWTs reduce reads but complicate immediate blocking and revocation; a shared browser/CLI token transport creates unnecessary cross-channel credential exposure. Neither fits this small PostgreSQL-backed service.
 
 ### 6. Freeze HTTP and browser contracts before splitting implementation
