@@ -150,7 +150,13 @@ func (i *Initializer) bootstrap(ctx context.Context) platform.State {
 		return platform.DependencyUnavailable
 	}
 	n, err := schemaVersions(ctx, tx, embeddedMigrations())
-	if err != nil || n != len(embeddedMigrations()) {
+	if err != nil {
+		if schemaFailure(err) {
+			return platform.SchemaError
+		}
+		return platform.DependencyUnavailable
+	}
+	if n != len(embeddedMigrations()) {
 		return platform.SchemaError
 	}
 	state, err := queries.BootstrapState(ctx)
@@ -165,17 +171,17 @@ func (i *Initializer) bootstrap(ctx context.Context) platform.State {
 		return platform.Ready
 	}
 	if state.HasUsers {
-		return platform.BootstrapFailed
+		return bootstrapValidationFailure(ctx, tx)
 	}
 	if i.username == "" || i.passwordFile == "" {
 		return platform.SetupRequired
 	}
 	if !auth.ValidUsername(i.username) {
-		return platform.BootstrapFailed
+		return bootstrapValidationFailure(ctx, tx)
 	}
 	password, err := ReadBootstrapPassword(i.passwordFile)
 	if err != nil {
-		return platform.BootstrapFailed
+		return bootstrapValidationFailure(ctx, tx)
 	}
 	hash, err := auth.HashPassword(ctx, password)
 	if err != nil {
@@ -185,18 +191,12 @@ func (i *Initializer) bootstrap(ctx context.Context) platform.State {
 	if err != nil {
 		return platform.DependencyUnavailable
 	}
-	eventID, err := bootstrapID()
-	if err != nil {
-		return platform.DependencyUnavailable
-	}
 	if err = queries.CreateInitialAdministrator(ctx, sqlc.CreateInitialAdministratorParams{
 		ID: userID, Username: i.username, PasswordHash: hash,
 	}); err != nil {
 		return platform.DependencyUnavailable
 	}
-	if err = queries.InsertAuthEvent(ctx, sqlc.InsertAuthEventParams{
-		ID: eventID, ActorID: userID, TargetID: userID, Action: "bootstrap", Outcome: "success",
-	}); err != nil {
+	if err = audit(ctx, tx, userID, userID, "", "bootstrap", "success"); err != nil {
 		return platform.DependencyUnavailable
 	}
 	if err = queries.MarkInstallationInitialized(ctx); err != nil {
@@ -206,6 +206,18 @@ func (i *Initializer) bootstrap(ctx context.Context) platform.State {
 		return platform.DependencyUnavailable
 	}
 	return platform.Ready
+}
+
+// Called only during validation, before any account or marker mutation. Commit
+// one anonymous event for this attempt; no supplied input is an audited identity.
+func bootstrapValidationFailure(ctx context.Context, tx pgx.Tx) platform.State {
+	if err := audit(ctx, tx, "", "", "", "bootstrap", "invalid_argument"); err != nil {
+		return platform.DependencyUnavailable
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return platform.DependencyUnavailable
+	}
+	return platform.BootstrapFailed
 }
 
 // Attempt is useful to operators/tests too: no inputs or driver error is exposed.

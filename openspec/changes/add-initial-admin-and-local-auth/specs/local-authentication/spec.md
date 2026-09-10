@@ -126,6 +126,15 @@ Sign-in/logout/revocation rejections before service invocation SHALL use an expl
 - **WHEN** a failed sign-in contains sentinel credentials or a dependency emits a raw error
 - **THEN** neither authentication events nor operational output contain those values
 
+#### Scenario: Bootstrap validation fails with usable storage
+- **WHEN** a real bootstrap attempt rejects invalid inputs or unexpected users without an initialization marker
+- **THEN** it records one safe anonymous bootstrap failure event without committing an administrator or initialized marker
+- **AND** a later actual failed attempt records its own event; this milestone introduces no aggregation or retention policy
+
+#### Scenario: Setup status is observed without a failed bootstrap attempt
+- **WHEN** inputs are absent/incomplete, a read-only status request runs, or an already-initialized installation starts again
+- **THEN** it does not manufacture failed-bootstrap events or read obsolete credentials
+
 #### Scenario: Audit storage fails
 - **WHEN** the required event cannot be persisted
 - **THEN** no successful credential/session mutation is reported and output describes safe unavailability

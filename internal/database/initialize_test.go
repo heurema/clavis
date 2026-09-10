@@ -211,13 +211,15 @@ func TestBootstrapRepairAtomicAuditAndInterruption(t *testing.T) {
 	i := NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.BootstrapFailed, i.Attempt(t.Context()).State)
 	require.Zero(t, countRows(t, pool, "users"))
+	require.Equal(t, 1, countRows(t, pool, "auth_events"))
 	require.NoError(t, os.Chmod(path, 0600))
 	execSQL(t, pool, `CREATE FUNCTION reject_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'private failure'; END $$;
 		CREATE TRIGGER reject_event BEFORE INSERT ON auth_events FOR EACH ROW EXECUTE FUNCTION reject_event()`)
 	require.Equal(t, platform.DependencyUnavailable, i.Attempt(t.Context()).State)
-	for _, table := range []string{"users", "auth_events", "installation"} {
+	for _, table := range []string{"users", "installation"} {
 		require.Zero(t, countRows(t, pool, table))
 	}
+	require.Equal(t, 1, countRows(t, pool, "auth_events"))
 	execSQL(t, pool, `DROP TRIGGER reject_event ON auth_events`)
 	lock, err := pool.Begin(t.Context())
 	require.NoError(t, err)
@@ -260,11 +262,13 @@ func TestWorkerNoticesRepairedSecretWithoutRestart(t *testing.T) {
 	go func() { defer close(done); i.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-done })
 	require.Eventually(t, func() bool { return i.Check(t.Context()).State == platform.BootstrapFailed }, 5*time.Second, 10*time.Millisecond)
+	assertBootstrapFailureEvents(t, pool, 1, path, "personal-admin")
 	require.NoError(t, os.Chmod(path, 0600))
 	start := time.Now()
 	require.Eventually(t, func() bool { return i.Check(t.Context()).Ready() }, 35*time.Second, 100*time.Millisecond)
 	require.GreaterOrEqual(t, time.Since(start), 29*time.Second)
 	require.Equal(t, 1, countRows(t, pool, "users"))
+	require.Equal(t, 2, countRows(t, pool, "auth_events"))
 }
 
 func TestWorkerCancellationWhileInitializationLockIsHeld(t *testing.T) {
