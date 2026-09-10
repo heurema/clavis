@@ -372,7 +372,7 @@ These questions do not change the agreed product concept:
 - Session lifetimes, query duration and result size limits, and audit retention.
 - The first real questions from managers and developers used to evaluate the pilot.
 
-The chosen technical preferences are Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface. The API and web assets will be delivered in one Go server executable; PostgreSQL remains external and the CLI remains a separate executable. The web replacement is under implementation.
+The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface. The API and embedded web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains a separate executable. The current web interface is the setup/readiness screen; the authentication and administration capabilities described above remain planned.
 
 ## 13. Sources and Context
 

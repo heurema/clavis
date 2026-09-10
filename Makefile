@@ -66,7 +66,8 @@ format:
 	$(MAKE) generate-web
 	$(PNPM) --dir web format
 
-test-mutation:
+test-mutation: check-web-generated
+	$(MAKE) build-web-assets
 	$(NODE) scripts/mutation.mjs
 
 test-web: build-server
