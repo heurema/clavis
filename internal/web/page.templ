@@ -7,7 +7,6 @@ import (
 	"github.com/heurema/clavis/internal/web/ui/button"
 	"github.com/heurema/clavis/internal/web/ui/card"
 	"github.com/heurema/clavis/internal/web/ui/icon"
-	switchcomp "github.com/heurema/clavis/internal/web/ui/switch"
 )
 
 templ Page() {
@@ -23,21 +22,7 @@ templ Page() {
 			<script src="/assets/htmx.min.js" defer></script>
 		</head>
 		<body class="min-h-screen">
-			<header class="border-b bg-card">
-				<div class="mx-auto flex min-h-20 max-w-6xl flex-wrap items-center justify-between gap-4 px-6 py-4 sm:px-10">
-					<a href="/" aria-label="Clavis home" class="flex items-center gap-3 rounded-md focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring">
-						<span class="flex size-9 items-center justify-center rounded-lg bg-foreground text-background">
-							@icon.KeyRound(icon.Props{Class: "size-5"})
-						</span>
-						<span class="text-xl font-semibold tracking-tight">Clavis</span>
-						<span class="hidden border-l pl-3 text-xs text-muted-foreground sm:block">by heurema</span>
-					</a>
-					<div class="flex items-center gap-3">
-						<label for="appearance" class="text-sm text-muted-foreground">Dark appearance</label>
-						@switchcomp.Switch(switchcomp.Props{ID: "appearance", Attributes: templ.Attributes{"data-appearance": "true"}})
-					</div>
-				</div>
-			</header>
+			@siteHeader()
 			<main class="mx-auto max-w-6xl px-6 py-10 sm:px-10 sm:py-14">
 				<div class="mb-8 flex items-center gap-2 text-xs font-medium uppercase tracking-widest text-muted-foreground">
 					<span>Workspace</span>
@@ -96,14 +81,14 @@ templ Page() {
 						}
 						<div class="px-1">
 							<h2 class="text-xs font-semibold uppercase tracking-wider text-muted-foreground">A foundation, ready to grow</h2>
-							<p class="mt-3 text-sm leading-6 text-muted-foreground">Sign-in, permissions, external connections, and auditing will follow. This page checks the local platform services.</p>
+							<p class="mt-3 text-sm leading-6 text-muted-foreground">Initial administrator setup is managed by your deployment. Once the environment is ready, sign in with your local account. Permissions, external connections and audit inspection will follow.</p>
+							@button.Button(button.Props{Href: "/login", Class: "mt-4"}) {
+								Sign in
+							}
 						</div>
 					</div>
 				</div>
-				<footer class="mt-12 flex flex-wrap justify-between gap-3 border-t pt-6 text-xs text-muted-foreground">
-					<span>Clavis · Controlled access for your agents.</span>
-					<a href="/assets/notices.txt" class="underline underline-offset-4">Third-party notices</a>
-				</footer>
+				@siteFooter()
 				for _, state := range []string{"checking", "server-unavailable", "timeout", "unexpected"} {
 					<template id={ "readiness-" + state }>
 						@statusContent(state)
@@ -115,10 +100,11 @@ templ Page() {
 }
 
 templ Readiness(readiness platform.Readiness) {
-	if readiness.Ready() {
-		@statusContent("ready")
-	} else {
-		@statusContent("database-unavailable")
+	switch readiness.State {
+		case platform.Ready, platform.DependencyUnavailable, platform.Initializing, platform.SetupRequired, platform.BootstrapFailed, platform.SchemaError:
+			@statusContent(string(readiness.State))
+		default:
+			@statusContent(string(platform.DependencyUnavailable))
 	}
 }
 

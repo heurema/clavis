@@ -26,10 +26,10 @@ Sections 2–3 are the backend lane. Sections 4 and 5 can run in parallel with t
 
 ## 4. Build setup and authentication views — web, parallel after section 1
 
-- [ ] 4.1 Extend readiness view models/templates with initializing/setup-required/bootstrap-failed/schema-error states and deployment guidance; verify the existing five-second deadline, cancellation, fragment gates and no-polling behavior remain intact and no account-creation form is introduced.
-- [ ] 4.2 Add buffered public login and minimal protected admin templates with ordinary form POST/redirect controls and safe errors; verify escaped identity text, password non-reflection, usable labels/keyboard flow, appearance continuity and no placeholder management screens.
-- [ ] 4.3 Add dedicated fixture-backed browser tests for sign-in/out views, admin/member/unavailable states, focus and desktop/mobile layout; verify fixtures follow the frozen origin/cookie/response contracts and remain separate from the real backend evidence.
-- [ ] 4.4 Regenerate and commit matching templ Go alongside maintained templates; run generation checks and the existing readiness/browser suite, verifying checks do not rewrite tracked sources or weaken sentinel-secret tests.
+- [x] 4.1 Extend readiness view models/templates with initializing/setup-required/bootstrap-failed/schema-error states and deployment guidance; verify the existing five-second deadline, cancellation, fragment gates and no-polling behavior remain intact and no account-creation form is introduced.
+- [x] 4.2 Add buffered public login and minimal protected admin templates with ordinary form POST/redirect controls and safe errors; verify escaped identity text, password non-reflection, usable labels/keyboard flow, appearance continuity and no placeholder management screens.
+- [x] 4.3 Add dedicated fixture-backed browser tests for sign-in/out views, admin/member/unavailable states, focus and desktop/mobile layout; verify fixtures follow the frozen origin/cookie/response contracts and remain separate from the real backend evidence.
+- [x] 4.4 Regenerate and commit matching templ Go alongside maintained templates; run generation checks and the existing readiness/browser suite, verifying checks do not rewrite tracked sources or weaken sentinel-secret tests.
 
 ## 5. Build authenticated CLI commands — CLI, parallel after section 1
 
