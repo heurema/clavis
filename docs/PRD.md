@@ -372,7 +372,7 @@ These questions do not change the agreed product concept:
 - Session lifetimes, query duration and result size limits, and audit retention.
 - The first real questions from managers and developers used to evaluate the pilot.
 
-The previously chosen technical preferences are Go for the backend and CLI, and React for the minimal web interface. Architecture and technical specifications will be documented separately after the product requirements are approved.
+The chosen technical preferences are Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface. The API and web assets will be delivered in one Go server executable; PostgreSQL remains external and the CLI remains a separate executable. The web replacement is under implementation.
 
 ## 13. Sources and Context
 

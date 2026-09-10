@@ -1,7 +1,7 @@
 ## 1. Pin the replacement toolchain and components
 
 - [x] 1.1 Add pinned templ 0.3.1020 compiler/runtime, htmx 4.0.0 and Tailwind CLI 4.3.3 inputs using the existing setup tooling; verify exact versions, frozen installation and compiler compatibility with the repository's Go version, and record any baseline correction in the design.
-- [x] 1.2 Import only the selected templUI 1.13.2 controls, required utilities/icons and matching scripts into `internal/web/ui`; verify a minimal composed component compiles and record the upstream revision, license and local modifications in third-party notices.
+- [x] 1.2 Import only the selected templUI 1.13.2 controls, required utilities/icons and matching scripts into `internal/web/ui`; verify a minimal composed component compiles and retain upstream revision, local modifications and required copyright/permission notices inline in source, without standalone license files, notice Markdown files or a web README.
 - [x] 1.3 Establish checked-in `.templ`/`*_templ.go` ownership and ignored public asset staging; verify explicit generation succeeds, `templ generate -check` detects a stale generated file without rewriting it, and handwritten source remains unchanged by checks.
 
 ## 2. Build and serve the embedded application
@@ -14,7 +14,7 @@
 
 ## 3. Replace the setup page and its browser behavior
 
-- [ ] 3.1 Recreate the existing Clavis shell/status page with templ and the selected templUI controls; verify its responsive layout, real labels and service states against the current page without adding unimplemented product screens.
+- [ ] 3.1 Recreate the Clavis shell/status page with templ and the selected templUI controls; restore pinned Playwright 1.63.0 and verify responsive layout, real labels and service states against bootstrap commit `4e27c5a0645858bb2ebdcc9c06e27a4cc75a12c3` without adding unimplemented product screens.
 - [ ] 3.2 Implement the initial htmx check, manual retry, a shared cancellation scope, checking state and five-second deadline including body reads; verify browser cases for ready, known 503, timeout, a stalled body, superseded responses, and absence of polling or automatic retries.
 - [ ] 3.3 Gate readiness swaps by expected status, content type and the application fragment marker, and render safe local failure messages; verify unexpected 200/500 bodies, absent markers and unrecognized redirect results containing sentinel secrets never enter the DOM.
 - [ ] 3.4 Preserve `clavis.appearance`, system appearance changes and blocked-storage fallback with embedded application scripts; verify persistence, reload behavior and in-memory interaction without introducing additional persisted state.
@@ -29,10 +29,10 @@
 
 ## 5. Retire the React workflow and update documentation
 
-- [ ] 5.1 Remove React/Vite/TanStack/Ky/Zod/Tremor code, unused dependencies, generated routing, React tests and obsolete configuration once replacement checks pass; verify a frozen install and repository search find no active imports or runtime references to the retired stack, excluding historical OpenSpec artifacts.
-- [ ] 5.2 Reduce the development package to the asset and validation tools still used; update `scripts/check.mjs`, tool checks, generated-code exclusions and mutation exclusions for `*_templ.go` and copied UI code; verify relevant lint/tests still run and generated/vendor code is excluded from mutation targets while handwritten behavior remains covered.
+- [x] 5.1 Remove React/Vite/TanStack/Ky/Zod/Tremor code, unused dependencies, generated routing, old app tests and obsolete configuration immediately, as approved by the user; verify a frozen install and repository search find no active imports or runtime references to the retired stack outside OpenSpec's migration/history records. A temporary lack of browser UI is accepted.
+- [x] 5.2 Reduce the development package to the asset and validation tools still used; update `scripts/check.mjs`, tool checks, generated-code exclusions and mutation exclusions for `*_templ.go` and copied UI code; verify relevant lint/tests still run and generated/vendor code is excluded from mutation targets while handwritten behavior remains covered. Preserve API/CLI database outage/recovery smoke independently of the removed browser harness and explicitly report pending browser coverage.
 - [ ] 5.3 Introduce the single-server `make dev` flow using existing environment-loading scripts, retain `dev-api` only as an alias, and remove `dev-web` and `CLAVIS_API_PROXY`; verify one command starts the UI and API at the configured address and termination cleans up the process.
-- [ ] 5.4 Update README, environment examples, third-party notices and the current PRD stack sentence; verify the instructions distinguish development prerequisites from binary runtime requirements, retain external PostgreSQL and optional CLI, and describe the new outage behavior without rewriting the archived design.
+- [ ] 5.4 Update the root README, environment examples, inline source attribution/permission notices and current PRD stack sentence; verify instructions distinguish development prerequisites from binary runtime requirements, retain external PostgreSQL and optional CLI, and describe the new outage behavior without rewriting the archived design or adding web README/notice Markdown/standalone license files.
 
 ## 6. Complete migration verification
 

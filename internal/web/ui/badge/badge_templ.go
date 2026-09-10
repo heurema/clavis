@@ -10,6 +10,10 @@ import templruntime "github.com/a-h/templ/runtime"
 
 import "github.com/heurema/clavis/internal/web/ui/utils"
 
+// templUI v1.13.2; MIT notices are in ../utils/templui.go.
+// Source: https://github.com/templui/templui/blob/75ff269e4b13e65e2ebc973835dea91e1112cca1/components/badge/badge.templ
+// Local changes: utility import path. No component scripts are required.
+
 type Variant string
 
 const (
@@ -76,7 +80,7 @@ func Badge(props ...Props) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.ResolveAttributeValue(p.ID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `ui/badge/badge.templ`, Line: 28, Col: 12}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `ui/badge/badge.templ`, Line: 32, Col: 12}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ_7745c5c3_Var3)
 			if templ_7745c5c3_Err != nil {

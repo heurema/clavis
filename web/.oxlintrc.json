@@ -1,12 +1,5 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["typescript", "react", "jsx-a11y"],
-  "categories": { "correctness": "error" },
-  "rules": {
-    "typescript/no-floating-promises": "error",
-    "typescript/no-misused-promises": "error",
-    "react/rules-of-hooks": "error",
-    "react/exhaustive-deps": "warn"
-  },
-  "ignorePatterns": ["src/routeTree.gen.ts"]
+  "env": { "node": true },
+  "categories": { "correctness": "error" }
 }

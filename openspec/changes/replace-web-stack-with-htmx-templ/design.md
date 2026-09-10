@@ -1,8 +1,10 @@
 ## Context
 
-See `proposal.md` for motivation and the delta specs for acceptance behavior. The current `web/` application has one React setup page, Tremor Raw controls, a TanStack route tree and readiness query, and a Ky/Zod client. `internal/server/server.go` exposes only JSON health endpoints. Vite serves the page independently and proxies `/api` to Go. `scripts/smoke.mjs` launches both processes; `web/tests/bootstrap.spec.ts` depends on the page being available when Go is stopped.
+See `proposal.md` for motivation and the delta specs for acceptance behavior. At proposal time, the `web/` application had one React setup page, Tremor Raw controls, a TanStack route tree and readiness query, and a Ky/Zod client. Vite served the page independently and proxied `/api` to Go; the smoke suite launched both processes and expected the page to remain available when Go stopped. That reference implementation is preserved in bootstrap commit `4e27c5a0645858bb2ebdcc9c06e27a4cc75a12c3`.
 
 The user has selected htmx, templ and templUI and wants a simple binary deployment. The existing CLI-first PRD still applies. Its earlier React preference and the archived bootstrap design's separate frontend-serving decisions are superseded by this change; update the current PRD stack sentence and README during implementation, while leaving the archived design historical.
+
+The user subsequently approved removing the old web application immediately rather than keeping it operational during migration. Until the embedded UI is implemented, the server exposes only JSON health endpoints, development runs only Go, and smoke verification covers API/CLI and real PostgreSQL outage/recovery. Reports must state that browser verification is pending; this intermediate state does not satisfy the final embedded-web acceptance criteria.
 
 ## Goals / Non-Goals
 
@@ -33,13 +35,13 @@ Planning baseline, verified September 10, 2026:
 | htmx | 4.0.0 | [Release](https://four.htmx.org/announcements/2026-08-28-htmx-4.0.0-is-released). Stable, even though npm intentionally labels the release `next`. Pin the exact package version. |
 | templUI | 1.13.2 | [Release](https://github.com/axadrn/shadcn-templ/releases/tag/v1.13.2), [v1 usage](https://templui.io/docs/how-to-use). The v1 module path is `github.com/templui/templui`. Use copied source. |
 | Tailwind CSS and CLI | 4.3.3 | Retain the existing CSS version and replace the Vite integration with the matching [npm CLI package](https://registry.npmjs.org/@tailwindcss%2Fcli/4.3.3); its published dependency is Tailwind 4.3.3. |
-| Node / pnpm / Playwright | Retain 26.8.2 / 12.3.4 / 1.63.0 | Development, asset preparation and browser verification only. |
+| Node / pnpm / Playwright | 26.8.2 / 12.3.4 / 1.63.0 | Development, asset preparation and browser verification only. Remove the obsolete browser harness now; restore pinned Playwright 1.63.0 with the embedded UI tests. |
 
 The newer shadcn-templ 2.0.0-beta.9 is a separate beta baseline and is not selected here. Source repository redirects must not silently change the v1 module path or copied API. Recheck availability and compatibility when implementing; record corrections in this design before changing the selected major line. No verified assembled build is claimed by this planning baseline.
 
 Implementation recheck: the selected versions are available without baseline corrections. The templ compiler builds with Go 1.27.1 and takes its pin from the runtime requirement in `go.mod`; `scripts/templ.mjs` installs and verifies it under `.tools`. The frozen frontend install includes htmx 4.0.0 and Tailwind CLI/CSS 4.3.3. Tailwind CLI brings `@parcel/watcher`; use its prebuilt platform packages and explicitly disallow its native source-build fallback in pnpm's build-script policy.
 
-Copy only the templUI components used by the existing page: the button, card, badge, alert/callout equivalent, switch and required icons/utilities. Record the upstream tag, resolved source revision, license and local modifications in the maintained third-party notices. Include matching scripts and their actual transitive component dependencies. Keep the Clavis layout, identity, responsive behavior and light/dark presentation; exact Tremor pixels and its React API are not compatibility requirements.
+Copy only the templUI components used by the reference page: the button, card, badge, alert/callout equivalent, switch and required icons/utilities. Record the upstream tag, resolved source revision and local modifications in source comments. Keep the required copyright and permission notices in the delimited comment blocks in `internal/web/ui/utils/templui.go` and `internal/web/ui/icon/icon.templ`; the asset build must extract these notices for the embedded distribution. Do not maintain standalone license files, separate notice Markdown files or a web README. Include matching scripts and their actual transitive component dependencies. Keep the Clavis layout, identity, responsive behavior and light/dark presentation; exact Tremor pixels and its React API are not compatibility requirements.
 
 templ is preferred to `html/template` because component parameters, imports and composition participate in Go compilation. Copied templUI source follows the ownership model already used for Tremor Raw and avoids depending on an evolving component module at runtime. Browser interactions still use JavaScript; htmx does not replace component behavior. Tailwind/Playwright are retained instead of introducing another build runner or browser-testing framework.
 
@@ -100,7 +102,7 @@ If Go stops after the page loads, the embedded scripts already in the browser ca
 
 ### 5. Keep development tooling explicit and deployment independent
 
-Retain a reduced `web/package.json` and frozen pnpm lockfile for htmx asset acquisition, Tailwind's CLI, browser tests, and formatting/linting of maintained browser code. Remove React/DOM, Radix React packages, Remix React icons, TanStack Router/Query and router plugin, Ky, Zod, React styling helpers, Vite/plugins, React Testing Library, JSX route generation and their configuration. Remove unused Vitest/jsdom and TypeScript configuration when no remaining handwritten files require them; Playwright tests can use its existing TypeScript support. Preserve useful checks for any retained JS/TS instead of dropping validation indiscriminately.
+Retain a reduced `web/package.json` and frozen pnpm lockfile for htmx asset acquisition, Tailwind's CLI, and formatting/linting of maintained JavaScript tooling. Remove React/DOM, Radix React packages, Remix React icons, TanStack Router/Query and router plugin, Ky, Zod, React styling helpers, Vite/plugins, React Testing Library, JSX route generation and their configuration now. Remove the obsolete app's browser harness and unused Playwright/Vitest/jsdom/TypeScript dependencies; restore Playwright at the selected version when implementing browser verification. Move the old browser suite's API/CLI database outage/recovery assertions into the Node smoke runner so backend coverage remains active. Preserve formatting and correctness lint for every retained script instead of dropping validation indiscriminately.
 
 Use the existing Make/Node script arrangement; do not add Task just because upstream examples use it. Install the pinned templ compiler locally under `.tools`. The templUI CLI is used only for an explicit component import/update, with a pinned component revision; regular setup consumes committed component source.
 
@@ -128,7 +130,7 @@ Keep the existing real database stop/restart path and CLI doctor assertions. Rep
 
 ## Risks / Trade-offs
 
-- templUI's active v2 transition → pin the selected v1 source and compiler versions; test the selected controls with htmx 4 before removing the React implementation.
+- templUI's active v2 transition → pin the selected v1 source and compiler versions; test the selected controls with htmx 4 before claiming the replacement UI is complete.
 - Smaller client architecture still has browser lifecycle code → keep one readiness controller, explicit script loading and behavioral tests; avoid adding a global client-state library.
 - Generated assets can become stale or leak development files → stage a dedicated public directory before builds, verify template consistency, and test the copied executable from an empty directory.
 - The server and UI share availability → document the fresh-navigation outage behavior; keep CLI diagnostics and already-loaded-page recovery.
@@ -137,10 +139,10 @@ Keep the existing real database stop/restart path and CLI doctor assertions. Rep
 
 ## Migration Plan
 
-1. Pin tooling and import the minimal templUI controls; establish generation and public asset staging without changing the deployed interface yet.
-2. Add buffered templ rendering, embedded assets and HTML routes alongside the unchanged JSON endpoints. Rebuild the setup page and verify the selected controls against htmx 4.
-3. Port readiness/theme behavior and tests, then run the copied-binary, database-outage and loaded-page recovery checks.
-4. Remove React/Vite and obsolete commands/proxy configuration once the replacement passes; update maintained documentation and generated-code exclusions.
-5. Run the full relevant checks and smoke suite from a clean setup. This is an application-stack migration, not completion of the PRD's authentication or administration features.
+1. Pin tooling and import the minimal templUI controls; establish generation and public asset staging.
+2. Remove React/Vite, obsolete commands/proxy configuration and the old browser harness immediately, as approved by the user. Keep API/CLI development, checks and database smoke functional; document the temporary lack of a browser UI. Keep provenance and required copyright/permission notices inline in source, not additional Markdown or license files.
+3. Add buffered templ rendering, embedded assets and HTML routes alongside the unchanged JSON endpoints. Rebuild the setup page against the bootstrap reference and verify the selected controls against htmx 4.
+4. Restore pinned Playwright and implement readiness/theme behavior and browser tests, then run the copied-binary, database-outage and loaded-page recovery checks. The early removal of React does not waive any of these checks.
+5. Finalize runtime documentation and run the full relevant checks and smoke suite from a clean setup. This is an application-stack migration, not completion of the PRD's authentication or administration features.
 
 Rollback restores the previous source/dependency/build changes and the previous server plus web serving arrangement. No database migration is involved. Keep the existing CLI protocol compatible throughout, and do not delete developer database volumes or change credentials during migration.

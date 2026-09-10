@@ -5,7 +5,7 @@ export PATH := $(CURDIR)/.tools/node/bin:$(CURDIR)/.tools/pnpm/node_modules/.bin
 NODE := /usr/bin/env node
 PNPM := /usr/bin/env pnpm
 
-.PHONY: setup setup-browser dev-db dev-api dev-web build build-server generate-web check-web-generated check lint-go format test-mutation smoke down reset-db
+.PHONY: setup dev dev-db dev-api build build-server build-cli generate-web check-web-generated check lint-go format test-mutation smoke down reset-db
 
 setup:
 	@$(NODE) scripts/check-tools.mjs
@@ -14,24 +14,21 @@ setup:
 	$(NODE) scripts/golangci-lint.mjs install
 	$(NODE) scripts/templ.mjs install
 
-setup-browser:
-	$(PNPM) --dir web setup:browser
-
 dev-db:
 	$(NODE) scripts/dev.mjs db
 
-dev-api: build-server
+dev: build-server
 	$(NODE) scripts/dev.mjs api
 
-dev-web:
-	$(NODE) scripts/dev.mjs web
+dev-api: dev
 
 build-server:
 	go build -trimpath -o bin/server ./cmd/server
 
-build: build-server
+build-cli:
 	go build -trimpath -o bin/clavis ./cmd/clavis
-	$(PNPM) --dir web build
+
+build: build-server build-cli
 
 generate-web:
 	$(NODE) scripts/templ.mjs generate -path internal/web

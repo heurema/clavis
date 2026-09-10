@@ -31,13 +31,7 @@ run("Template tooling tests", process.execPath, [
 ])
 run("Go lint (including vet)", "make", ["lint-go"])
 run("Go tests", "go", ["test", "./..."])
-run("Frontend formatting", "pnpm", ["--dir", "web", "format:check"])
-run("Frontend type checking and route generation", "pnpm", [
-  "--dir",
-  "web",
-  "typecheck",
-])
-run("Frontend lint", "pnpm", ["--dir", "web", "lint"])
-run("Frontend tests", "pnpm", ["--dir", "web", "test"])
+run("JavaScript/tooling formatting", "pnpm", ["--dir", "web", "format:check"])
+run("JavaScript/tooling lint", "pnpm", ["--dir", "web", "lint"])
 run("Production builds", "make", ["build"])
 console.log("\n[check] All checks passed.")
