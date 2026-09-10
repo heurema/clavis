@@ -1,0 +1,66 @@
+@import "tailwindcss" source(none);
+@source "../../internal/web/*.templ";
+@source "../../internal/web/ui/**/*.templ";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: var(--secondary);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--secondary);
+  --color-accent-foreground: var(--foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--border);
+  --color-ring: var(--ring);
+}
+
+:root {
+  color-scheme: light;
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #fff;
+  --primary: #2563eb;
+  --primary-foreground: #fff;
+  --secondary: #f1f5f9;
+  --muted-foreground: #475569;
+  --destructive: #b91c1c;
+  --border: #cbd5e1;
+  --ring: #2563eb;
+}
+
+.dark {
+  color-scheme: dark;
+  --background: #080c16;
+  --foreground: #f1f5f9;
+  --card: #0f172a;
+  --primary: #93c5fd;
+  --primary-foreground: #0f172a;
+  --secondary: #1e293b;
+  --muted-foreground: #cbd5e1;
+  --destructive: #fca5a5;
+  --border: #475569;
+  --ring: #93c5fd;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  body {
+    margin: 0;
+    min-width: 320px;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+  }
+}

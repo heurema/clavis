@@ -25,10 +25,8 @@ if (format.status !== 0 || format.stdout.trim()) {
   process.exit(1)
 }
 run("Template formatting and generated source", "make", ["check-web-generated"])
-run("Template tooling tests", process.execPath, [
-  "--test",
-  "scripts/templ.test.mjs",
-])
+run("Embedded asset preparation", "make", ["build-web-assets"])
+run("Build tooling tests", process.execPath, ["--test", "scripts/*.test.mjs"])
 run("Go lint (including vet)", "make", ["lint-go"])
 run("Go tests", "go", ["test", "./..."])
 run("JavaScript/tooling formatting", "pnpm", ["--dir", "web", "format:check"])
