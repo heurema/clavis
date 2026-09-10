@@ -68,6 +68,7 @@ func RunWithIO(ctx context.Context, args []string, streams IO) int {
 			}},
 		},
 	}
+	command.Commands = append(command.Commands, authCommands(streams, check, func(value Result) { result = &value })...)
 	if err := command.Run(ctx, args); err != nil {
 		value := failure("INVALID_ARGUMENT", "Invalid arguments or configuration; run clavis help", nil)
 		result = &value

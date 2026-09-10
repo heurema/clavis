@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/heurema/clavis/internal/platform"
 )
 
 const maxResponseBytes = 64 << 10
@@ -71,6 +73,13 @@ func Doctor(ctx context.Context, baseURL string, timeout time.Duration) Result {
 	}
 	if response.StatusCode == http.StatusServiceUnavailable && health.Status == "not_ready" && health.Error != nil && health.Error.Code == "DEPENDENCY_UNAVAILABLE" {
 		return failure("DEPENDENCY_UNAVAILABLE", "Database unavailable", Diagnosis{"reachable", "unavailable"})
+	}
+	if response.StatusCode == http.StatusServiceUnavailable && health.Status == "not_ready" && health.Error != nil {
+		switch health.Error.Code {
+		case platform.CodeInitializing, platform.CodeSetupRequired, platform.CodeBootstrapFailed, platform.CodeSchemaError:
+			safe, _ := platform.LookupFailure(health.Error.Code)
+			return failure(safe.Code, safe.Message, Diagnosis{"reachable", "ready"})
+		}
 	}
 	return invalid
 }

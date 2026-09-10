@@ -15,7 +15,9 @@ type HiddenPasswordReader func(ctx context.Context, stdin io.Reader, stderr io.W
 // IO supplies command streams without relying on process-global standard files.
 // Nil streams mean empty input or discarded output, never an implicit OS stream.
 // ReadPassword is optional; nil means hidden input is unavailable, not permission
-// to fall back to echoed input. Existing commands do not read passwords.
+// to fall back to echoed input. The executable explicitly supplies the terminal
+// adapter. Blocking stdin should be an *os.File so reads can observe cancellation;
+// other injected readers must return promptly.
 // The caller owns the streams; commands do not close them.
 type IO struct {
 	Stdin        io.Reader

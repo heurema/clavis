@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/buildinfo"
 )
 
@@ -40,6 +41,12 @@ func render(w io.Writer, result Result, format string) error {
 		}
 	}
 	switch data := result.Data.(type) {
+	case auth.Identity:
+		_, err := fmt.Fprintf(w, "User: %s (%s)\nRole: %s\nExpires: %s\n", data.User.Username, data.User.ID, data.User.Role, data.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z"))
+		return err
+	case auth.Revocation:
+		_, err := fmt.Fprintf(w, "Revoked: %t\n", data.Revoked)
+		return err
 	case Diagnosis:
 		_, err := fmt.Fprintf(w, "API: %s\nDatabase: %s\n", data.API, data.Database)
 		return err
