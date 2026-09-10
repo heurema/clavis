@@ -6,11 +6,11 @@
 
 ## 2. Build and serve the embedded application
 
-- [ ] 2.1 Add deterministic CSS/script/notice preparation for `internal/web/assets` with pinned local inputs; verify the staged set contains every referenced asset and a missing input or failed CSS build exits unsuccessfully instead of retaining a successful stale output.
-- [ ] 2.2 Add embedded public asset serving under `/assets/`; verify Go HTTP tests cover correct MIME/cache headers, successful file retrieval, and 404 responses for unknown paths, directories and private-file probes.
-- [ ] 2.3 Add buffered templ rendering for `GET /` and `GET /ui/readiness`, sharing the bounded readiness check with the JSON handler; verify ready/503 fragments, safe rendering failures, cache prevention, and initial document availability with the database unavailable.
-- [ ] 2.4 Protect the existing `/health/live`, `/health/ready` and CLI contracts while mounting the UI on the same router; verify existing Go/CLI tests plus requests with HTML/partial-request headers still receive the documented JSON responses.
-- [ ] 2.5 Add `make build-server`, `make build-cli`, asset/generation prerequisites and atomic binary output as described in the design; verify the server builds with `CGO_ENABLED=0`, missing generation stops the build, and CLI-only compilation invokes no web tools.
+- [x] 2.1 Add deterministic CSS/script/notice preparation for `internal/web/assets` with pinned local inputs; verify the staged set contains every referenced asset and a missing input or failed CSS build exits unsuccessfully instead of retaining a successful stale output.
+- [x] 2.2 Add embedded public asset serving under `/assets/`; verify Go HTTP tests cover correct MIME/cache headers, successful file retrieval, and 404 responses for unknown paths, directories and private-file probes.
+- [x] 2.3 Add buffered templ rendering for `GET /` and `GET /ui/readiness`, sharing the bounded readiness check with the JSON handler; verify ready/503 fragments, safe rendering failures, cache prevention, and initial document availability with the database unavailable.
+- [x] 2.4 Protect the existing `/health/live`, `/health/ready` and CLI contracts while mounting the UI on the same router; verify existing Go/CLI tests plus requests with HTML/partial-request headers still receive the documented JSON responses.
+- [x] 2.5 Add `make build-server`, `make build-cli`, asset/generation prerequisites and atomic binary output as described in the design; verify the server builds with `CGO_ENABLED=0`, missing generation stops the build, and CLI-only compilation invokes no web tools.
 
 ## 3. Replace the setup page and its browser behavior
 

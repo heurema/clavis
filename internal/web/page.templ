@@ -1,0 +1,72 @@
+package web
+
+import (
+	"github.com/heurema/clavis/internal/web/ui/button"
+	"github.com/heurema/clavis/internal/web/ui/card"
+	"github.com/heurema/clavis/internal/web/ui/icon"
+)
+
+templ Page() {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>Clavis — Setup</title>
+			<link rel="stylesheet" href="/assets/app.css"/>
+			<script src="/assets/htmx.min.js" defer></script>
+		</head>
+		<body>
+			<main class="mx-auto max-w-2xl space-y-6 px-4 py-12">
+				<header class="flex items-center gap-3">
+					@icon.KeyRound(icon.Props{Class: "size-8"})
+					<h1 class="text-2xl font-semibold">Clavis</h1>
+				</header>
+				@card.Card() {
+					@card.Header() {
+						<h2 class="text-xl font-semibold">Environment status</h2>
+					}
+					@card.Content() {
+						<p class="text-muted-foreground">Readiness has not been checked.</p>
+						<p class="mt-2 text-sm text-muted-foreground">Interactive checks and appearance controls are still being implemented.</p>
+					}
+					@card.Footer() {
+						@button.Button(button.Props{Href: "/ui/readiness"}) {
+							Check readiness
+						}
+					}
+				}
+				<footer class="text-sm text-muted-foreground">
+					<a href="/assets/notices.txt" class="underline underline-offset-4">Third-party notices</a>
+				</footer>
+			</main>
+		</body>
+	</html>
+}
+
+templ Readiness(ready bool) {
+	<section id="readiness" aria-labelledby="readiness-heading" class="space-y-4">
+		if ready {
+			<h2 id="readiness-heading" class="text-xl font-semibold">Your environment is ready</h2>
+		} else {
+			<h2 id="readiness-heading" class="text-xl font-semibold">Database unavailable</h2>
+			<p class="text-muted-foreground">The server is reachable, but its database is unavailable.</p>
+		}
+		<dl class="space-y-2">
+			<div class="flex items-center gap-3">
+				@icon.Server(icon.Props{Class: "size-5"})
+				<dt>API</dt>
+				<dd>Reachable</dd>
+			</div>
+			<div class="flex items-center gap-3">
+				@icon.Database(icon.Props{Class: "size-5"})
+				<dt>Database</dt>
+				if ready {
+					<dd>Ready</dd>
+				} else {
+					<dd>Unavailable</dd>
+				}
+			</div>
+		</dl>
+	</section>
+}

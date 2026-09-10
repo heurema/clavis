@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/heurema/clavis/internal/config"
+	"github.com/heurema/clavis/internal/web"
 )
 
 type Database interface {
@@ -43,9 +44,7 @@ func Handler(checkTimeout time.Duration, database Database, logger *slog.Logger)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
 	})
 	router.Get("/health/ready", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), checkTimeout)
-		defer cancel()
-		if err := database.Ping(ctx); err != nil {
+		if !databaseReady(r.Context(), checkTimeout, database) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{
 				"status": "not_ready",
 				"error":  map[string]string{"code": "DEPENDENCY_UNAVAILABLE", "message": "Database unavailable"},
@@ -54,7 +53,31 @@ func Handler(checkTimeout time.Duration, database Database, logger *slog.Logger)
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
+	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		if err := web.Render(w, r, http.StatusOK, web.Page()); err != nil {
+			logger.Error("web_response_failed", "code", "WEB_RESPONSE_FAILED")
+		}
+	})
+	router.Get("/ui/readiness", func(w http.ResponseWriter, r *http.Request) {
+		ready := databaseReady(r.Context(), checkTimeout, database)
+		status := http.StatusServiceUnavailable
+		if ready {
+			status = http.StatusOK
+		}
+		w.Header().Set("X-Clavis-Fragment", "readiness")
+		if err := web.Render(w, r, status, web.Readiness(ready)); err != nil {
+			logger.Error("web_response_failed", "code", "WEB_RESPONSE_FAILED")
+		}
+	})
+	router.Get("/assets/*", web.ServeAsset)
+	router.Head("/assets/*", web.ServeAsset)
 	return router
+}
+
+func databaseReady(ctx context.Context, timeout time.Duration, database Database) bool {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return database.Ping(ctx) == nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
