@@ -6,25 +6,59 @@ context: |
   Keep OpenSpec structural headings and SHALL/MUST keywords in English.
   Product requirements and MVP scope are defined in docs/PRD.md.
   Read docs/PRD.md before creating proposals, specifications, or designs.
+  Read relevant maintained requirements in openspec/specs/ and their referenced
+  decisions before planning, implementation, or review. The selected persistence
+  toolchain is specified in openspec/specs/project-bootstrap/spec.md.
+  Reconcile these with the change's delta specs and explicit owner-approved
+  departures; neither omission nor proposal approval silently supersedes a
+  requirement. Surface unresolved conflicts rather than weakening requirements.
+  Follow the portable implementation and review loop in README.md (OpenSpec workflow).
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+# Artifact rules shape the plan; operation guidance is advisory, not an approval gate.
+rules:
+  proposal:
+    - Scope the change to an independently reviewable outcome with a safe
+      intermediate state; do not split coupled behavior just to reduce size.
+    - Identify inherited requirements and explicitly proposed departures.
+  design:
+    - Include an Inherited decisions section with source references and retained,
+      explicitly changed, or conflicting status. Request owner approval for
+      unresolved departures before implementation.
+  tasks:
+    - Group tasks into coherent behavior slices. For each slice, identify relevant
+      requirements and scenarios, dependencies, owned paths, and verification commands.
+    - Include separate implementation and independent acceptance-review tasks per
+      slice, followed by whole-change integration checks. Preserve numbered checkboxes.
+    - Treat more than 400 changed handwritten lines or 6 files, including tests, as
+      a rescoping signal rather than permission to omit behavior or required fixes.
+      Keep generated output with its inputs and report its size separately.
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+operations:
+  apply:
+    guidance:
+      - Confirm the assigned slice before coding. If the request does not bound the
+        work, agree the next slice instead of treating the whole change as one assignment.
+      - Implement only the assigned slice, run its checks, report evidence and
+        unresolved issues, and stop for independent review. Workers do not approve
+        their own work or edit shared OpenSpec task status.
+      - When delegation is supported, the coordinator may assign up to two independent
+        slices; otherwise work sequentially. Count implementation, pending review,
+        and corrections toward that limit. Require resolved interfaces, non-overlapping
+        ownership, and independent behavior/scenarios, not just different files.
+      - The coordinator records implementation and review outcomes separately.
+        Review against inherited requirements, delta specs, design, and conventions;
+        record the exact code revision and verification limits in the conversation
+        or ignored local reports. Missing evidence is not acceptance.
+      - Resolve blocking findings and repeat affected reviews after relevant code
+        changes before starting dependent work. Coordinator integration edits follow
+        the same slice and review rules; successful worker integration is not approval.
+      - Surface scope growth or specification conflicts for a split or owner decision.
+        Never weaken requirements or tests to make an implementation pass.
+  archive:
+    guidance:
+      - Run the native verify workflow in an independent review context on the final
+        revision, explicitly supplying the inherited requirement references as well
+        as the change artifacts. Task completion is not final owner acceptance.
+      - Resolve requirement violations and missing acceptance evidence even if verify
+        labels them warnings. Ask the owner about remaining exceptions before archive;
+        neither verification nor these instructions mechanically blocks the CLI.
