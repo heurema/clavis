@@ -1,5 +1,10 @@
 schema: spec-driven
 
+# Native verify integrations are checked in. Before regenerating, select core
+# workflows plus verify and use OpenSpec at least as new as the highest checked-in
+# generatedBy version; review the full diff. Profile settings are machine-global,
+# and Codex command generation writes to CODEX_HOME (default ~/.codex).
+
 context: |
   Language: English
   All artifacts must be written in English.
@@ -12,7 +17,6 @@ context: |
   Reconcile these with the change's delta specs and explicit owner-approved
   departures; neither omission nor proposal approval silently supersedes a
   requirement. Surface unresolved conflicts rather than weakening requirements.
-  Follow the portable implementation and review loop in README.md (OpenSpec workflow).
 
 # Artifact rules shape the plan; operation guidance is advisory, not an approval gate.
 rules:
@@ -33,14 +37,20 @@ rules:
       a rescoping signal rather than permission to omit behavior or required fixes.
       Keep generated output with its inputs and report its size separately.
 
+# OpenSpec 1.6.0 omits context/operation guidance from apply/archive delivery.
+# Read this policy directly per AGENTS.md; do not assume CLI output includes it.
 operations:
   apply:
     guidance:
       - Confirm the assigned slice before coding. If the request does not bound the
         work, agree the next slice instead of treating the whole change as one assignment.
+        State the slice and independent-review stop explicitly in the invocation;
+        pilot that boundary before relying on parallel operation.
       - Implement only the assigned slice, run its checks, report evidence and
-        unresolved issues, and stop for independent review. Workers do not approve
-        their own work or edit shared OpenSpec task status.
+        unresolved issues, and stop for independent review. Delegated workers report
+        completion for the coordinator to record in tasks.md. When working solo,
+        use the native workflow's implementation-checkbox updates; neither mode
+        permits workers to approve their own acceptance-review tasks.
       - When delegation is supported, the coordinator may assign up to two independent
         slices; otherwise work sequentially. Count implementation, pending review,
         and corrections toward that limit. Require resolved interfaces, non-overlapping
@@ -58,7 +68,10 @@ operations:
     guidance:
       - Run the native verify workflow in an independent review context on the final
         revision, explicitly supplying the inherited requirement references as well
-        as the change artifacts. Task completion is not final owner acceptance.
+        as the change artifacts. Verify is change-wide, not a per-slice review command.
+        Task completion is not final owner acceptance.
       - Resolve requirement violations and missing acceptance evidence even if verify
-        labels them warnings. Ask the owner about remaining exceptions before archive;
-        neither verification nor these instructions mechanically blocks the CLI.
+        labels them warnings. Obtain owner acceptance, including any remaining
+        exceptions, before final spec sync or archive. The CLI can require confirmation
+        or --yes for incomplete tasks; that override is not review approval, and verify
+        reports do not mechanically gate archive.
