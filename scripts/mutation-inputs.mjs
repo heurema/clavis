@@ -6,7 +6,6 @@ import {
   readdirSync,
 } from "node:fs"
 import { join, relative } from "node:path"
-import { copySqlInputs } from "./sqlc.mjs"
 
 export function goSources(root) {
   function walk(directory) {
@@ -43,9 +42,11 @@ export function copyMutationInputs(root, workspace, sources) {
     "go.sum",
     ".gremlins.yaml",
     "internal/web/assets",
+    "sqlc.yaml",
+    "internal/database/migrations",
+    "internal/database/queries",
   ])
     cpSync(join(root, path), join(workspace, path), { recursive: true })
-  copySqlInputs(root, workspace)
   for (const path of sources) {
     const destination = join(workspace, relative(root, path))
     mkdirSync(join(destination, ".."), { recursive: true })

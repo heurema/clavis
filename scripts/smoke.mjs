@@ -14,8 +14,6 @@ import { createConnection, createServer } from "node:net"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
-import { launchSmokeBrowser } from "../web/tests/smoke-browser.mjs"
-import { launchAuthSmokeBrowser } from "../web/tests/smoke-auth-browser.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 const reports = join(root, "reports")
@@ -40,7 +38,7 @@ function redact(value) {
 const deadline = Date.now() + 180_000
 const summary = {
   project,
-  scope: "browser-api-cli",
+  scope: "api-cli",
   status: "running",
   startedAt: new Date().toISOString(),
 }
@@ -49,9 +47,7 @@ let cleaning = false,
   stopped = false,
   before,
   runtime,
-  privateDirectory,
-  browser,
-  authBrowser
+  privateDirectory
 const servers = []
 function persist() {
   writeFileSync(
@@ -201,9 +197,6 @@ async function waitListener(port) {
 function cancel() {
   stopped = true
   for (const child of children) void stop(child)
-  // The same close promise is awaited (and any error reported) in finally.
-  void browser?.close().catch(() => {})
-  void authBrowser?.close().catch(() => {})
 }
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, cancel)
 const watchdog = setTimeout(cancel, Math.max(1, deadline - Date.now()))
@@ -350,19 +343,33 @@ try {
   assert.equal(doctor.schemaVersion, 1)
   assert.equal(doctor.ok, true)
   assert.equal(doctor.data.database, "ready")
-  browser = await launchSmokeBrowser(apiURL, reports)
-  summary.browser = browser.evidence
-  await browser.open()
-  await browser.retry("ready")
+  // HTTP availability only: no rendering or client-side interaction is tested.
+  for (const [path, contentType] of [
+    ["/", "text/html"],
+    ["/login", "text/html"],
+    ["/assets/app.css", "text/css"],
+    ["/assets/appearance.js", "text/javascript"],
+    ["/assets/readiness.js", "text/javascript"],
+    ["/assets/htmx.min.js", "text/javascript"],
+    ["/assets/notices.txt", "text/plain"],
+  ]) {
+    const response = await fetch(apiURL + path, {
+      redirect: "error",
+      signal: AbortSignal.timeout(2_000),
+    })
+    assert.equal(response.status, 200, `${path} is unavailable`)
+    assert.equal(
+      response.headers.get("content-type")?.split(";")[0],
+      contentType,
+    )
+    assert((await response.text()).trim(), `${path} is empty`)
+  }
+  summary.httpDocumentsAndAssets = "passed"
   console.log(
-    "[smoke] Copied binary serves styled, interactive UI with PATH empty",
+    "[smoke] Copied binary serves HTTP documents and embedded assets with PATH empty",
   )
   injectFailure("after-start")
 
-  authBrowser = await launchAuthSmokeBrowser(apiURL)
-  summary.authentication = authBrowser.evidence
-  await authBrowser.login("smoke-admin", password)
-  await authBrowser.rejectCrossOriginLogout()
   const administrator = (await login("admin-one")).data.user
   assert.equal(administrator.username, "smoke-admin")
   assert.equal(
@@ -373,10 +380,8 @@ try {
   await cli("admin-one", ["sessions", "revoke", "--user", administrator.id])
   for (const name of ["admin-one", "admin-two"])
     assert.equal((await cli(name, ["whoami"], 1)).error.code, "UNAUTHENTICATED")
-  await authBrowser.expectRevoked()
 
   await login("admin-one")
-  await authBrowser.login("smoke-admin", password)
   // Direct SQL is confined to this disposable fixture, not a product management
   // API. It exercises current roles/expiry without inventing user-management UI.
   await sql(
@@ -393,7 +398,6 @@ try {
     ).error.code,
     "FORBIDDEN",
   )
-  await authBrowser.expectForbidden()
   await sql(
     "UPDATE users SET role='admin' WHERE username='smoke-admin'",
     "fixture-restore-role",
@@ -406,7 +410,6 @@ try {
     (await cli("admin-one", ["whoami"], 1)).error.code,
     "UNAUTHENTICATED",
   )
-  await authBrowser.expectRevoked()
 
   await sql(
     "INSERT INTO users(id,username,password_hash,role) SELECT gen_random_uuid(),'smoke-member',password_hash,'member' FROM users WHERE username='smoke-admin'",
@@ -418,7 +421,6 @@ try {
       .error.code,
     "FORBIDDEN",
   )
-  await authBrowser.login("smoke-member", password, false)
   await sql(
     "UPDATE users SET disabled=true WHERE username='smoke-member'",
     "fixture-disable",
@@ -427,16 +429,18 @@ try {
     (await cli("member", ["whoami"], 1)).error.code,
     "UNAUTHENTICATED",
   )
-  await authBrowser.expectRevoked()
-  await authBrowser.login("smoke-admin", password)
-  await authBrowser.logout()
   await login("admin-one")
   await cli("admin-one", ["logout"])
+  assert.equal(
+    (await cli("admin-one", ["whoami"], 1)).error.code,
+    "UNAUTHENTICATED",
+  )
   await cli("admin-two", ["logout"])
   await cli("member", ["logout"])
   await login("outage")
+  summary.authentication = "passed"
   console.log(
-    "[smoke] Real browser/CLI login, role checks, expiry and multi-client revocation passed",
+    "[smoke] Real API/CLI login, logout, role/disabled checks, expiry and multi-client revocation passed",
   )
 
   await execute("docker", [...compose, "stop", "db"], "database-stop")
@@ -456,7 +460,6 @@ try {
     api: "reachable",
     database: "unavailable",
   })
-  await browser.retry("database-unavailable")
   const offlineLogout = await cli("outage", ["logout", "--timeout", "2s"], 1)
   assert.notEqual(offlineLogout.data?.revoked, true)
   await execute(
@@ -482,10 +485,8 @@ try {
   )
   assert.equal(recovered.ok, true)
   assert.equal(recovered.data.database, "ready")
-  await browser.retry("ready")
-  console.log(
-    "[smoke] Real browser, API, CLI and database outage/recovery passed",
-  )
+  summary.databaseOutageRecovery = "passed"
+  console.log("[smoke] Real API, CLI and database outage/recovery passed")
   await stop(api)
   const unavailable = JSON.parse(
     await execute(
@@ -497,17 +498,14 @@ try {
     ),
   )
   assert.equal(unavailable.data.api, "unreachable")
-  await browser.retry("server-unavailable")
   const changedPassword = randomBytes(32).toString("hex")
   secrets.add(changedPassword)
   writeFileSync(passwordFile, changedPassword)
   serverEnv.CLAVIS_BOOTSTRAP_USERNAME = "changed-admin"
   api = startAPI()
   await waitHTTP(`${apiURL}/health/ready`, 200)
-  await browser.retry("ready")
-  console.log(
-    "[smoke] Same-address server restart recovered the loaded page without reload",
-  )
+  summary.serverOutageRecovery = "passed"
+  console.log("[smoke] Same-address server restart recovered HTTP readiness")
   injectFailure("after-restart")
   assert.equal((await login("restart")).data.user.id, administrator.id)
   await cli("restart", ["logout"])
@@ -517,16 +515,9 @@ try {
   await waitHTTP(`${apiURL}/health/ready`, 200)
   assert.equal((await login("without-secret")).data.user.id, administrator.id)
   await cli("without-secret", ["logout"])
-  await browser.retry("ready")
   summary.bootstrapCredentialsIgnoredAfterInitialization = "passed"
   const securePort = await freePort()
-  const upstreamPort = await freePort()
   const secureOrigin = `https://127.0.0.1:${securePort}`
-  startAPI({
-    CLAVIS_HTTP_ADDR: `127.0.0.1:${upstreamPort}`,
-    CLAVIS_PUBLIC_URL: secureOrigin,
-  })
-  await waitHTTP(`http://127.0.0.1:${upstreamPort}/health/ready`, 200)
   const proxyExecutable = join(privateDirectory, "https-proxy")
   await execute(
     "go",
@@ -535,25 +526,12 @@ try {
   )
   start(
     proxyExecutable,
-    [
-      "--listen",
-      `127.0.0.1:${securePort}`,
-      "--upstream",
-      `http://127.0.0.1:${upstreamPort}`,
-    ],
+    ["--listen", `127.0.0.1:${securePort}`, "--upstream", apiURL],
     "https-proxy",
   )
   await waitListener(securePort)
-  await authBrowser.close()
-  authBrowser = await launchAuthSmokeBrowser(secureOrigin, {
-    selfSignedFixture: true,
-  })
-  summary.httpsAuthentication = authBrowser.evidence
-  await authBrowser.login("smoke-admin", password)
-  await authBrowser.rejectCrossOriginLogout()
-  await authBrowser.logout()
-  // Browser trust is fixture-local. The unmodified CLI must still reject this
-  // self-signed certificate; no OS trust store or insecure CLI flag is used.
+  // The unmodified CLI must reject this in-memory self-signed certificate;
+  // no OS trust store changes, private key files or insecure CLI flag are used.
   const untrustedTLS = JSON.parse(
     await execute(
       join(root, "bin/clavis"),
@@ -564,8 +542,9 @@ try {
     ),
   )
   assert.equal(untrustedTLS.error.code, "SERVER_UNREACHABLE")
+  summary.cliUntrustedTLS = "passed"
   console.log(
-    "[smoke] HTTPS proxy, secure browser cookies, Origin checks and CLI TLS verification passed",
+    "[smoke] CLI rejected the local HTTPS fixture's untrusted certificate",
   )
   injectFailure("after-https")
   assert(!stopped && Date.now() < deadline, "Smoke run exceeded its deadline")
@@ -589,12 +568,6 @@ try {
       errors.push(`${label}: ${error.message}`)
     }
   }
-  await cleanup("browser", async () => {
-    await browser?.close()
-  })
-  await cleanup("authentication browser", async () => {
-    await authBrowser?.close()
-  })
   for (const child of children)
     await cleanup(`process ${child.pid}`, () => stop(child))
   if (composeStarted)

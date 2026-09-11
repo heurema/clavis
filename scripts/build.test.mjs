@@ -393,3 +393,16 @@ test("CLI builds without web or SQL sources or tools and publishes only successf
   assert.equal(digest(join(directory, "bin/clavis")), binary)
   assert.deepEqual(readdirSync(join(directory, "bin")), ["clavis"])
 })
+
+test("Make propagates missing tool failures without implicit installation", (t) => {
+  const directory = fixture(t, false)
+  copyFileSync(join(root, "sqlc.yaml"), join(directory, "sqlc.yaml"))
+  for (const target of [
+    "check-web-generated",
+    "lint-go",
+    "check-db-generated",
+  ]) {
+    execute(directory, "make", [target, `NODE=${process.execPath}`], 2)
+    assert.equal(existsSync(join(directory, ".tools")), false)
+  }
+})

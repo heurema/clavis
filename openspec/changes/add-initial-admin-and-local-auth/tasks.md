@@ -63,3 +63,17 @@ The persistence correction splits into Goose migration ownership (2.1), sqlc app
 - [x] 7.6 Remove other confirmed dead helpers/imports/icons and avoid repeatedly computing immutable migration metadata; regenerate any affected templates and preserve immutable ownership, attribution, checked-in generation and all meaningful tests.
 - [x] 7.7 Independently review the fixes and rerun generated-source/boundary checks, Go/race/browser and real PostgreSQL smoke coverage, including bootstrap failure recovery/auditing and cleanup; record limitations honestly and leave unrelated policy choices unchanged.
 - [x] 7.8 Reuse the cached embedded manifest in production migration attempts and return Goose's public migration-list results from the same validated ledger read; preserve fresh injectable inputs, result ordering, shared integrity policy, locking and transaction ownership, then verify focused regressions, real PostgreSQL behavior and independent review.
+
+## 8. Simplify development tooling
+
+- [x] 8.1 Remove custom runtime/tool-version gates, redundant installation/launch wrappers and nested check orchestration; use package-manager metadata, pinned installation commands and clear Make targets, preserving failure propagation, generated-source checks and Go-only CLI builds without maintaining a second version-validation system.
+- [x] 8.2 Use ordinary YAML parsed by sqlc itself and remove the custom sqlc wrapper and its extra parser dependency; treat maintained build configuration as trusted, retain non-mutating whole-output comparison and application persistence boundaries, and verify generated-byte equivalence, failed-generation preservation and stale/missing/extra output through public commands.
+- [x] 8.3 Review the combined simplification for removed capabilities, stale references and shifted complexity; verify clean setup, full checks, race tests and real smoke, update concise tooling documentation, and record any retained scripts or validation limitations without weakening required checks.
+
+## 9. Retire browser automation
+
+Browser-automation work recorded in earlier completed tasks is superseded by this user-requested removal. Product UI behavior and non-browser rendering/HTTP tests remain in scope.
+
+- [x] 9.1 Remove browser suites, fixtures, browser-only exporters and Playwright dependencies; remove browser installation and execution from Make/package commands while preserving the application UI, asset build and non-browser tests.
+- [x] 9.2 Make real smoke verification API/CLI-only, retaining copied-binary HTTP availability, database/bootstrap/authentication/outage coverage and owned-resource cleanup; remove browser contexts, tracing, screenshots and browser-evidence claims.
+- [x] 9.3 Align the active requirements and documentation with browser-free validation, verify local instructions remain ignored, and run clean setup, non-browser checks/race tests and smoke without invoking browser automation.

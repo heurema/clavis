@@ -24,17 +24,19 @@ Clavis now serves a verified, self-contained setup UI, but has no persisted user
 
 ### Modified Capabilities
 
-- `project-bootstrap`: extend readiness and doctor diagnostics to distinguish incomplete initialization from database failure; extend the setup/status view without weakening its bounded retry behavior.
+- `project-bootstrap`: extend readiness and doctor diagnostics to distinguish incomplete initialization from database failure; extend the setup/status view without weakening its bounded retry behavior, and use non-browser quality and smoke checks.
 - `embedded-web`: preserve standalone serving and representation isolation while adding initialization fragments and authentication pages.
 
 ## Impact
 
 - Backend: `cmd/server`, `internal/config`, `internal/database`, `internal/server` and new initialization/authentication packages and embedded SQL.
-- UI: `internal/web` templates and generated Go, maintained browser assets and browser fixtures/tests.
+- UI: `internal/web` templates and generated Go, maintained browser assets and non-browser rendering/HTTP tests.
 - Client: `internal/cli`, the client entry point where needed for terminal input, and authentication transport/storage tests.
-- Tooling: real-database smoke fixtures must initialize isolated installations, and documentation must distinguish one-time bootstrap inputs from ongoing credentials.
+- Tooling: real-database API/CLI smoke fixtures must initialize isolated installations without browser automation, and documentation must distinguish one-time bootstrap inputs from ongoing credentials.
 - Dependencies: retain pgx, chi, templ and urfave/cli; integrate the selected Goose 3.28.0 runtime library and sqlc 1.31.1 development tool, with pinned password-hashing and terminal-input libraries. No new runtime service or external migration executable is required.
 
 ## Non-goals
 
 Google/OIDC, account linking, self-registration, browser-based first-admin creation, password recovery/rotation, full user/group/role administration, connection authorization, providers and general audit inspection are later changes, not removed from MVP scope. This change does not introduce a default/shared administrator password, a mandatory bootstrap command, a deployment-specific manifest, or a second web server.
+
+Automated browser testing is outside the current validation scope; the browser UI remains part of the application.

@@ -53,6 +53,7 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make build` | Build the server and CLI |
 | `make build-server` | Verify generated templates/queries, rebuild embedded assets and build the server |
 | `make build-cli` | Build only the CLI using Go, without web or SQL tools |
+| `make install-templ` / `make install-golangci-lint` | Install the exact template compiler / Go linter pin |
 | `make install-sqlc` | Install the exact development sqlc pin |
 | `make generate-db` | Explicitly regenerate checked-in pgx query methods |
 | `make check-db-generated` | Check the complete generated query tree without rewriting files |
@@ -61,37 +62,43 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make build-web-assets` | Rebuild only ignored CSS, scripts and embedded attribution notices |
 | `make check-web-generated` | Check template formatting and generated-source consistency without rewriting files |
 | `make check` | Run non-mutating source checks, linters, tests, and builds |
-| `make test-web` | Build the server and run Chromium behavior/layout tests |
 | `make lint-go` | Run golangci-lint |
 | `make format` | Format maintained Go, templates and JavaScript; regenerate templ Go source |
-| `make smoke` | Test the standalone server in Chromium with real database/API/CLI outage, recovery and cleanup |
+| `make smoke` | Test standalone server HTTP/API/CLI behavior with real database outage, recovery and cleanup |
 | `make test-mutation` | Prepare embedded inputs, run isolated Go mutation testing and report survivors |
 | `make down` | Stop the database and keep its data |
 | `make reset-db` | Delete the local Clavis database and its data |
 
-`make setup` installs pinned sqlc and templ tools plus Playwright Chromium under
-ignored `.tools/`.
-`make test-web` exercises the built server, with controlled readiness responses
-for deadlines, stalled bodies, cancellation and safe failure handling. It also
-checks appearance, keyboard controls and desktop/mobile layouts. Screenshots and
-traces are written under ignored `reports/`.
+`make setup` installs templ, golangci-lint and sqlc with versioned `go install`
+commands into ignored `.tools/<tool>/bin/`, and frontend development dependencies
+with pnpm's frozen lockfile. Pins come from the templ runtime in `go.mod`,
+`GOLANGCI_VERSION` in `Makefile`, and `.sqlc-version`. Go verifies downloaded
+modules using its normal module integrity checks; no remote installer is executed
+and application Go dependencies are not changed. Package managers and pinned
+install arguments own tool versions; builds/checks do not add custom version gates
+or install tools.
+Rerun the relevant installation target after changing a pin.
+
+`make check` retains Go unit, render, HTTP, authentication, cookie and CSRF tests,
+Node build/tooling regression tests, generated-source checks, formatting, lint and
+builds. It does not run browser automation or visual/layout tests, and setup does
+not install browser binaries.
 
 `make smoke` copies only the server executable into a fresh temporary directory
-and runs it there with an empty executable search path. Chromium, JSON health
-requests and the CLI use that server's origin; third-party browser requests are
-blocked. It verifies embedded assets, notices, keyboard controls and appearance,
-concurrent initialization, browser/CLI authentication, expiry, role checks and
-multi-client revocation, then stops/restarts an isolated PostgreSQL database and
-the copied server. Test credentials and CLI homes are private temporary inputs,
-not companion application assets, and are removed during cleanup. Authentication
-uses a separate untraced browser context to avoid persisting passwords or cookies.
-An additional loopback HTTPS proxy checks production cookie/Origin behavior with
-an in-memory test certificate. Only that browser fixture accepts the self-signed
-certificate; the CLI must reject it, and no OS trust settings are changed.
-The loaded page must recover through explicit retry without a reload. The runner
-has a 180-second execution deadline, followed by cleanup of its own resources.
+and runs it there with an empty executable search path. HTTP requests verify the
+login document and availability of its referenced embedded assets. JSON API
+requests and the CLI exercise concurrent initialization, authentication, expiry,
+role checks and multi-client revocation, then outage/recovery by stopping and
+restarting an isolated PostgreSQL database and the copied server. Test credentials
+and CLI homes are private temporary inputs, not companion application assets,
+and are removed during cleanup. An additional loopback HTTPS proxy uses an
+in-memory test certificate to verify that the CLI rejects a self-signed
+certificate; no OS trust settings are changed. This smoke test does not launch a
+browser or verify JavaScript interactions, appearance, layout, or browser cookie
+and Origin behavior. The runner has a 180-second execution deadline, followed by
+cleanup of its own resources.
 It leaves existing development processes, database containers and volumes alone.
-Logs, screenshots, a browser trace and `smoke-summary.json` go under `reports/`.
+Logs and `smoke-summary.json` go under `reports/`.
 
 To exercise failure cleanup, run `CLAVIS_SMOKE_FAIL=after-start make smoke`,
 `CLAVIS_SMOKE_FAIL=after-restart make smoke` or
@@ -112,8 +119,8 @@ is not a claim that every mutation was detected. Tool failures or the default
 600-second deadline return nonzero. Optional `CLAVIS_MUTATION_WORKERS` and
 `CLAVIS_MUTATION_TIMEOUT_SECONDS` adjust concurrency and the execution bound.
 
-`web/` holds pinned development dependencies, styles, application scripts and
-browser tests, not a separately deployed application. UI source lives in
+`web/` holds pinned development dependencies, styles and application scripts,
+not a separately deployed application. UI source lives in
 `internal/web/`; commit `.templ` files together
 with generated `*_templ.go` files. Copied-source attribution is in source comments,
 including upstream copyright and permission notices; the build packages those
@@ -121,8 +128,13 @@ notices at `/assets/notices.txt`.
 
 Commit SQL queries, Goose migration sources and `sqlc.yaml` with matching
 `internal/database/sqlc/` output. Applied migrations are immutable; checks
-regenerate in isolation instead of repairing the checkout. Goose owns version
-tracking; handwritten migration metadata is limited to its ledger/checksum/locks.
+regenerate in isolation instead of repairing the checkout. Native sqlc parses the
+maintained YAML configuration and runs with `--no-remote`; Make compares the
+complete output tree, including unexpected files. Explicit generation replaces
+the old tree only after generation succeeds. The fixed SQL input/output paths
+must not contain symlinks; configuration is trusted build input, not sandboxed
+untrusted YAML. Goose owns version tracking; handwritten migration metadata is
+limited to its ledger/checksum/locks.
 
 Node.js, pnpm, templ and sqlc are development tools, not runtime requirements for the
 built Go executables. `make build-server` uses `CGO_ENABLED=0`; copy `bin/server`
