@@ -27,6 +27,9 @@ test("mutation targets include handwritten web behavior, not generated/vendor/fi
     "internal/web/assets.go",
     "internal/web/readiness.go",
     "internal/web/render.go",
+    "internal/auth/password.go",
+    "internal/platform/readiness.go",
+    "internal/database/initialize.go",
   ])
     assert(targets.includes(path), `Missing mutation target ${path}`)
   assert(targets.some((path) => path.startsWith("internal/cli/")))
@@ -34,7 +37,7 @@ test("mutation targets include handwritten web behavior, not generated/vendor/fi
   assert(targets.some((path) => path.startsWith("internal/server/")))
   assert(
     !targets.some((path) =>
-      /(^cmd\/|\/ui\/|\/testdata\/|_test\.go$|_templ\.go$)/.test(path),
+      /(^cmd\/|\/ui\/|\/testdata\/|\/sqlc\/|_test\.go$|_templ\.go$)/.test(path),
     ),
   )
 })
@@ -51,6 +54,16 @@ test("isolated mutation inputs compile with embedded assets and exclude develope
       readFileSync(join(workspace, "internal/web/assets", name)),
       readFileSync(join(root, "internal/web/assets", name)),
     )
+  assert.deepEqual(
+    readFileSync(join(workspace, "sqlc.yaml")),
+    readFileSync(join(root, "sqlc.yaml")),
+  )
+  for (const directory of ["migrations", "queries", "sqlc"])
+    for (const name of readdirSync(join(root, "internal/database", directory)))
+      assert.deepEqual(
+        readFileSync(join(workspace, "internal/database", directory, name)),
+        readFileSync(join(root, "internal/database", directory, name)),
+      )
   const result = spawnSync("go", ["test", "./..."], {
     cwd: workspace,
     encoding: "utf8",

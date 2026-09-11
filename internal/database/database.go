@@ -13,7 +13,7 @@ func Open(ctx context.Context, connectionString string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Keep this readiness-only pool small and lazy, regardless of URL options.
+	// Keep the platform pool small and lazy, regardless of URL options.
 	config.MinConns = 0
 	config.MinIdleConns = 0
 	config.MaxConns = 4

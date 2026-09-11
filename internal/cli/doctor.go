@@ -10,9 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
-)
 
-const maxResponseBytes = 64 << 10
+	"github.com/heurema/clavis/internal/auth"
+	"github.com/heurema/clavis/internal/platform"
+)
 
 func validateURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
@@ -51,12 +52,12 @@ func Doctor(ctx context.Context, baseURL string, timeout time.Duration) Result {
 		return failure("SERVER_UNREACHABLE", "Server could not be reached", Diagnosis{"unreachable", "unknown"})
 	}
 	defer func() { _ = response.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	body, err := io.ReadAll(io.LimitReader(response.Body, auth.MaxResponseBody+1))
 	if err != nil && ctx.Err() != nil {
 		return failure("TIMEOUT", "Readiness check did not complete", Diagnosis{"unknown", "unknown"})
 	}
 	invalid := failure("INVALID_RESPONSE", "Server returned an invalid readiness response", Diagnosis{"reachable", "unknown"})
-	if err != nil || len(body) > maxResponseBytes {
+	if err != nil || len(body) > auth.MaxResponseBody {
 		return invalid
 	}
 	var health struct {
@@ -71,6 +72,13 @@ func Doctor(ctx context.Context, baseURL string, timeout time.Duration) Result {
 	}
 	if response.StatusCode == http.StatusServiceUnavailable && health.Status == "not_ready" && health.Error != nil && health.Error.Code == "DEPENDENCY_UNAVAILABLE" {
 		return failure("DEPENDENCY_UNAVAILABLE", "Database unavailable", Diagnosis{"reachable", "unavailable"})
+	}
+	if response.StatusCode == http.StatusServiceUnavailable && health.Status == "not_ready" && health.Error != nil {
+		switch health.Error.Code {
+		case platform.CodeInitializing, platform.CodeSetupRequired, platform.CodeBootstrapFailed, platform.CodeSchemaError:
+			safe, _ := platform.LookupFailure(health.Error.Code)
+			return failure(safe.Code, safe.Message, Diagnosis{"reachable", "ready"})
+		}
 	}
 	return invalid
 }

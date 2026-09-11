@@ -1,0 +1,257 @@
+//go:build darwin || linux
+
+package cli
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
+)
+
+func buildCLI(t *testing.T) string {
+	t.Helper()
+	goTool, err := exec.LookPath("go")
+	require.NoError(t, err)
+	dir, err := os.MkdirTemp("", "clavis-cli-build-")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, os.RemoveAll(dir)) })
+	binary := filepath.Join(dir, "clavis")
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, goTool, "build", "-o", binary, "../../cmd/clavis")
+	// Only Go is on PATH, and the internal linker requires no C toolchain.
+	// Build before changing HOME so this can use the already pinned Go cache.
+	command.Env = append(os.Environ(), "PATH="+filepath.Dir(goTool), "CGO_ENABLED=0")
+	out, err := command.CombinedOutput()
+	require.NoError(t, err, "Go-only CLI build: %s", out)
+	return binary
+}
+
+func processCLI(t *testing.T, binary, input string, args ...string) (int, string, string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, binary, args...)
+	command.Stdin = strings.NewReader(input)
+	command.Env = append(os.Environ(), "PATH=")
+	var out, errout bytes.Buffer
+	command.Stdout, command.Stderr = &out, &errout
+	err := command.Run()
+	if err != nil {
+		var exit *exec.ExitError
+		require.True(t, errors.As(err, &exit), "could not execute isolated CLI")
+	}
+	require.NoError(t, ctx.Err(), "CLI subprocess hung")
+	return command.ProcessState.ExitCode(), out.String(), errout.String()
+}
+
+func TestCLIProcesses(t *testing.T) {
+	binary := buildCLI(t)
+	t.Run("workflow-and-offline", func(t *testing.T) {
+		cliHome(t)
+		password := testToken()
+		fixture, server := newCLIFixture(t, password)
+		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		exit, output, prompt := processCLI(t, binary, string(password)+"\n", "login", "--username=cli-test", "--password-stdin")
+		require.Equal(t, 0, exit)
+		require.True(t, decode(t, output).OK)
+		require.Empty(t, prompt)
+		require.False(t, strings.Contains(output, string(password)))
+		exit, output, _ = processCLI(t, binary, "", "whoami", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Contains(t, output, "User: cli-test")
+		require.Contains(t, output, "Role: admin")
+		fixture.mu.Lock()
+		for token := range fixture.sessions {
+			require.False(t, strings.Contains(output, string(token)))
+		}
+		fixture.mu.Unlock()
+		exit, output, _ = processCLI(t, binary, "", "sessions", "revoke", "--user", testIdentity().User.ID, "--output=text")
+		require.Equal(t, 0, exit)
+		require.Equal(t, "Revoked: true\n", output)
+		exit, output, _ = processCLI(t, binary, "", "whoami")
+		require.Equal(t, 1, exit)
+		require.Equal(t, "UNAUTHENTICATED", decode(t, output).Error.Code)
+		exit, output, _ = processCLI(t, binary, "", "logout")
+		require.Equal(t, 0, exit)
+		require.True(t, decode(t, output).OK)
+		server.Close()
+		// Offline commands must not even inspect a deliberately unsafe cache.
+		config, err := os.UserConfigDir()
+		require.NoError(t, err)
+		require.NoError(t, os.Chmod(filepath.Join(config, "clavis"), 0755))
+		for _, args := range [][]string{{"--help"}, {"login", "--help"}, {"sessions", "revoke", "--help"}, {"version"}, {"version", "--output=text"}} {
+			exit, _, prompt = processCLI(t, binary, "", args...)
+			require.Equal(t, 0, exit)
+			require.Empty(t, prompt)
+		}
+		exit, output, _ = processCLI(t, binary, string(password), "login", "--username=cli-test", "--output=text")
+		require.Equal(t, 2, exit)
+		require.Equal(t, "INVALID_ARGUMENT", decode(t, output).Error.Code)
+	})
+	t.Run("concurrent-login-logout", func(t *testing.T) {
+		cliHome(t)
+		password := testToken()
+		fixture, server := newCLIFixture(t, password)
+		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		var workers sync.WaitGroup
+		for range 6 {
+			workers.Go(func() {
+				exit, output, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin", "--timeout=3s")
+				require.Equal(t, 0, exit, "login result error: %+v", decode(t, output).Error)
+				exit, output, _ = processCLI(t, binary, "", "logout", "--timeout=3s")
+				require.Equal(t, 0, exit, "logout result error: %+v", decode(t, output).Error)
+			})
+		}
+		workers.Wait()
+		fixture.mu.Lock()
+		defer fixture.mu.Unlock()
+		require.Equal(t, 6, fixture.login)
+		require.Empty(t, fixture.sessions)
+		_, err := os.Stat(cachePath(t, server.URL))
+		require.True(t, os.IsNotExist(err))
+	})
+	t.Run("lock-contention-and-process-exit", func(t *testing.T) {
+		cliHome(t)
+		password := testToken()
+		_, server := newCLIFixture(t, password)
+		cache, err := openCache(context.Background(), server.URL)
+		require.NoError(t, err)
+		start := time.Now()
+		exit, output, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin", "--server", server.URL, "--timeout=60ms")
+		require.Equal(t, 1, exit)
+		require.Equal(t, "CREDENTIAL_STORAGE_FAILED", decode(t, output).Error.Code)
+		require.Less(t, time.Since(start), time.Second)
+		cache.close()
+		exit, _, _ = processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin", "--server", server.URL)
+		require.Equal(t, 0, exit, "exited process must not retain a lock")
+	})
+	t.Run("stdin-cancellation", func(t *testing.T) {
+		cliHome(t)
+		input, writer, err := os.Pipe()
+		require.NoError(t, err)
+		defer func() { _ = input.Close(); _ = writer.Close() }()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, binary, "login", "--username=cli-test", "--password-stdin")
+		command.Stdin = input
+		var out bytes.Buffer
+		command.Stdout = &out
+		require.NoError(t, command.Start())
+		// Allow startup to install its signal handler before interrupting.
+		time.Sleep(100 * time.Millisecond)
+		require.NoError(t, command.Process.Signal(syscall.SIGTERM))
+		require.Error(t, command.Wait())
+		require.NoError(t, ctx.Err())
+		require.Equal(t, 1, command.ProcessState.ExitCode())
+		require.Equal(t, "TIMEOUT", decode(t, out.String()).Error.Code)
+	})
+	t.Run("killed-lock-holder", func(t *testing.T) {
+		cliHome(t)
+		entered := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			w.(http.Flusher).Flush()
+			close(entered)
+			<-r.Context().Done()
+		}))
+		defer server.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, binary, "login", "--username=cli-test", "--password-stdin", "--server", server.URL)
+		command.Stdin = strings.NewReader(string(testToken()))
+		require.NoError(t, command.Start())
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal("child never reached fixture while holding its credential lock")
+		}
+		require.NoError(t, command.Process.Kill())
+		require.Error(t, command.Wait())
+		lockCtx, lockCancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer lockCancel()
+		cache, err := openCache(lockCtx, server.URL)
+		require.NoError(t, err, "OS must release a killed process's lock")
+		cache.close()
+	})
+	for _, mode := range []string{"success", "ctrl-c", "signal", "oversized"} {
+		t.Run("terminal-"+mode, func(t *testing.T) {
+			cliHome(t)
+			password := testToken()
+			_, server := newCLIFixture(t, password)
+			master, slave := testPTY(t)
+			original, err := term.GetState(int(slave.Fd()))
+			require.NoError(t, err)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, binary, "login", "--username=cli-test", "--server", server.URL)
+			command.Stdin, command.Stderr = slave, slave
+			var out bytes.Buffer
+			command.Stdout = &out
+			require.NoError(t, command.Start())
+			prompt := make([]byte, len("Password: "))
+			for i := range prompt {
+				b, err := inputByte(ctx, master)
+				require.NoError(t, err)
+				prompt[i] = b
+			}
+			require.Equal(t, "Password: ", string(prompt))
+			switch mode {
+			case "success":
+				_, err = io.WriteString(master, string(password)+"\r")
+			case "ctrl-c":
+				_, err = master.Write([]byte{3})
+			case "signal":
+				err = command.Process.Signal(syscall.SIGTERM)
+			case "oversized":
+				_, err = io.WriteString(master, strings.Repeat("x", 16*1024)+"SECRET-SUFFIX-MUST-NOT-REACH-SHELL\n")
+			}
+			require.NoError(t, err)
+			waitErr := command.Wait()
+			require.NoError(t, ctx.Err(), "terminal subprocess hung")
+			if mode == "success" {
+				require.NoError(t, waitErr)
+				require.True(t, decode(t, out.String()).OK)
+			} else {
+				require.Error(t, waitErr)
+				want := 1
+				if mode == "oversized" {
+					want = 2
+				}
+				require.Equal(t, want, command.ProcessState.ExitCode())
+				require.False(t, decode(t, out.String()).OK)
+			}
+			restored, err := term.GetState(int(slave.Fd()))
+			require.NoError(t, err)
+			require.Equal(t, original, restored, "terminal state must always be restored")
+			assertTerminalInputEmpty(t, slave)
+			// Anything the terminal echoed would be visible on the master. Only
+			// the final prompt newline is permitted, not even partial password.
+			fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
+			n, err := unix.Poll(fds, 100)
+			require.NoError(t, err)
+			require.Positive(t, n)
+			var remaining [2048]byte
+			n, err = master.Read(remaining[:])
+			require.NoError(t, err)
+			require.Equal(t, "\r\n", string(remaining[:n]))
+			require.False(t, strings.Contains(out.String(), string(password)))
+		})
+	}
+}

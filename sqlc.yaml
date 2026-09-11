@@ -1,0 +1,16 @@
+version: "2"
+sql:
+  - engine: postgresql
+    schema: internal/database/migrations
+    queries: internal/database/queries
+    gen:
+      go:
+        package: sqlc
+        out: internal/database/sqlc
+        sql_package: pgx/v5
+        omit_unused_structs: true
+        overrides:
+          - db_type: timestamptz
+            go_type:
+              import: time
+              type: Time

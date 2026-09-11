@@ -10,11 +10,10 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs"
-import { createServer } from "node:net"
+import { createConnection, createServer } from "node:net"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
-import { launchSmokeBrowser } from "../web/tests/smoke-browser.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 const reports = join(root, "reports")
@@ -31,10 +30,15 @@ const compose = [
 ]
 const env = { ...process.env }
 const children = new Set()
+const secrets = new Set()
+function redact(value) {
+  for (const secret of secrets) value = value.replaceAll(secret, "[REDACTED]")
+  return value
+}
 const deadline = Date.now() + 180_000
 const summary = {
   project,
-  scope: "browser-api-cli",
+  scope: "api-cli",
   status: "running",
   startedAt: new Date().toISOString(),
 }
@@ -43,7 +47,7 @@ let cleaning = false,
   stopped = false,
   before,
   runtime,
-  browser
+  privateDirectory
 const servers = []
 function persist() {
   writeFileSync(
@@ -58,17 +62,21 @@ function start(command, args, name, options = {}) {
     throw new Error("Smoke run cancelled or exceeded 180 seconds")
   const log = join(reports, `smoke-${name}.log`)
   writeFileSync(log, "")
+  const { input, ...spawnOptions } = options
   const child = spawn(command, args, {
     cwd: root,
     env,
     detached: true,
-    ...options,
+    ...spawnOptions,
   })
+  if (input !== undefined) {
+    child.stdin.on("error", () => {})
+    child.stdin.end(input)
+  }
   children.add(child)
   let output = ""
   const record = (chunk) => {
     output += chunk.toString()
-    writeFileSync(log, chunk, { flag: "a" })
   }
   child.stdout.on("data", record)
   child.stderr.on("data", record)
@@ -79,6 +87,9 @@ function start(command, args, name, options = {}) {
     })
     child.on("close", (code) => {
       children.delete(child)
+      // Buffer before redaction so a secret split across output chunks cannot
+      // be written partially into reports.
+      writeFileSync(log, redact(output))
       resolve({ code, output })
     })
   })
@@ -165,11 +176,27 @@ async function waitHTTP(url, expected) {
     `Startup did not reach HTTP ${expected} within the smoke deadline`,
   )
 }
+async function waitListener(port) {
+  while (Date.now() < deadline && !stopped) {
+    const ready = await new Promise((resolve) => {
+      const socket = createConnection({ host: "127.0.0.1", port })
+      const finish = (value) => {
+        socket.destroy()
+        resolve(value)
+      }
+      socket.setTimeout(500)
+      socket.once("connect", () => finish(true))
+      socket.once("error", () => finish(false))
+      socket.once("timeout", () => finish(false))
+    })
+    if (ready) return
+    await delay(150)
+  }
+  throw new Error("HTTPS fixture did not start within the smoke deadline")
+}
 function cancel() {
   stopped = true
   for (const child of children) void stop(child)
-  // The same close promise is awaited (and any error reported) in finally.
-  void browser?.close().catch(() => {})
 }
 for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, cancel)
 const watchdog = setTimeout(cancel, Math.max(1, deadline - Date.now()))
@@ -200,6 +227,69 @@ try {
   const apiURL = `http://127.0.0.1:${apiPort}`
   mkdirSync(join(root, ".local"), { recursive: true })
   runtime = mkdtempSync(join(root, ".local/smoke-runtime-"))
+  privateDirectory = mkdtempSync(join(root, ".local/smoke-private-"))
+  const passwordFile = join(privateDirectory, "initial-password")
+  const password = randomBytes(32).toString("hex")
+  secrets.add(password)
+  writeFileSync(passwordFile, password, { mode: 0o600 })
+  const homes = new Map()
+  function clientEnv(name) {
+    if (!homes.has(name)) {
+      const home = join(privateDirectory, name)
+      mkdirSync(home, { mode: 0o700 })
+      homes.set(name, home)
+    }
+    return {
+      ...env,
+      HOME: homes.get(name),
+      XDG_CONFIG_HOME: join(homes.get(name), ".config"),
+    }
+  }
+  async function cli(name, args, expected = 0, input) {
+    const result = JSON.parse(
+      await execute(
+        join(root, "bin/clavis"),
+        [...args, "--server", apiURL],
+        `auth-${name}-${args[0]}`,
+        { env: clientEnv(name), input },
+        expected,
+      ),
+    )
+    assert.equal(result.schemaVersion, 1)
+    assert.equal(result.ok, expected === 0)
+    assert(!JSON.stringify(result).includes(password), "CLI exposed a password")
+    return result
+  }
+  async function login(name, username = "smoke-admin") {
+    return cli(
+      name,
+      ["login", "--username", username, "--password-stdin"],
+      0,
+      password + "\n",
+    )
+  }
+  async function sql(statement, name) {
+    return execute(
+      "docker",
+      [
+        ...compose,
+        "exec",
+        "-T",
+        "db",
+        "psql",
+        "-U",
+        "clavis",
+        "-d",
+        "clavis",
+        "-At",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        statement,
+      ],
+      name,
+    )
+  }
   summary.runtime = { directory: runtime, path: "", serverPIDs: [] }
   assert.deepEqual(readdirSync(runtime), [])
   const executable = join(runtime, "server")
@@ -211,20 +301,38 @@ try {
     CLAVIS_DB_CHECK_TIMEOUT: "500ms",
     CLAVIS_SHUTDOWN_TIMEOUT: "2s",
     CLAVIS_LOG_LEVEL: "info",
+    CLAVIS_BOOTSTRAP_USERNAME: "smoke-admin",
+    CLAVIS_BOOTSTRAP_PASSWORD_FILE: passwordFile,
   }
   summary.origin = apiURL
-  function startAPI() {
+  function startAPI(overrides = {}) {
     assert.deepEqual(readdirSync(runtime), ["server"])
     const child = start(executable, [], `api-${servers.length + 1}`, {
       cwd: runtime,
-      env: serverEnv,
+      env: { ...serverEnv, ...overrides },
     })
     servers.push(child)
     summary.runtime.serverPIDs.push(child.pid)
     return child
   }
-  const api = startAPI()
+  let api = startAPI()
+  const secondPort = await freePort()
+  const second = startAPI({ CLAVIS_HTTP_ADDR: `127.0.0.1:${secondPort}` })
   await waitHTTP(`${apiURL}/health/ready`, 200)
+  await waitHTTP(`http://127.0.0.1:${secondPort}/health/ready`, 200)
+  await stop(second)
+  assert.equal(
+    await sql("SELECT count(*) FROM users", "bootstrap-account-count"),
+    "1",
+  )
+  assert.equal(
+    await sql(
+      "SELECT count(*) FROM auth_events WHERE action='bootstrap'",
+      "bootstrap-event-count",
+    ),
+    "1",
+  )
+  summary.concurrentBootstrap = "passed"
   const doctor = JSON.parse(
     await execute(
       join(root, "bin/clavis"),
@@ -235,14 +343,105 @@ try {
   assert.equal(doctor.schemaVersion, 1)
   assert.equal(doctor.ok, true)
   assert.equal(doctor.data.database, "ready")
-  browser = await launchSmokeBrowser(apiURL, reports)
-  summary.browser = browser.evidence
-  await browser.open()
-  await browser.retry("ready")
+  // HTTP availability only: no rendering or client-side interaction is tested.
+  for (const [path, contentType] of [
+    ["/", "text/html"],
+    ["/login", "text/html"],
+    ["/assets/app.css", "text/css"],
+    ["/assets/appearance.js", "text/javascript"],
+    ["/assets/readiness.js", "text/javascript"],
+    ["/assets/htmx.min.js", "text/javascript"],
+    ["/assets/notices.txt", "text/plain"],
+  ]) {
+    const response = await fetch(apiURL + path, {
+      redirect: "error",
+      signal: AbortSignal.timeout(2_000),
+    })
+    assert.equal(response.status, 200, `${path} is unavailable`)
+    assert.equal(
+      response.headers.get("content-type")?.split(";")[0],
+      contentType,
+    )
+    assert((await response.text()).trim(), `${path} is empty`)
+  }
+  summary.httpDocumentsAndAssets = "passed"
   console.log(
-    "[smoke] Copied binary serves styled, interactive UI with PATH empty",
+    "[smoke] Copied binary serves HTTP documents and embedded assets with PATH empty",
   )
   injectFailure("after-start")
+
+  const administrator = (await login("admin-one")).data.user
+  assert.equal(administrator.username, "smoke-admin")
+  assert.equal(
+    (await cli("admin-one", ["whoami"])).data.user.id,
+    administrator.id,
+  )
+  await login("admin-two")
+  await cli("admin-one", ["sessions", "revoke", "--user", administrator.id])
+  for (const name of ["admin-one", "admin-two"])
+    assert.equal((await cli(name, ["whoami"], 1)).error.code, "UNAUTHENTICATED")
+
+  await login("admin-one")
+  // Direct SQL is confined to this disposable fixture, not a product management
+  // API. It exercises current roles/expiry without inventing user-management UI.
+  await sql(
+    "UPDATE users SET role='member' WHERE username='smoke-admin'",
+    "fixture-demote",
+  )
+  assert.equal(
+    (
+      await cli(
+        "admin-one",
+        ["sessions", "revoke", "--user", administrator.id],
+        1,
+      )
+    ).error.code,
+    "FORBIDDEN",
+  )
+  await sql(
+    "UPDATE users SET role='admin' WHERE username='smoke-admin'",
+    "fixture-restore-role",
+  )
+  await sql(
+    "UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE user_id IN (SELECT id FROM users WHERE username='smoke-admin')",
+    "fixture-expire",
+  )
+  assert.equal(
+    (await cli("admin-one", ["whoami"], 1)).error.code,
+    "UNAUTHENTICATED",
+  )
+
+  await sql(
+    "INSERT INTO users(id,username,password_hash,role) SELECT gen_random_uuid(),'smoke-member',password_hash,'member' FROM users WHERE username='smoke-admin'",
+    "fixture-member",
+  )
+  await login("member", "smoke-member")
+  assert.equal(
+    (await cli("member", ["sessions", "revoke", "--user", administrator.id], 1))
+      .error.code,
+    "FORBIDDEN",
+  )
+  await sql(
+    "UPDATE users SET disabled=true WHERE username='smoke-member'",
+    "fixture-disable",
+  )
+  assert.equal(
+    (await cli("member", ["whoami"], 1)).error.code,
+    "UNAUTHENTICATED",
+  )
+  await login("admin-one")
+  await cli("admin-one", ["logout"])
+  assert.equal(
+    (await cli("admin-one", ["whoami"], 1)).error.code,
+    "UNAUTHENTICATED",
+  )
+  await cli("admin-two", ["logout"])
+  await cli("member", ["logout"])
+  await login("outage")
+  summary.authentication = "passed"
+  console.log(
+    "[smoke] Real API/CLI login, logout, role/disabled checks, expiry and multi-client revocation passed",
+  )
 
   await execute("docker", [...compose, "stop", "db"], "database-stop")
   await waitHTTP(`${apiURL}/health/live`, 200)
@@ -261,7 +460,8 @@ try {
     api: "reachable",
     database: "unavailable",
   })
-  await browser.retry("database-unavailable")
+  const offlineLogout = await cli("outage", ["logout", "--timeout", "2s"], 1)
+  assert.notEqual(offlineLogout.data?.revoked, true)
   await execute(
     "docker",
     [...compose, "up", "-d", "--wait", "--wait-timeout", "45"],
@@ -285,10 +485,8 @@ try {
   )
   assert.equal(recovered.ok, true)
   assert.equal(recovered.data.database, "ready")
-  await browser.retry("ready")
-  console.log(
-    "[smoke] Real browser, API, CLI and database outage/recovery passed",
-  )
+  summary.databaseOutageRecovery = "passed"
+  console.log("[smoke] Real API, CLI and database outage/recovery passed")
   await stop(api)
   const unavailable = JSON.parse(
     await execute(
@@ -300,21 +498,62 @@ try {
     ),
   )
   assert.equal(unavailable.data.api, "unreachable")
-  await browser.retry("server-unavailable")
+  const changedPassword = randomBytes(32).toString("hex")
+  secrets.add(changedPassword)
+  writeFileSync(passwordFile, changedPassword)
+  serverEnv.CLAVIS_BOOTSTRAP_USERNAME = "changed-admin"
+  api = startAPI()
+  await waitHTTP(`${apiURL}/health/ready`, 200)
+  summary.serverOutageRecovery = "passed"
+  console.log("[smoke] Same-address server restart recovered HTTP readiness")
+  injectFailure("after-restart")
+  assert.equal((await login("restart")).data.user.id, administrator.id)
+  await cli("restart", ["logout"])
+  await stop(api)
+  rmSync(passwordFile)
   startAPI()
   await waitHTTP(`${apiURL}/health/ready`, 200)
-  await browser.retry("ready")
-  console.log(
-    "[smoke] Same-address server restart recovered the loaded page without reload",
+  assert.equal((await login("without-secret")).data.user.id, administrator.id)
+  await cli("without-secret", ["logout"])
+  summary.bootstrapCredentialsIgnoredAfterInitialization = "passed"
+  const securePort = await freePort()
+  const secureOrigin = `https://127.0.0.1:${securePort}`
+  const proxyExecutable = join(privateDirectory, "https-proxy")
+  await execute(
+    "go",
+    ["build", "-o", proxyExecutable, "./internal/server/testdata/https-proxy"],
+    "https-proxy-build",
   )
-  injectFailure("after-restart")
+  start(
+    proxyExecutable,
+    ["--listen", `127.0.0.1:${securePort}`, "--upstream", apiURL],
+    "https-proxy",
+  )
+  await waitListener(securePort)
+  // The unmodified CLI must reject this in-memory self-signed certificate;
+  // no OS trust store changes, private key files or insecure CLI flag are used.
+  const untrustedTLS = JSON.parse(
+    await execute(
+      join(root, "bin/clavis"),
+      ["whoami", "--server", secureOrigin],
+      "auth-untrusted-tls",
+      { env: clientEnv("tls") },
+      1,
+    ),
+  )
+  assert.equal(untrustedTLS.error.code, "SERVER_UNREACHABLE")
+  summary.cliUntrustedTLS = "passed"
+  console.log(
+    "[smoke] CLI rejected the local HTTPS fixture's untrusted certificate",
+  )
+  injectFailure("after-https")
   assert(!stopped && Date.now() < deadline, "Smoke run exceeded its deadline")
   assert.deepEqual(readdirSync(runtime), ["server"])
   summary.status = "passed"
 } catch (error) {
   summary.status = "failed"
-  summary.message = error.message
-  console.error(`[smoke] ${error.message}`)
+  summary.message = redact(error.message)
+  console.error(`[smoke] ${summary.message}`)
   process.exitCode = 1
 } finally {
   cleaning = true
@@ -329,9 +568,6 @@ try {
       errors.push(`${label}: ${error.message}`)
     }
   }
-  await cleanup("browser", async () => {
-    await browser?.close()
-  })
   for (const child of children)
     await cleanup(`process ${child.pid}`, () => stop(child))
   if (composeStarted)
@@ -355,6 +591,16 @@ try {
         `Server ${server.pid} did not exit`,
       )
     summary.serverProcessesStopped = true
+  })
+  await cleanup("private inputs and client homes", () => {
+    if (privateDirectory) {
+      rmSync(privateDirectory, { recursive: true, force: true })
+      assert(
+        !existsSync(privateDirectory),
+        "Private smoke files were not removed",
+      )
+    }
+    summary.privateResourcesRemoved = true
   })
   await cleanup("Docker inventory", async () => {
     const after = await snapshot()

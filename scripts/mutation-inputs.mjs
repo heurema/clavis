@@ -25,8 +25,9 @@ export function goSources(root) {
 export function isMutationTarget(root, path) {
   const name = relative(root, path)
   return (
-    /^internal\/(config|cli|server|web)\//.test(name) &&
+    /^internal\/(auth|database|platform|config|cli|server|web)\//.test(name) &&
     !/^internal\/web\/(ui|testdata)\//.test(name) &&
+    !/(^|\/)testdata\//.test(name) &&
     !/(_test|_gen|_templ|\.gen)\.go$/.test(name) &&
     !/(^|\/)(generated|sqlc)\//.test(name) &&
     !/^\/\/ Code generated .* DO NOT EDIT\.$/m.test(readFileSync(path, "utf8"))
@@ -34,13 +35,16 @@ export function isMutationTarget(root, path) {
 }
 
 export function copyMutationInputs(root, workspace, sources) {
-  // Mutate only Go, but compile against the same required embedded assets.
+  // Mutate only Go, but compile against the same embedded assets and schema.
   // Never copy .env, tools, reports or the developer's working directory.
   for (const path of [
     "go.mod",
     "go.sum",
     ".gremlins.yaml",
     "internal/web/assets",
+    "sqlc.yaml",
+    "internal/database/migrations",
+    "internal/database/queries",
   ])
     cpSync(join(root, path), join(workspace, path), { recursive: true })
   for (const path of sources) {

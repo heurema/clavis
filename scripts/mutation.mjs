@@ -134,19 +134,12 @@ try {
       "No eligible handwritten Go files; no mutation effectiveness claimed."
   } else {
     const binary = join(root, ".tools", "bin", "gremlins")
-    let version = existsSync(binary)
-      ? await execute("go", ["version", "-m", binary])
-      : ""
-    if (
-      !/mod\s+github\.com\/go-gremlins\/gremlins\s+v0\.6\.0\s/.test(version)
-    ) {
-      mkdirSync(join(root, ".tools", "bin"), { recursive: true })
-      await execute(
-        "go",
-        ["install", "github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"],
-        { env: { ...process.env, GOBIN: join(root, ".tools", "bin") } },
-      )
-    }
+    mkdirSync(join(root, ".tools", "bin"), { recursive: true })
+    await execute(
+      "go",
+      ["install", "github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0"],
+      { env: { ...process.env, GOBIN: join(root, ".tools", "bin") } },
+    )
     // Gremlins 0.6.0 constructs a malformed single "-cpu 1" argument for
     // nonzero test-cpu. Keep it zero and bound Go via its own environment.
     const mutationEnv = {

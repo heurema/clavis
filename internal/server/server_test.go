@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/heurema/clavis/internal/config"
+	"github.com/heurema/clavis/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,10 +26,29 @@ type fakeDatabase struct {
 }
 
 func (d *fakeDatabase) Ping(ctx context.Context) error { return d.ping(ctx) }
+func (d *fakeDatabase) Check(ctx context.Context) platform.Readiness {
+	if d.Ping(ctx) == nil {
+		return platform.Readiness{State: platform.Ready}
+	}
+	return platform.Readiness{State: platform.DependencyUnavailable}
+}
 func (d *fakeDatabase) Close() {
 	if d.closed != nil {
 		close(d.closed)
 	}
+}
+
+type closeOnlyDatabase struct{}
+
+func (*closeOnlyDatabase) Close() {}
+
+func TestCloseOnlyDatabaseFailsClosedWithoutChecker(t *testing.T) {
+	db := &closeOnlyDatabase{}
+	handler := Handler(time.Second, db, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", "/health/ready", nil))
+	require.Equal(t, 503, response.Code)
+	require.Contains(t, response.Body.String(), platform.CodeDependencyUnavailable)
 }
 
 func TestHealthAndRedaction(t *testing.T) {

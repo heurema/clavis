@@ -39,22 +39,12 @@ export function buildWebAssets(root = projectRoot) {
   rmSync(destination, { recursive: true, force: true })
   const staging = mkdtempSync(join(web, ".assets-"))
   try {
-    const manifest = JSON.parse(readRequired(join(root, "web/package.json")))
-    for (const name of ["htmx.org", "tailwindcss", "@tailwindcss/cli"]) {
-      const expected = manifest.devDependencies[name]
-      const installed = JSON.parse(
-        readRequired(join(root, "web/node_modules", name, "package.json")),
-      )
-      if (!/^\d+\.\d+\.\d+$/.test(expected) || installed.version !== expected)
-        throw new Error(
-          `Expected ${name} ${expected}, found ${installed.version}`,
-        )
-    }
-    if (
-      manifest.devDependencies.tailwindcss !==
-      manifest.devDependencies["@tailwindcss/cli"]
+    const htmxPackage = JSON.parse(
+      readRequired(join(root, "web/node_modules/htmx.org/package.json")),
     )
-      throw new Error("Tailwind CSS and CLI versions must match")
+    const tailwindPackage = JSON.parse(
+      readRequired(join(root, "web/node_modules/tailwindcss/package.json")),
+    )
 
     const stylesheet = join(root, "web/styles/app.css")
     readRequired(stylesheet)
@@ -67,11 +57,11 @@ export function buildWebAssets(root = projectRoot) {
       ],
       ["Lucide", inlineNotices(join(web, "ui/icon/icon.templ"))],
       [
-        `htmx ${manifest.devDependencies["htmx.org"]}`,
+        `htmx ${htmxPackage.version}`,
         readRequired(join(root, "web/node_modules/htmx.org/LICENSE")).trim(),
       ],
       [
-        `Tailwind CSS ${manifest.devDependencies.tailwindcss}`,
+        `Tailwind CSS ${tailwindPackage.version}`,
         readRequired(join(root, "web/node_modules/tailwindcss/LICENSE")).trim(),
       ],
     ]

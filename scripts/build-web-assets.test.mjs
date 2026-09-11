@@ -79,13 +79,7 @@ test("asset preparation is deterministic and packages only the public inputs", (
       "utf8",
     ),
   )
-  for (const notice of [
-    "Axel Adrian",
-    "Oudwin",
-    "Cole Bemis",
-    "htmx 4.0.0",
-    "Tailwind CSS 4.3.3",
-  ])
+  for (const notice of ["Axel Adrian", "Oudwin", "Cole Bemis"])
     assert.ok(first["notices.txt"].includes(notice), notice)
   writeFileSync(join(assets, ".private"), "SECRET")
   buildWebAssets(directory)
@@ -96,6 +90,30 @@ test("asset preparation is deterministic and packages only the public inputs", (
     ),
     false,
   )
+})
+
+test("asset notices describe installed packages without enforcing manifest versions", (t) => {
+  const directory = fixture(t)
+  const manifest = join(directory, "web/package.json")
+  const metadata = JSON.parse(readFileSync(manifest, "utf8"))
+  metadata.devDependencies["htmx.org"] = "0.0.0"
+  metadata.devDependencies.tailwindcss = "^9.0.0"
+  metadata.devDependencies["@tailwindcss/cli"] = "0.0.0"
+  writeFileSync(manifest, JSON.stringify(metadata))
+  buildWebAssets(directory)
+  const notices = readFileSync(
+    join(directory, "internal/web/assets/notices.txt"),
+    "utf8",
+  )
+  for (const [name, label] of [
+    ["htmx.org", "htmx"],
+    ["tailwindcss", "Tailwind CSS"],
+  ]) {
+    const installed = JSON.parse(
+      readFileSync(join(directory, "web/node_modules", name, "package.json")),
+    )
+    assert.ok(notices.includes(`${label} ${installed.version}`))
+  }
 })
 
 for (const [name, damage] of [
@@ -122,19 +140,6 @@ for (const [name, damage] of [
         join(directory, "internal/web/ui/utils/templui.go"),
         "package utils\n",
       ),
-  ],
-  [
-    "mismatched installed version",
-    (directory) => {
-      const manifest = JSON.parse(
-        readFileSync(join(directory, "web/package.json"), "utf8"),
-      )
-      manifest.devDependencies["htmx.org"] = "0.0.0"
-      writeFileSync(
-        join(directory, "web/package.json"),
-        JSON.stringify(manifest),
-      )
-    },
   ],
 ]) {
   test(`asset preparation fails closed with ${name}`, (t) => {

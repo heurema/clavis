@@ -12,7 +12,8 @@ unleash:
     mutant-coverage: 0
   exclude-files:
     - '(^|/)cmd/'
-    - '(^|/)internal/(buildinfo|database)/'
+    - '(^|/)internal/buildinfo/'
     - '(^|/)internal/web/(ui|testdata)/'
+    - '(^|/)testdata/'
     - '(_test|_gen|_templ|\.gen)\.go$'
     - '(^|/)(generated|sqlc)/'

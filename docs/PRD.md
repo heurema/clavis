@@ -372,7 +372,7 @@ These questions do not change the agreed product concept:
 - Session lifetimes, query duration and result size limits, and audit retention.
 - The first real questions from managers and developers used to evaluate the pilot.
 
-The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface. The API and embedded web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains a separate executable. The current web interface is the setup/readiness screen; the authentication and administration capabilities described above remain planned.
+The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. The current milestone adds automated initial administrator setup, local browser/CLI sign-in, revocable sessions and a minimal protected admin page. Google/OIDC, recovery, full user/permission management, providers and broader audit inspection remain planned.
 
 ## 13. Sources and Context
 

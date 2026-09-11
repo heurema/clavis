@@ -38,7 +38,7 @@ rules:
       Keep generated output with its inputs and report its size separately.
 
 # OpenSpec 1.6.0 omits context/operation guidance from apply/archive delivery.
-# Read this policy directly per AGENTS.md; do not assume CLI output includes it.
+# Read this policy directly; do not assume CLI output includes it.
 operations:
   apply:
     guidance:

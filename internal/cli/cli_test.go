@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heurema/clavis/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -75,6 +76,31 @@ func TestOfflineAndInvalidCommands(t *testing.T) {
 	}
 }
 
+func TestDoctorPreservesNonAuthURLsAndBasePaths(t *testing.T) {
+	for _, raw := range []string{
+		"http://localhost/base", "http://example.com/base", "https://example.com/a%20b",
+	} {
+		_, err := validateURL(raw)
+		require.NoError(t, err)
+		_, err = auth.CanonicalOrigin(raw)
+		require.Error(t, err, "doctor URLs are not authentication origins")
+	}
+	for base, want := range map[string]string{
+		"/base": "/base/health/ready", "/base///": "/base/health/ready",
+		"/a%20b": "/a b/health/ready",
+	} {
+		t.Run(base, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, want, r.URL.Path)
+				_, _ = io.WriteString(w, `{"status":"ready"}`)
+			}))
+			defer server.Close()
+			result := Doctor(context.Background(), server.URL+base, time.Second)
+			require.True(t, result.OK)
+		})
+	}
+}
+
 func TestDoctorResponses(t *testing.T) {
 	for _, tc := range []struct {
 		name                string
@@ -84,14 +110,14 @@ func TestDoctorResponses(t *testing.T) {
 		code, api, database string
 	}{
 		{"ready", 200, `{"status":"ready"}`, 0, "", "reachable", "ready"},
-		{"exact-body-limit", 200, `{"status":"ready"}` + strings.Repeat(" ", maxResponseBytes-len(`{"status":"ready"}`)), 0, "", "reachable", "ready"},
-		{"one-byte-over-limit", 200, `{"status":"ready"}` + strings.Repeat(" ", maxResponseBytes-len(`{"status":"ready"}`)+1), 1, "INVALID_RESPONSE", "reachable", "unknown"},
+		{"exact-body-limit", 200, `{"status":"ready"}` + strings.Repeat(" ", auth.MaxResponseBody-len(`{"status":"ready"}`)), 0, "", "reachable", "ready"},
+		{"one-byte-over-limit", 200, `{"status":"ready"}` + strings.Repeat(" ", auth.MaxResponseBody-len(`{"status":"ready"}`)+1), 1, "INVALID_RESPONSE", "reachable", "unknown"},
 		{"unavailable", 503, `{"status":"not_ready","error":{"code":"DEPENDENCY_UNAVAILABLE","message":"SECRET"}}`, 1, "DEPENDENCY_UNAVAILABLE", "reachable", "unavailable"},
 		{"bad-json", 200, `SECRET`, 1, "INVALID_RESPONSE", "reachable", "unknown"},
 		{"wrong-status", 500, `{"status":"ready"}`, 1, "INVALID_RESPONSE", "reachable", "unknown"},
 		{"mismatch", 200, `{"status":"not_ready"}`, 1, "INVALID_RESPONSE", "reachable", "unknown"},
 		{"wrong-error", 503, `{"status":"not_ready","error":{"code":"SECRET"}}`, 1, "INVALID_RESPONSE", "reachable", "unknown"},
-		{"oversized", 200, strings.Repeat("SECRET", maxResponseBytes), 1, "INVALID_RESPONSE", "reachable", "unknown"},
+		{"oversized", 200, strings.Repeat("SECRET", auth.MaxResponseBody), 1, "INVALID_RESPONSE", "reachable", "unknown"},
 		{"trailing-json", 200, `{"status":"ready"}{}`, 1, "INVALID_RESPONSE", "reachable", "unknown"},
 		{"contradictory", 200, `{"status":"ready","error":{"code":"SECRET"}}`, 1, "INVALID_RESPONSE", "reachable", "unknown"},
 	} {
