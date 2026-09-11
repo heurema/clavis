@@ -34,7 +34,12 @@ const (
 )
 
 // MaxUserListing bounds one listing; a longer list reports truncation.
-const MaxUserListing = 1000
+// MaxListingBody bounds the listing response alone: 1,000 records exceed the
+// general MaxResponseBody, so GET UsersPath has its own documented limit.
+const (
+	MaxUserListing = 1000
+	MaxListingBody = 256 * 1024
+)
 
 type Role string
 

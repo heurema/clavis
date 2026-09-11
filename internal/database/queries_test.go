@@ -219,7 +219,7 @@ func TestGeneratedUserAdministrationQueriesAndEventAllowlist(t *testing.T) {
 		"bootstrap", "login", "logout", "revoke", "user.create", "user.block", "user.unblock",
 		"user.reset_password", "user.promote", "user.demote", "users.list",
 	} {
-		for _, outcome := range []string{"success", "forbidden", "username_taken", "last_administrator", "user_not_found"} {
+		for _, outcome := range []string{"success", "forbidden", "username_taken", "last_administrator", "self_target", "user_not_found"} {
 			require.NoError(t, qtx.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{
 				ID: randomTestID(t), ActorID: adminID, TargetID: memberID, Action: action, Outcome: outcome,
 			}), action+"/"+outcome)

@@ -48,7 +48,7 @@ func TestFailureAllowlist(t *testing.T) {
 		auth.InvalidArgument: http.StatusBadRequest, auth.InvalidCredentials: http.StatusUnauthorized,
 		auth.Unauthenticated: http.StatusUnauthorized, auth.Forbidden: http.StatusForbidden,
 		auth.UserNotFound: http.StatusNotFound, auth.RateLimited: http.StatusTooManyRequests,
-		auth.UsernameTaken: http.StatusConflict, auth.LastAdministrator: http.StatusConflict,
+		auth.UsernameTaken: http.StatusConflict, auth.LastAdministrator: http.StatusConflict, auth.SelfTarget: http.StatusConflict,
 		auth.ServiceUnavailable:            http.StatusServiceUnavailable,
 		platform.CodeDependencyUnavailable: http.StatusServiceUnavailable,
 		platform.CodeInitializing:          http.StatusServiceUnavailable,

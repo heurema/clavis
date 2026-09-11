@@ -8,7 +8,7 @@ Let current administrators manage local user accounts and the administrator role
 
 The system SHALL provide user-administration operations for listing users, creating a local user, blocking and unblocking a user, resetting a user's local password and setting a user's role to `admin` or `member`. Every operation SHALL recheck the actor's current session and current `admin` role inside its own transaction before reading or mutating accounts; a cached role SHALL NOT substitute for the current one. Members SHALL receive a safe forbidden result without any mutation. Operations SHALL use the same five-second operation deadline, readiness gate and fail-closed behavior as authentication.
 
-Created users SHALL have the `member` role, a random stable UUID, the submitted username and only a salted versioned Argon2id password hash. Usernames and passwords SHALL follow the local-authentication rules without normalization. A username that already exists SHALL produce a safe `USERNAME_TAKEN` result without disclosing other account details. Targets SHALL be addressed by user UUID; an unknown UUID SHALL produce `USER_NOT_FOUND`.
+Created users SHALL have the `member` role, a random stable UUID, the submitted username and only a salted versioned Argon2id password hash. Usernames and passwords SHALL follow the local-authentication rules without normalization. A username that already exists SHALL produce a safe `USERNAME_TAKEN` result without disclosing other account details. Targets SHALL be addressed by user UUID; an unknown UUID SHALL produce `USER_NOT_FOUND`. There is no distinguished root account: the bootstrap administrator is an ordinary administrator once initialization completes.
 
 #### Scenario: Administrator creates a member
 - **WHEN** a current administrator creates a user with a valid username and password
@@ -33,7 +33,7 @@ Created users SHALL have the `member` role, a random stable UUID, the submitted 
 
 ### Requirement: Blocking and password reset revoke sessions
 
-Blocking a user SHALL set the account disabled and revoke all of that user's existing browser and CLI sessions in the same transaction. Resetting a password SHALL replace the stored hash and revoke all existing sessions in the same transaction. Unblocking SHALL re-enable the account without restoring revoked sessions. Session issuance, revocation and these mutations SHALL serialize on the target user row so a login committed before the mutation is revoked and a login committed afterward is a new session evaluated against the new state. Blocking or unblocking an already blocked or enabled user SHALL succeed idempotently and still record an event.
+Blocking a user SHALL set the account disabled and revoke all of that user's existing browser and CLI sessions in the same transaction. Resetting a password SHALL replace the stored hash and revoke all existing sessions in the same transaction. Unblocking SHALL re-enable the account without restoring revoked sessions. Session issuance, revocation and these mutations SHALL serialize on the target user row so a login committed before the mutation is revoked and a login committed afterward is a new session evaluated against the new state. Blocking or unblocking an already blocked or enabled user SHALL succeed idempotently and still record an event. An administrator SHALL NOT block their own account; such a request SHALL fail with `SELF_TARGET` without mutation. An administrator MAY reset their own password.
 
 #### Scenario: Block a signed-in user
 - **WHEN** an administrator blocks a user with active browser and CLI sessions
@@ -50,13 +50,17 @@ Blocking a user SHALL set the account disabled and revoke all of that user's exi
 - **THEN** the old password no longer signs in, the new password does, and all sessions issued before the reset are denied
 - **AND** the hash is derived within the shared hashing concurrency budget and no plaintext or hash enters events, logs or responses
 
-#### Scenario: Administrator targets their own account
-- **WHEN** an administrator blocks or resets the password of their own account and another enabled administrator exists
+#### Scenario: Administrator resets their own password
+- **WHEN** an administrator resets the password of their own account
 - **THEN** the mutation succeeds and the actor's current session is revoked with the rest
+
+#### Scenario: Administrator blocks their own account
+- **WHEN** an administrator blocks their own account, even while other enabled administrators exist
+- **THEN** the operation fails with `SELF_TARGET`, records a denied event and performs no mutation
 
 ### Requirement: Explicit administrator role assignment with a lockout guard
 
-Setting a role to `admin` SHALL grant administrator authority for that user's subsequent requests, including existing sessions, because authority is read from the current account state. Setting a role to `member` SHALL remove it likewise. The system SHALL refuse any block or demotion that would leave zero enabled administrators, returning `LAST_ADMINISTRATOR` without mutation. That check SHALL be serialized across concurrent administrators so two simultaneous operations cannot both pass it. Setting a role the user already has SHALL succeed idempotently and record an event.
+Setting a role to `admin` SHALL grant administrator authority for that user's subsequent requests, including existing sessions, because authority is read from the current account state. Setting a role to `member` SHALL remove it likewise. Administrators are peers: any current administrator MAY block, unblock, reset or change the role of any other administrator, as in the GitLab group owner model. Two guards apply. An administrator SHALL NOT demote their own account; such a request SHALL fail with `SELF_TARGET`. The system SHALL refuse any block or demotion that would leave zero enabled administrators, returning `LAST_ADMINISTRATOR` without mutation; that check SHALL be serialized across concurrent administrators so two simultaneous operations cannot both pass it. The actor's current role SHALL be rechecked under the same serialization before either guard runs. Setting a role the user already has SHALL succeed idempotently and record an event.
 
 #### Scenario: Promote a member
 - **WHEN** an administrator sets a member's role to `admin`
@@ -67,12 +71,18 @@ Setting a role to `admin` SHALL grant administrator authority for that user's su
 - **THEN** the target's subsequent administrative requests are forbidden while ordinary identity requests continue to work
 
 #### Scenario: Last enabled administrator
-- **WHEN** a block or demotion targets the only enabled administrator
-- **THEN** the operation fails with `LAST_ADMINISTRATOR`, no mutation is committed and bootstrap remains closed
+- **WHEN** the only enabled administrator is targeted by a block or demotion
+- **THEN** the request is refused (`SELF_TARGET`, because only that administrator could have issued it), no mutation is committed and bootstrap remains closed
+- **AND** the serialized `LAST_ADMINISTRATOR` guard remains in place as a defense in depth and SHALL be verified directly, since the self-target rule makes it unreachable through the public operations
 
-#### Scenario: Concurrent mutual demotion
+#### Scenario: Self-demotion
+- **WHEN** an administrator sets their own role to `member`
+- **THEN** the operation fails with `SELF_TARGET`, records a denied event and the role is unchanged
+
+#### Scenario: Concurrent mutual demotion or block
 - **WHEN** the only two enabled administrators demote or block each other at the same time
-- **THEN** exactly one operation succeeds and the other fails with `LAST_ADMINISTRATOR`
+- **THEN** exactly one operation succeeds and exactly one enabled administrator remains
+- **AND** the other request is denied because its actor's authority was re-read after the first committed: `FORBIDDEN` after a demotion, `UNAUTHENTICATED` after a block; no `LAST_ADMINISTRATOR` outcome is recorded
 
 ### Requirement: Bounded user listing
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log"
@@ -57,15 +58,26 @@ type cliAuthFixture struct {
 	mu       sync.Mutex
 	password auth.Secret
 	sessions map[auth.Secret]auth.Identity
-	login    int
-	logout   int
-	whoami   int
-	revoke   int
+	// users is the administration store; the actor's role is re-read from it
+	// on every administration request, as the real service does.
+	users      []auth.UserRecord
+	truncated  bool
+	createBody []byte
+	requests   int
+	login      int
+	logout     int
+	whoami     int
+	revoke     int
+	admin      int
 }
 
 func newCLIFixture(t *testing.T, password auth.Secret) (*cliAuthFixture, *httptest.Server) {
 	t.Helper()
-	fixture := &cliAuthFixture{password: password, sessions: map[auth.Secret]auth.Identity{}}
+	identity := testIdentity()
+	fixture := &cliAuthFixture{password: password, sessions: map[auth.Secret]auth.Identity{}, users: []auth.UserRecord{{
+		ID: identity.User.ID, Username: identity.User.Username, Role: identity.User.Role,
+		CreatedAt: time.Now().UTC().Add(-time.Hour).Truncate(time.Second),
+	}}}
 	server := httptest.NewServer(http.HandlerFunc(fixture.serve))
 	t.Cleanup(server.Close)
 	return fixture, server
@@ -74,6 +86,7 @@ func newCLIFixture(t *testing.T, password auth.Secret) (*cliAuthFixture, *httpte
 func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.requests++
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	fail := func(code string) {
@@ -110,6 +123,10 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 		fail(auth.Unauthenticated)
 		return
 	}
+	if r.URL.Path == auth.UsersPath || (strings.HasPrefix(r.URL.Path, auth.UsersPath+"/") && !strings.HasSuffix(r.URL.Path, "/sessions/revoke")) {
+		f.serveUsers(w, r, identity, body, fail)
+		return
+	}
 	if len(body) != 0 {
 		fail(auth.InvalidArgument)
 		return
@@ -132,6 +149,141 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(auth.Revocation{Revoked: true})
 	default:
 		fail(auth.InvalidArgument)
+	}
+}
+
+func (f *cliAuthFixture) userIndex(id string) int {
+	for i, user := range f.users {
+		if user.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func (f *cliAuthFixture) enabledAdmins() int {
+	count := 0
+	for _, user := range f.users {
+		if user.Role == auth.Admin && !user.Disabled {
+			count++
+		}
+	}
+	return count
+}
+
+func (f *cliAuthFixture) revokeUser(id string) {
+	for token, identity := range f.sessions {
+		if identity.User.ID == id {
+			delete(f.sessions, token)
+		}
+	}
+}
+
+func testUserID() string {
+	body := make([]byte, 16)
+	if _, err := rand.Read(body); err != nil {
+		panic("test random generation failed")
+	}
+	raw := hex.EncodeToString(body)
+	return raw[:8] + "-" + raw[8:12] + "-" + raw[12:16] + "-" + raw[16:20] + "-" + raw[20:]
+}
+
+// serveUsers implements the design's administration route table over the
+// fixture's user store, including the last-administrator guard.
+func (f *cliAuthFixture) serveUsers(w http.ResponseWriter, r *http.Request, actor auth.Identity, body []byte, fail func(string)) {
+	f.admin++
+	encode := func(status int, value any) {
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(value)
+	}
+	role := actor.User.Role
+	if i := f.userIndex(actor.User.ID); i >= 0 {
+		role = f.users[i].Role
+	}
+	create := r.URL.Path == auth.UsersPath && r.Method == http.MethodPost
+	hasBody := create || strings.HasSuffix(r.URL.Path, "/password") || strings.HasSuffix(r.URL.Path, "/role")
+	list := r.Method == http.MethodGet && r.URL.Path == auth.UsersPath
+	if (r.Method != http.MethodPost && !list) ||
+		hasBody != (len(body) != 0) || (hasBody && r.Header.Get("Content-Type") != "application/json") {
+		fail(auth.InvalidArgument)
+		return
+	}
+	if role != auth.Admin {
+		fail(auth.Forbidden)
+		return
+	}
+	switch {
+	case list:
+		encode(http.StatusOK, auth.UserList{Users: f.users, Truncated: f.truncated})
+	case create:
+		f.createBody = body
+		var input auth.CreateUserRequest
+		if !strictJSON(body, &input) || !auth.ValidUsername(input.Username) || !auth.ValidPassword(input.Password) {
+			fail(auth.InvalidArgument)
+			return
+		}
+		for _, user := range f.users {
+			if user.Username == input.Username {
+				fail(auth.UsernameTaken)
+				return
+			}
+		}
+		record := auth.UserRecord{ID: testUserID(), Username: input.Username, Role: auth.Member, CreatedAt: time.Now().UTC().Truncate(time.Second)}
+		f.users = append(f.users, record)
+		encode(http.StatusCreated, record)
+	default:
+		id, action, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, auth.UsersPath+"/"), "/")
+		i := f.userIndex(id)
+		if i < 0 {
+			fail(auth.UserNotFound)
+			return
+		}
+		target := &f.users[i]
+		lastAdmin := target.Role == auth.Admin && !target.Disabled && f.enabledAdmins() == 1
+		revoked := false
+		switch action {
+		case "block":
+			if target.ID == actor.User.ID {
+				fail(auth.SelfTarget)
+				return
+			}
+			if lastAdmin {
+				fail(auth.LastAdministrator)
+				return
+			}
+			target.Disabled = true
+			f.revokeUser(target.ID)
+			revoked = true
+		case "unblock":
+			target.Disabled = false
+		case "password":
+			var input auth.ResetPasswordRequest
+			if !strictJSON(body, &input) || !auth.ValidPassword(input.Password) {
+				fail(auth.InvalidArgument)
+				return
+			}
+			f.revokeUser(target.ID)
+			revoked = true
+		case "role":
+			var input auth.SetRoleRequest
+			if !strictJSON(body, &input) || !validRole(input.Role) {
+				fail(auth.InvalidArgument)
+				return
+			}
+			if input.Role == auth.Member && target.ID == actor.User.ID {
+				fail(auth.SelfTarget)
+				return
+			}
+			if input.Role == auth.Member && lastAdmin {
+				fail(auth.LastAdministrator)
+				return
+			}
+			target.Role = input.Role
+		default:
+			fail(auth.InvalidArgument)
+			return
+		}
+		encode(http.StatusOK, auth.UserMutation{User: *target, SessionsRevoked: revoked})
 	}
 }
 

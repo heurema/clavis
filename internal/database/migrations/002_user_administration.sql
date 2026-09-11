@@ -11,5 +11,5 @@ ALTER TABLE auth_events DROP CONSTRAINT auth_events_outcome_check;
 ALTER TABLE auth_events ADD CONSTRAINT auth_events_outcome_check CHECK (outcome IN (
     'success', 'invalid_argument', 'invalid_credentials', 'unauthenticated',
     'forbidden', 'user_not_found', 'rate_limited',
-    'username_taken', 'last_administrator'
+    'username_taken', 'last_administrator', 'self_target'
 ));

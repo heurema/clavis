@@ -69,7 +69,7 @@ type Administration interface {
 
 `database.LocalAuth` implements `Administration`; `HandlerWithAuth` receives it as an additional dependency and fails construction when it is nil, exactly as it does for the recorder. Keeping `auth.Service` unchanged preserves every existing fixture and contract test. `Secret` on request DTOs keeps passwords out of formatted output; DTOs with `Secret` fields never enter CLI results.
 
-New error codes in `auth.LookupFailure`: `USERNAME_TAKEN` (409, "Username is already in use") and `LAST_ADMINISTRATOR` (409, "At least one enabled administrator must remain"). Existing `USER_NOT_FOUND`, `FORBIDDEN`, `UNAUTHENTICATED`, `INVALID_ARGUMENT`, `RATE_LIMITED` and `SERVICE_UNAVAILABLE` are reused. The CLI transport's allowlist accepts the two new codes.
+New error codes in `auth.LookupFailure`: `USERNAME_TAKEN` (409, "Username is already in use"), `LAST_ADMINISTRATOR` (409, "At least one enabled administrator must remain") and `SELF_TARGET` (409, "Administrators cannot block or demote their own account"). Existing `USER_NOT_FOUND`, `FORBIDDEN`, `UNAUTHENTICATED`, `INVALID_ARGUMENT`, `RATE_LIMITED` and `SERVICE_UNAVAILABLE` are reused. The CLI transport's allowlist accepts the two new codes.
 
 Alternative: widening `auth.Service`. Rejected because it forces every fake service in server/CLI tests to change and blurs the sign-in boundary with management.
 
@@ -80,7 +80,7 @@ Every mutation follows `mutate` in `database/auth.go`:
 1. `context.WithTimeout(auth.OperationTimeout)`; readiness check; `Begin`.
 2. `LockTransaction(adminMutationLock)` with a new fixed advisory key distinct from the bootstrap and throttle keys. This serializes all block/unblock/role/reset/create operations across instances so the last-administrator count cannot race. Listing and login do not take it.
 3. `LockMutationUsers(actor, target)` in id order (existing query), then `recheck(session)`; unauthenticated → deny event `unauthenticated`; role ≠ admin → deny event `forbidden`.
-4. Target checks: `UserExists` → `user_not_found`. For block and demote: `CountEnabledAdministrators` excluding the target after the change; if zero → `last_administrator` deny event. Idempotent no-op states still succeed and record `success`.
+4. Target checks: `FindUser` → `user_not_found` (one round trip also yields the role and disabled state the guards need). For block and demote, in this order: target equals the actor → `self_target` deny event; then `CountEnabledAdministrators` would reach zero after the change → `last_administrator` deny event. Idempotent no-op states still succeed and record `success`. This is the GitLab group owner model (owner decision of 2026-09-11): administrators are peers, the last enabled one is protected, and nobody can remove themself. No root tier exists.
 5. Mutation via generated queries: `InsertUser`, `SetUserDisabled`, `SetUserRole`, `SetUserPasswordHash` (each updates `updated_at`), plus `RevokeUserSessions(target)` for block and reset.
 6. `audit(actor, target, actorSession, action, "success")`; `Commit`.
 
@@ -101,7 +101,7 @@ ALTER TABLE auth_events ADD CONSTRAINT auth_events_action_check CHECK (action IN
 ALTER TABLE auth_events DROP CONSTRAINT auth_events_outcome_check;
 ALTER TABLE auth_events ADD CONSTRAINT auth_events_outcome_check CHECK (outcome IN (
   'success','invalid_argument','invalid_credentials','unauthenticated','forbidden','user_not_found','rate_limited',
-  'username_taken','last_administrator'));
+  'username_taken','last_administrator','self_target'));
 CREATE INDEX users_username_order ON users (username);
 ```
 
@@ -132,7 +132,7 @@ Because listing during `GET /admin` is a read on a validated session, it does no
 
 `users` becomes a command group beside `sessions` in `authCommands`, sharing `flags()` and `runAuth`. `runAuth` gains operations `users.list`, `users.create`, `users.block`, `users.unblock`, `users.reset-password`, `users.set-role`. Validation before any I/O: UUID via `auth.ValidUserID`, role ∈ {admin, member}, username via `auth.ValidUsername`; password input reuses the `login` branch (hidden prompt or `--password-stdin`, same `TIMEOUT`/`INVALID_ARGUMENT` results). Commands require a cached session; absent cache → `UNAUTHENTICATED` exit 1 without a request, as `sessions revoke` does.
 
-`authTransport.request` gains a documented 201 success status for create. Text rendering adds `auth.UserRecord`, `auth.UserList` and `auth.UserMutation` cases. Subprocess tests cover prompt/stdout separation for `users create`, exit codes and no password in output; unit tests use the existing fake HTTP server.
+`authTransport.request` gains a documented 201 success status for create. A full listing of 1,000 maximum-length usernames is about 210 KiB and cannot fit the general 64 KiB `MaxResponseBody`, so `GET UsersPath` alone reads up to `auth.MaxListingBody` (256 KiB); every other route keeps the general bound. Server-side, the listing handler in slice 3 must not exceed that ceiling. Text rendering adds `auth.UserRecord`, `auth.UserList` and `auth.UserMutation` cases. Subprocess tests cover prompt/stdout separation for `users create`, exit codes and no password in output; unit tests use the existing fake HTTP server.
 
 ### 7. Smoke and fixtures
 
@@ -145,7 +145,7 @@ Because listing during `GET /admin` is a read on a validated session, it does no
 - [An administrator resets a password and the member cannot change it] → Recorded in the proposal as an explicit follow-up; the reset revokes sessions so a leaked interim password has bounded use.
 - [Dropping and recreating check constraints assumes default constraint names] → The migration test applies `001` then `002` on a fresh database and asserts the new allowlist; a mismatch fails migration safely without partial application.
 - [Listing bound of 1,000] → `truncated` is explicit; pagination is a later change if a pilot exceeds it.
-- [Self-block revokes the actor's own session mid-request] → Same behavior as self-targeted revoke today; the response is still written because authorization already happened in the transaction.
+- [Concurrent mutual demotion] → Both queue on the advisory key; the loser re-reads its already-removed role and is denied `FORBIDDEN` (or `UNAUTHENTICATED` after a block). Self-block and self-demotion are refused outright with `SELF_TARGET`, so a single administrator cannot lock themself out.
 - [Changed handwritten size will exceed the 400-line/6-file rescoping signal] → The tasks split the work into slices with independent review; the proposal keeps coupled behavior (mutation, audit, guard) together deliberately.
 
 ## Migration Plan
