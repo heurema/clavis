@@ -1,3 +1,7 @@
+## Purpose
+
+Initialize the platform schema and first administrator automatically, atomically and once, while preserving safe public diagnostics and recovery from transient failures.
+
 ## ADDED Requirements
 
 ### Requirement: Embedded transactional schema initialization

@@ -81,10 +81,10 @@ The server SHALL validate required configuration before accepting requests. Miss
 
 ### Requirement: Independent liveness and readiness
 
-The server SHALL expose `GET /health/live` and `GET /health/ready`. Liveness SHALL return HTTP 200 with `{"status":"alive"}` while the process can serve requests. Readiness SHALL complete within a documented timeout and return HTTP 200 with `{"status":"ready"}` only when the configured platform database is reachable. Database failure or timeout SHALL return HTTP 503 with status `not_ready` and error code `DEPENDENCY_UNAVAILABLE`. Responses SHALL exclude connection strings and internal error details.
+The server SHALL expose `GET /health/live` and `GET /health/ready`. Liveness SHALL return HTTP 200 with `{"status":"alive"}` while the process can serve requests. Readiness SHALL complete within a documented timeout and return HTTP 200 with `{"status":"ready"}` only when the configured platform database is reachable, its schema is supported and installation is initialized. Database failure or timeout SHALL return HTTP 503 with status `not_ready` and error code `DEPENDENCY_UNAVAILABLE`. With a reachable database, incomplete initialization SHALL return safe HTTP 503 using `INITIALIZING`, `SETUP_REQUIRED`, `BOOTSTRAP_FAILED` or `SCHEMA_ERROR` as documented in the initialization design. Responses SHALL exclude connection strings, credential paths and internal error details.
 
 #### Scenario: The database is available
-- **WHEN** a client requests readiness and the configured database responds within the timeout
+- **WHEN** a client requests readiness and the configured database responds within the timeout with a supported schema and initialized installation
 - **THEN** the server returns HTTP 200 with status `ready`
 
 #### Scenario: The database stops responding
@@ -93,8 +93,13 @@ The server SHALL expose `GET /health/live` and `GET /health/ready`. Liveness SHA
 - **AND** liveness continues to return HTTP 200 while the process can serve requests
 
 #### Scenario: The database recovers
-- **WHEN** the database becomes reachable after a readiness failure
+- **WHEN** the database becomes reachable after a readiness failure and its schema/installation are usable
 - **THEN** a subsequent readiness request succeeds without restarting the server
+
+#### Scenario: Initialization is incomplete
+- **WHEN** PostgreSQL responds but migration/bootstrap is pending, setup inputs are missing/invalid or the schema is incompatible
+- **THEN** readiness returns the corresponding safe initialization error instead of claiming application readiness
+- **AND** liveness and public setup documents remain available
 
 ### Requirement: Bounded graceful shutdown
 
@@ -107,9 +112,9 @@ The server SHALL stop accepting new work, allow in-flight requests to finish wit
 
 ### Requirement: Structured CLI diagnostics
 
-The CLI SHALL provide a `doctor` operation that checks server readiness using a configurable server URL and timeout. The default output SHALL be exactly one JSON document on stdout, using the envelope `schemaVersion`, `ok`, `data`, and `error`. Version 1 results SHALL distinguish a ready system, an unavailable database, an unreachable or unresponsive server, an invalid server response, and invalid arguments. Diagnostic text SHALL NOT corrupt JSON output.
+The CLI SHALL provide a `doctor` operation that checks server readiness using a configurable server URL and timeout. The default output SHALL be exactly one JSON document on stdout, using the envelope `schemaVersion`, `ok`, `data`, and `error`. Version 1 results SHALL distinguish a ready system, an unavailable database, an incomplete or failed installation, an unreachable or unresponsive server, an invalid server response, and invalid arguments. Diagnostic text SHALL NOT corrupt JSON output.
 
-The CLI SHALL exit with code 0 for success, code 1 for a failed diagnostic operation, and code 2 for invalid arguments or configuration. The doctor data SHALL include `api` and `database` states; an unchecked database SHALL be `unknown`.
+The CLI SHALL exit with code 0 for success, code 1 for a failed diagnostic operation, and code 2 for invalid arguments or configuration. The doctor data SHALL include `api` and `database` states; an unchecked database SHALL be `unknown`. A documented initialization failure with a reachable database SHALL report `data.api: "reachable"`, `data.database: "ready"` and the allowlisted initialization error, not mislabel it as database unavailability. Raw server error messages SHALL NOT be echoed.
 
 #### Scenario: Diagnose a working environment
 - **WHEN** the CLI runs `doctor` against a ready server
@@ -131,24 +136,29 @@ The CLI SHALL exit with code 0 for success, code 1 for a failed diagnostic opera
 - **WHEN** the CLI receives an unknown command, an invalid server URL, an unsupported output format, or an invalid timeout
 - **THEN** it exits with code 2 and returns error code `INVALID_ARGUMENT` in a single JSON document using the default format
 
+#### Scenario: Diagnose setup or schema failure
+- **WHEN** the server returns documented 503 `INITIALIZING`, `SETUP_REQUIRED`, `BOOTSTRAP_FAILED` or `SCHEMA_ERROR`
+- **THEN** doctor exits 1 with that code and an application-owned message, reporting the API reachable and database ready
+- **AND** its existing data fields and schema version are preserved
+
 ### Requirement: Web foundation displays actual readiness
 
-The web application SHALL provide a consistent application shell with a setup/status page served by the same process as the API. Once loaded, the page SHALL retrieve readiness from that origin and represent loading, ready, dependency unavailable, and server unavailable states separately. It SHALL support retrying a failed check without reloading the page and SHALL NOT present placeholder data as an operational integration.
+The web application SHALL provide a consistent application shell with a public setup/status page served by the same process as the API. Once loaded, the page SHALL retrieve readiness from that origin and represent loading, ready, initialization in progress, setup required, bootstrap/schema failure, dependency unavailable, and server unavailable states separately. It SHALL support retrying a failed check without reloading the page and SHALL NOT present placeholder data as an operational integration. The page SHALL explain deployment-driven initialization, expose no administrator-creation form and offer normal sign-in once ready.
 
 Checks SHALL run on page entry and explicit user request, without automatic retries, polling or focus/reconnect refetches. Each browser check SHALL settle within five seconds, including response-body consumption. A fresh check SHALL display a checking state instead of presenting a previous success as current evidence. A superseded result SHALL NOT overwrite a newer result.
 
 An already-loaded page SHALL display a safe server-unavailable message when its server cannot be reached. A fresh navigation while the server process is stopped is outside this in-page diagnostic guarantee; no independently served fallback page is required.
 
 #### Scenario: Load the page with a ready server
-- **WHEN** a user opens the setup/status page while the server and database are available
-- **THEN** the page transitions from loading to a ready state using the server response
+- **WHEN** a user opens the setup/status page while the server, database, schema and installation are ready
+- **THEN** the page transitions from loading to a ready state using the server response and offers sign-in
 
 #### Scenario: Distinguish a dependency failure from a server failure
 - **WHEN** a loaded page receives a documented dependency failure or cannot reach the server
 - **THEN** the page explains the corresponding state and offers a retry action
 
 #### Scenario: Recover through the retry action
-- **WHEN** the user retries after the failed dependency or server has recovered
+- **WHEN** the user retries after the failed dependency or server has recovered and initialization is complete
 - **THEN** the loaded page updates to ready without a browser reload
 
 #### Scenario: Ignore a superseded result
@@ -163,6 +173,11 @@ An already-loaded page SHALL display a safe server-unavailable message when its 
 - **WHEN** the user starts a fresh navigation with the server process stopped
 - **THEN** no Clavis page can be served and the browser handles the connection failure
 - **AND** documentation does not promise a separate status server or an offline application shell
+
+#### Scenario: Explain incomplete installation
+- **WHEN** a loaded page receives a documented initialization/setup/bootstrap/schema failure
+- **THEN** it displays the corresponding safe state and deployment guidance without exposing secrets, paths or account details
+- **AND** checking again does not itself trigger administrator creation
 
 ### Requirement: Usable visual foundation
 
@@ -202,23 +217,22 @@ Server operational logs SHALL be structured and SHALL distinguish service startu
 
 ### Requirement: Repeatable quality and smoke checks
 
-The project SHALL provide documented non-interactive commands for formatting checks, static analysis, generated-source consistency, tests, builds, and an end-to-end bootstrap smoke check. A failing check SHALL return a nonzero exit status. The smoke check SHALL exercise the real local server and database, verify CLI diagnostics and browser readiness against the same server origin, and clean up only the temporary resources it creates.
+The project SHALL provide documented non-interactive commands for formatting checks, static analysis, generated-source consistency, non-browser tests, builds, and an end-to-end bootstrap smoke check. A failing check SHALL return a nonzero exit status. The smoke check SHALL exercise the real local server and database, verify API and CLI behavior against the same server origin, and clean up only the temporary resources it creates. Setup, quality and smoke commands SHALL NOT install or require a browser runtime.
 
-Smoke verification SHALL run the built server from a separate working directory without companion web assets and SHALL verify browser functionality without third-party asset requests. It SHALL cover database outage/recovery and loss/recovery of the server connection in an already-loaded page.
+Smoke verification SHALL run the built server from a separate working directory without companion web assets and SHALL verify document/asset availability through HTTP alongside CLI diagnostics and authentication. It SHALL cover database outage/recovery and server stop/restart through fresh HTTP and CLI requests. Automated browser behavior, DOM, screenshot and already-loaded-page checks are outside the current test scope.
 
 #### Scenario: Validate the project from a clean installation
 - **WHEN** a contributor runs the quality and smoke commands with the documented prerequisites
-- **THEN** the checks verify that the application builds, generated sources are consistent, and the CLI and browser observe the real server/database readiness
-- **AND** browser tests use the built server directly rather than a frontend preview server
+- **THEN** the checks verify that the application builds, generated sources are consistent, and API/CLI requests observe real server/database behavior
+- **AND** no browser installation or browser automation is invoked
 
 #### Scenario: Verify the deployable artifact
 - **WHEN** the copied server executable runs in an otherwise empty directory with valid configuration
-- **THEN** smoke verification loads its complete styled page, exercises appearance and retry, and obtains the existing CLI readiness result without a companion asset directory
-- **AND** browser requests for required assets remain on the server's origin
+- **THEN** direct HTTP requests retrieve its public documents and required embedded assets, and the CLI obtains readiness/authentication results without a companion asset directory
 
-#### Scenario: Verify server recovery in an existing page
-- **WHEN** the smoke runner stops the server after the page has loaded and restarts it at the same address
-- **THEN** the loaded page reports a failed check safely and a subsequent explicit retry recovers without reloading
+#### Scenario: Verify server recovery through clients
+- **WHEN** the smoke runner stops the server and restarts it at the same address
+- **THEN** HTTP and CLI requests distinguish the outage and succeed after the server becomes ready again
 
 #### Scenario: A required check fails
 - **WHEN** a test, static check, generated-source check, build, or smoke assertion fails
