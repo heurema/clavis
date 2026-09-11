@@ -3,6 +3,7 @@ package web
 import (
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/web/ui/alert"
+	"github.com/heurema/clavis/internal/web/ui/badge"
 	"github.com/heurema/clavis/internal/web/ui/button"
 	"github.com/heurema/clavis/internal/web/ui/card"
 	"github.com/heurema/clavis/internal/web/ui/icon"
@@ -95,13 +96,59 @@ templ Admin(model AdminModel) {
 	@authDocument("Administration") {
 		<p class="text-sm text-muted-foreground">Signed in as</p>
 		<p class="break-all text-lg font-semibold">{ model.User.Username }</p>
-		<p class="text-sm leading-6 text-muted-foreground">Administrator access. User and connection management are not available in this release.</p>
+		<p class="text-sm leading-6 text-muted-foreground">Administrator access. Manage users through the CLI; connection management is not available in this release.</p>
+		@userList(model)
 		<form action="/logout" method="post">
 			@button.Button(button.Props{Type: button.TypeSubmit, Variant: button.VariantSecondary}) {
 				Sign out
 			}
 		</form>
 	}
+}
+
+// The list is read-only: no management forms, no scripts and no per-user links
+// are rendered here. Every cell is escaped text from the bounded listing.
+templ userList(model AdminModel) {
+	<section class="space-y-3">
+		<h2 class="text-xl font-semibold tracking-tight">Users</h2>
+		if len(model.Users) == 0 {
+			<p class="text-sm leading-6 text-muted-foreground">No user accounts are listed.</p>
+		} else {
+			<div class="overflow-x-auto">
+				<table class="w-full border-collapse text-left text-sm">
+					<thead>
+						<tr class="border-b text-xs uppercase tracking-wide text-muted-foreground">
+							<th scope="col" class="py-2 pr-4 font-medium">Username</th>
+							<th scope="col" class="py-2 pr-4 font-medium">Role</th>
+							<th scope="col" class="py-2 pr-4 font-medium">Status</th>
+							<th scope="col" class="py-2 font-medium">Created</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, user := range model.Users {
+							<tr class="border-b last:border-0 align-top">
+								<th scope="row" class="break-all py-2 pr-4 font-medium">{ user.Username }</th>
+								<td class="py-2 pr-4">
+									@badge.Badge(badge.Props{Variant: roleVariant(user.Role)}) {
+										{ string(user.Role) }
+									}
+								</td>
+								<td class="py-2 pr-4">
+									@badge.Badge(badge.Props{Variant: statusVariant(user.Disabled)}) {
+										{ statusLabel(user.Disabled) }
+									}
+								</td>
+								<td class="whitespace-nowrap py-2 tabular-nums">{ createdLabel(user.CreatedAt) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+			if model.Truncated {
+				<p class="text-sm leading-6 text-muted-foreground">{ truncationNotice() }</p>
+			}
+		}
+	</section>
 }
 
 templ AuthError(model AuthErrorModel) {

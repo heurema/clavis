@@ -37,6 +37,7 @@ type AuthViews struct {
 
 type authHTTP struct {
 	service  auth.Service
+	admin    auth.Administration
 	recorder auth.EventRecorder
 	origin   string
 	secure   bool
@@ -54,6 +55,12 @@ func (a *authHTTP) mount(router chi.Router) {
 	router.With(a.operation).Get(auth.WhoAmIPath, a.identityJSON)
 	router.With(a.operation).Post(auth.LogoutPath, a.logoutJSON)
 	router.With(a.operation).Post(auth.RevokePath, a.revokeJSON)
+	router.With(a.operation).Get(auth.UsersPath, a.listUsersJSON)
+	router.With(a.operation).Post(auth.UsersPath, a.createUserJSON)
+	router.With(a.operation).Post(auth.UserBlockPath, a.blockUserJSON)
+	router.With(a.operation).Post(auth.UserUnblockPath, a.unblockUserJSON)
+	router.With(a.operation).Post(auth.UserPasswordPath, a.resetPasswordJSON)
+	router.With(a.operation).Post(auth.UserRolePath, a.setRoleJSON)
 }
 
 type responseBuffer struct {
@@ -74,22 +81,49 @@ func serviceOwnsEvent(r *http.Request) {
 	r.Context().Value(operationAuditKey{}).(*operationAudit).serviceOwns = true
 }
 
+// rejectionAction maps the matched route, never the raw request path, to the
+// action an adapter rejection records. Routes absent from the table record
+// nothing: reading existing credentials (whoami, the browser admin page) is not
+// a rejectable mutation, and the listing route is the only recorded GET.
+func rejectionAction(r *http.Request) (auth.EventAction, bool) {
+	switch chi.RouteContext(r.Context()).RoutePattern() {
+	case "/login", auth.LoginPath:
+		return auth.EventLogin, true
+	case "/logout", auth.LogoutPath:
+		return auth.EventLogout, true
+	case auth.RevokePath:
+		return auth.EventRevoke, true
+	case auth.UsersPath:
+		if r.Method == http.MethodGet {
+			return auth.EventUsersList, true
+		}
+		return auth.EventUserCreate, true
+	case auth.UserBlockPath:
+		return auth.EventUserBlock, true
+	case auth.UserUnblockPath:
+		return auth.EventUserUnblock, true
+	case auth.UserPasswordPath:
+		return auth.EventUserResetPassword, true
+	case auth.UserRolePath:
+		// A rejected role request is recorded as user.demote whether or not a
+		// role was submitted: the request never reached the service, no role
+		// changed, and the rejection must not depend on untrusted body fields.
+		return auth.EventUserDemote, true
+	}
+	return "", false
+}
+
 func (a *authHTTP) auditRejection(r *http.Request, status int) error {
 	state := r.Context().Value(operationAuditKey{}).(*operationAudit)
-	if r.Method != http.MethodPost || state.serviceOwns {
+	if state.serviceOwns {
+		return nil
+	}
+	action, ok := rejectionAction(r)
+	if !ok {
 		return nil
 	}
 	if state.rejectionStatus != 0 {
 		status = state.rejectionStatus
-	}
-	var action auth.EventAction
-	switch r.URL.Path {
-	case "/login", auth.LoginPath:
-		action = auth.EventLogin
-	case "/logout", auth.LogoutPath:
-		action = auth.EventLogout
-	default:
-		action = auth.EventRevoke
 	}
 	var outcome auth.EventOutcome
 	switch status {
@@ -160,7 +194,7 @@ func (a *authHTTP) operation(next http.Handler) http.Handler {
 					a.logoutResult(buffer, r, auth.LogoutOutcome(true, failure))
 				}
 			case "/admin":
-				a.adminResult(buffer, r, auth.Session{}, failure)
+				a.adminResult(buffer, r, auth.Session{}, auth.UserList{}, failure)
 			default:
 				jsonFailure(buffer, failure)
 			}
@@ -309,50 +343,71 @@ func mediaType(r *http.Request, want string) bool {
 	return true
 }
 
-func credentialBody(r *http.Request) ([]byte, error) {
-	b, err := io.ReadAll(io.LimitReader(r.Body, auth.MaxCredentialBody+1))
-	if err != nil || len(b) > auth.MaxCredentialBody || !utf8.Valid(b) {
+func boundedBody(r *http.Request, limit int) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
+	if err != nil || len(b) > limit || !utf8.Valid(b) {
 		return nil, &auth.Error{Code: auth.InvalidArgument}
 	}
 	return b, nil
 }
 
-// Decode object members explicitly so duplicate fields, case aliases and null
-// cannot be accepted by encoding/json's otherwise permissive struct decoder.
-func decodeLogin(r *http.Request) (auth.LoginRequest, error) {
-	var input auth.LoginRequest
-	b, err := credentialBody(r)
+func credentialBody(r *http.Request) ([]byte, error) {
+	return boundedBody(r, auth.MaxCredentialBody)
+}
+
+// decodeJSON reads one bounded JSON object whose members are exactly the
+// allowlisted string fields in into. Members are decoded explicitly so
+// duplicate fields, case aliases, null, non-string values and trailing
+// documents cannot be accepted by encoding/json's permissive struct decoder.
+// Values are assigned but never validated here and never reflected back.
+func decodeJSON(r *http.Request, limit int, into map[string]func(string)) error {
+	invalid := &auth.Error{Code: auth.InvalidArgument}
+	if !mediaType(r, "application/json") {
+		return invalid
+	}
+	b, err := boundedBody(r, limit)
 	if err != nil {
-		return input, err
+		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(b))
 	first, err := decoder.Token()
 	if err != nil || first != json.Delim('{') {
-		return input, &auth.Error{Code: auth.InvalidArgument}
+		return invalid
 	}
 	seen := map[string]bool{}
 	for decoder.More() {
 		key, err := decoder.Token()
 		name, ok := key.(string)
-		if err != nil || !ok || (name != "username" && name != "password") || seen[name] {
-			return input, &auth.Error{Code: auth.InvalidArgument}
+		if err != nil || !ok || into[name] == nil || seen[name] {
+			return invalid
 		}
 		seen[name] = true
 		value, err := decoder.Token()
 		text, ok := value.(string)
 		if err != nil || !ok {
-			return input, &auth.Error{Code: auth.InvalidArgument}
+			return invalid
 		}
-		if name == "username" {
-			input.Username = text
-		} else {
-			input.Password = auth.Secret(text)
-		}
+		into[name](text)
 	}
 	if _, err := decoder.Token(); err != nil {
-		return input, &auth.Error{Code: auth.InvalidArgument}
+		return invalid
 	}
-	if _, err := decoder.Token(); err != io.EOF || !auth.ValidUsername(input.Username) || !auth.ValidPassword(input.Password) {
+	if _, err := decoder.Token(); err != io.EOF {
+		return invalid
+	}
+	return nil
+}
+
+func decodeLogin(r *http.Request) (auth.LoginRequest, error) {
+	var input auth.LoginRequest
+	err := decodeJSON(r, auth.MaxCredentialBody, map[string]func(string){
+		"username": func(value string) { input.Username = value },
+		"password": func(value string) { input.Password = auth.Secret(value) },
+	})
+	if err != nil {
+		return input, err
+	}
+	if !auth.ValidUsername(input.Username) || !auth.ValidPassword(input.Password) {
 		return input, &auth.Error{Code: auth.InvalidArgument}
 	}
 	return input, nil
@@ -574,7 +629,7 @@ func (a *authHTTP) logoutBrowser(w http.ResponseWriter, r *http.Request) {
 	a.logoutResult(w, r, auth.LogoutOutcome(true, err))
 }
 
-func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, err error) {
+func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, users auth.UserList, err error) {
 	outcome := auth.AdminOutcome(err)
 	if outcome.Location != "" {
 		w.Header().Set("Cache-Control", "no-store")
@@ -586,7 +641,7 @@ func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session a
 		a.render(w, r, outcome.Status, a.views.Error(web.AuthErrorModel{ErrorCode: outcome.ErrorCode}))
 		return
 	}
-	a.render(w, r, 200, a.views.Admin(web.AdminModel{User: session.User}))
+	a.render(w, r, 200, a.views.Admin(web.AdminModel{User: session.User, Users: users.Users, Truncated: users.Truncated}))
 }
 
 func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
@@ -601,7 +656,15 @@ func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
 	if err == nil && session.User.Role != auth.Admin {
 		err = &auth.Error{Code: auth.Forbidden}
 	}
-	a.adminResult(w, r, session, err)
+	// The page fails closed rather than rendering administration without the
+	// current list. Listing a validated session records no event of its own.
+	var users auth.UserList
+	if err == nil {
+		if err = a.requireAdministration(); err == nil {
+			users, err = a.admin.ListUsers(r.Context(), session)
+		}
+	}
+	a.adminResult(w, r, session, users, err)
 }
 
 func newAuthHTTP(origin string, service auth.Service, views AuthViews) (*authHTTP, error) {

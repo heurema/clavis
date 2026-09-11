@@ -113,7 +113,7 @@ Constraint names are PostgreSQL's defaults for the inline checks in `001`; the m
 
 | Method/path | Body | Success | Errors |
 |---|---|---|---|
-| `GET /api/admin/users` | none | 200 `{users:[...],truncated}` | 401, 403, 503 |
+| `GET /api/admin/users` | none (a body is 400) | 200 `{users:[...],truncated}` | 400, 401, 403, 503 |
 | `POST /api/admin/users` | `{username,password}` | 201 `{id,username,role,disabled,createdAt}` | 400, 401, 403, 409 `USERNAME_TAKEN`, 429, 503 |
 | `POST /api/admin/users/{userID}/block` | empty | 200 `{user,sessionsRevoked:true}` | 400, 401, 403, 404, 409 `LAST_ADMINISTRATOR`, 503 |
 | `POST /api/admin/users/{userID}/unblock` | empty | 200 `{user,sessionsRevoked:false}` | 400, 401, 403, 404, 503 |
