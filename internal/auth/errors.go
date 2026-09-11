@@ -14,6 +14,8 @@ const (
 	Unauthenticated    = "UNAUTHENTICATED"
 	Forbidden          = "FORBIDDEN"
 	UserNotFound       = "USER_NOT_FOUND"
+	UsernameTaken      = "USERNAME_TAKEN"
+	LastAdministrator  = "LAST_ADMINISTRATOR"
 	RateLimited        = "RATE_LIMITED"
 	ServiceUnavailable = "SERVICE_UNAVAILABLE"
 )
@@ -55,6 +57,10 @@ func LookupFailure(code string) (int, platform.Failure, bool) {
 		status, message = http.StatusForbidden, "Administrator access is required"
 	case UserNotFound:
 		status, message = http.StatusNotFound, "User not found"
+	case UsernameTaken:
+		status, message = http.StatusConflict, "Username is already in use"
+	case LastAdministrator:
+		status, message = http.StatusConflict, "At least one enabled administrator must remain"
 	case RateLimited:
 		status, message = http.StatusTooManyRequests, "Too many sign-in attempts; try again later"
 	case ServiceUnavailable:

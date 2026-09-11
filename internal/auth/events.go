@@ -11,6 +11,13 @@ const (
 	EventLogin             EventAction  = "login"
 	EventLogout            EventAction  = "logout"
 	EventRevoke            EventAction  = "revoke"
+	EventUserCreate        EventAction  = "user.create"
+	EventUserBlock         EventAction  = "user.block"
+	EventUserUnblock       EventAction  = "user.unblock"
+	EventUserResetPassword EventAction  = "user.reset_password"
+	EventUserPromote       EventAction  = "user.promote"
+	EventUserDemote        EventAction  = "user.demote"
+	EventUsersList         EventAction  = "users.list"
 	OutcomeInvalidArgument EventOutcome = "invalid_argument"
 	OutcomeUnauthenticated EventOutcome = "unauthenticated"
 	OutcomeForbidden       EventOutcome = "forbidden"
@@ -29,8 +36,20 @@ type EventRecorder interface {
 	RecordEvent(context.Context, Event) error
 }
 
+// ValidEventAction is the action allowlist shared with the event schema's
+// check constraint. Extending it requires a forward migration.
+func ValidEventAction(action EventAction) bool {
+	switch action {
+	case EventLogin, EventLogout, EventRevoke,
+		EventUserCreate, EventUserBlock, EventUserUnblock, EventUserResetPassword,
+		EventUserPromote, EventUserDemote, EventUsersList:
+		return true
+	}
+	return false
+}
+
 func (e Event) Valid() bool {
-	if e.Action != EventLogin && e.Action != EventLogout && e.Action != EventRevoke {
+	if !ValidEventAction(e.Action) {
 		return false
 	}
 	switch e.Outcome {

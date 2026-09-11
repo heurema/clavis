@@ -127,7 +127,7 @@ func TestMigrateUsesPrivateEmbeddedManifestAndFreshInjectedFiles(t *testing.T) {
 
 	initial, err := migrationFiles.ReadFile("migrations/001_initial.sql")
 	require.NoError(t, err)
-	files := fstest.MapFS{"001_initial.sql": {Data: initial}}
+	files := embeddedMapFS(t)
 	require.NoError(t, migrateFS(t.Context(), pool, files))
 	files["001_initial.sql"].Data = append(initial, []byte("\n-- changed\n")...)
 	require.ErrorIs(t, migrateFS(t.Context(), pool, files), errSchema)

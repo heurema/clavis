@@ -167,7 +167,7 @@ func TestConcurrentProcessesInitializeExactlyOnce(t *testing.T) {
 	for _, cmd := range commands {
 		require.NoError(t, cmd.Wait())
 	}
-	require.Equal(t, 2, countRows(t, pool, "goose_db_version"))
+	require.Equal(t, appliedLedgerRows(), countRows(t, pool, "goose_db_version"))
 	for _, table := range []string{"users", "auth_events", "installation"} {
 		require.Equal(t, 1, countRows(t, pool, table))
 	}

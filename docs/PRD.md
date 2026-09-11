@@ -1,8 +1,8 @@
 # PRD: Clavis — Unified Access to External Systems Through AI Agents
 
 Status: Draft product requirements for review and design.\
-Version: 0.1.\
-Date: September 9, 2026.\
+Version: 0.2 (MVP scope decisions of September 11, 2026 applied; see section 12).\
+Date: September 11, 2026.\
 Product name: Clavis (`clavis`).
 
 ## 1. Product Concept
@@ -21,7 +21,7 @@ The primary MVP interfaces are **CLI + skill**. MCP is outside the product model
 
 ### Short Description
 
-A centralized access platform for AI agents. Managers retrieve business data independently, developers investigate problems, and administrators manage access through their own agents. The first integrations are PostgreSQL and VictoriaMetrics. Local authentication, optional Google sign-in, and corporate OpenID Connect are supported from the first release.
+A centralized access platform for AI agents. Managers retrieve business data independently, developers investigate problems, and administrators manage access through their own agents. The first integrations are PostgreSQL and VictoriaMetrics. The MVP uses local authentication only; optional Google sign-in and corporate OpenID Connect follow in a later stage.
 
 ## 2. Problem and Value
 
@@ -55,12 +55,17 @@ Manager and developer are user personas. In the MVP, their differences are repre
 | Primary interface | A CLI usable by both people and their agents |
 | Agent support | A skill shipped with the product; no MCP |
 | Identity | A personal user account and authenticated CLI sessions |
-| Sign-in methods | Local authentication, optional Google, and external OpenID Connect |
+| Sign-in methods | Local authentication only in the MVP; optional Google and external OpenID Connect in a later stage |
+| Passwords | Administrators set and reset local passwords; no self-service password change or account recovery in the MVP |
 | Unit of access assignment | A specific connection configured in advance |
-| Data restrictions | Enforced by the external system or a preconfigured external access mechanism |
+| Management permission | Connection and user management is the administrator role; a grant to a member means only "may use" |
+| Data restrictions | Enforced solely by the external system through the credentials presented to it; the platform is a pass-through and applies no access rules of its own |
+| Resource bounds | Every connection has a statement/request timeout and a result cap; truncation is always explicit |
 | Initial providers | PostgreSQL and VictoriaMetrics |
-| Initial operations | Read access, data discovery, and diagnostics within external permissions |
-| Data storage | Platform management data and audit records; no persistent storage of external query results |
+| Initial operations | Any operation the external credentials allow, plus discovery and diagnostics helpers |
+| Credential storage | External credentials are encrypted at rest with a deployment-supplied key |
+| Data storage | Platform management data and audit records; no persistent storage of external query results or query text |
+| Audit retention | No automatic purge in the MVP; an administrator-configurable retention window is a later stage |
 | Agent autonomy | The user's agent independently chooses the sequence of permitted operations |
 | Built-in agent | Not required for the MVP |
 | User interface | Minimal sign-in and administration screens; the CLI is the primary interface |
@@ -101,7 +106,7 @@ Environments, services, and tags help users find and organize connections. They 
 
 ### Permission
 
-A permission determines who may use a connection or perform an administrative operation. Permission to manage the platform and permission to read external data are treated separately.
+A permission determines who may use a connection or perform an administrative operation. Permission to manage the platform and permission to use external data are treated separately. In the MVP, management permission is the administrator role; a connection grant to a user or group confers only the right to use that connection.
 
 ### Operation and Audit Event
 
@@ -111,13 +116,13 @@ An operation is a supported action through a provider or an administrative actio
 
 | Layer | Responsibility |
 |---|---|
-| Local sign-in, Google, or OIDC | Verify the user's identity |
-| Our platform | Check permission to use connections and perform administrative operations |
+| Local sign-in (Google or OIDC in a later stage) | Verify the user's identity |
+| Our platform | Check permission to use connections and perform administrative operations; apply resource bounds; proxy the operation unchanged |
 | External system | Enforce the data and operations allowed by the credentials presented to it |
 
 The administrator configures restricted access in the external system before granting a connection to users. The platform provides a unified way to use and audit that access.
 
-The MVP does not implement its own access rules for rows, columns, or time series. If two audiences need different external permissions, separate connections are created with the corresponding permissions configured externally.
+The MVP does not implement its own access rules for rows, columns, time series, statement types, or operations. The platform forwards the agent's request to the external system as submitted, under the connection's credentials; it does not rewrite queries, wrap them in read-only transactions, or filter by allowlist. If two audiences need different external permissions, separate connections are created with the corresponding permissions configured externally. The only limits the platform imposes are per-connection resource bounds: a timeout and a result cap.
 
 A user selects an available connection and the parameters of a supported operation. Replacing its target system or credentials is a connection management action and requires administrative permissions.
 
@@ -131,14 +136,19 @@ All requirements in this section are included in the first version. Implementati
 
 | ID | Requirement | Acceptance Criteria |
 |---|---|---|
-| AUTH-01 | Local account with a username and password | A user can sign in without Google or a corporate identity provider |
-| AUTH-02 | Optional Google sign-in | An administrator can enable it; the product also works with Google disabled |
-| AUTH-03 | External OIDC provider integration | Sign-in through authentik is verified end to end; configuration is not exclusive to authentik |
-| AUTH-04 | Management of available sign-in methods | An administrator selects which authentication methods are enabled |
-| AUTH-05 | Local user management | Account creation, blocking, and administrator-initiated local password reset are available |
+| AUTH-01 | Local account with a username and password | A user can sign in with a local account; no external identity provider is involved in the MVP |
+| AUTH-05 | Local user management | Account creation, blocking and unblocking, administrator-initiated local password reset, and explicit administrator role assignment are available; there is no self-service password change and no account recovery in the MVP |
 | AUTH-06 | Separation of authentication and resource access | Successful sign-in alone does not grant connection access or an administrator role |
 | AUTH-07 | CLI session management | A user can end their own session; an administrator can revoke a user's sessions |
-| AUTH-08 | Controlled linking of sign-in methods to users | Matching email addresses across sign-in methods do not automatically merge accounts or permissions |
+
+Deferred to a later stage (identifiers retained for continuity):
+
+| ID | Requirement | Status |
+|---|---|---|
+| AUTH-02 | Optional Google sign-in | Later stage |
+| AUTH-03 | External OIDC provider integration (authentik verified) | Later stage |
+| AUTH-04 | Management of available sign-in methods | Later stage; the MVP has one method |
+| AUTH-08 | Controlled linking of sign-in methods to users | Later stage; no linking exists with a single method |
 
 MVP permissions and groups are managed within the platform. Automatic group synchronization from an external identity provider is not required.
 
@@ -151,7 +161,7 @@ MVP permissions and groups are managed within the platform. Automatic group sync
 | ACCESS-03 | Connection access grants to users or groups | A recipient can discover and use the assigned connection |
 | ACCESS-04 | Verification of current permissions on each request | Subsequent requests are rejected after access is revoked, even if the CLI is already authenticated |
 | ACCESS-05 | Restricted resource discovery | A member can see only permitted connections and their descriptions |
-| ACCESS-06 | Separation of management and usage permissions | The platform explicitly distinguishes permission to manage a connection from permission to use it |
+| ACCESS-06 | Separation of management and usage permissions | Managing a connection requires the administrator role; a usage grant never confers management. Per-connection manager permissions are not part of the MVP |
 | ACCESS-07 | Explicit management of the administrator role | The role can be assigned and revoked through the CLI by a user with the necessary permissions |
 
 Effective access is the union of active direct grants and group-based grants. Revoking one grant does not remove other active grants; the CLI must let users inspect the source of access.
@@ -165,31 +175,34 @@ Effective access is the union of active direct grants and group-based grants. Re
 | CONN-03 | Connectivity checks | The result shows whether the connection and the defined check succeeded; it does not claim that all external permissions have been verified |
 | CONN-04 | Enabling and disabling connections | A disabled connection rejects subsequent operations |
 | CONN-05 | Credential updates | An administrator can replace credentials; the change is audited without exposing secrets |
-| CONN-06 | Protected credential handling | Secrets are not returned to members or agents when viewing connections and are excluded from audit records and error messages |
+| CONN-06 | Protected credential handling | Secrets are encrypted at rest with a deployment-supplied key, are not returned to members or agents when viewing connections, and are excluded from audit records and error messages |
 | CONN-07 | Extensible provider support | A new system type uses the shared user, connection, permission, and audit model |
 | CONN-08 | Capability discovery | Operation descriptions, purposes, and required parameters are available for each connection |
+| CONN-09 | Resource bounds | Each connection has a timeout and a result cap; exceeding them yields an explicit timeout or truncation outcome rather than a silent partial result |
 
 A connectivity check confirms only what it actually tested. The administrator supplies the access scope description; the external system determines whether a specific query is permitted.
 
 ### 7.4. Initial Integrations
 
-**PostgreSQL**
+**PostgreSQL** (pilot targets PostgreSQL 17 and 18)
 
 - Connectivity checks.
 - Discovery of accessible database structures within the external role's permissions.
-- Execution of read and diagnostic queries.
+- Pass-through execution of any SQL the agent submits, under the connection's credentials. The platform does not restrict statement types or wrap statements in read-only transactions; the external role decides what succeeds.
+- Per-connection statement timeout and row cap with explicit truncation.
 - Structured results and clear source errors.
 - Access through preconfigured roles with restricted permissions.
 
-**VictoriaMetrics**
+**VictoriaMetrics** (pilot targets single-node deployments)
 
-- Connectivity checks.
+- Connectivity checks using the configured authentication method.
 - Retrieval of available metric names and metadata, where permitted by the configured connection.
 - Instant and range queries.
+- Per-connection request timeout and result cap with explicit truncation.
 - Structured results and clear source errors.
-- Access through a preconfigured endpoint and an external access restriction mechanism.
+- Authentication methods in the MVP: none, HTTP basic, bearer token, and a custom header. The credential model leaves room for mutual TLS and OAuth2 client credentials in a later stage.
 
-Business data modification is outside the first release's use cases. Restricted read permissions are configured in the external systems. Naming a connection does not make broadly privileged external credentials safe for read access.
+Business data modification is not a first-release use case, but the platform does not prevent it: whether a submitted statement can modify data is decided entirely by the external credentials. Administrators must configure restricted roles in the external systems before granting a connection. Naming a connection does not make broadly privileged external credentials safe.
 
 ### 7.5. CLI
 
@@ -205,7 +218,7 @@ Business data modification is outside the first release's use cases. Restricted 
 | CLI-08 | Handling of large results | Any result limit or truncation is explicit in the response; a partial result is not presented as complete |
 | CLI-09 | Termination of long-running operations | Execution time limits and clear cancellation or timeout outcomes are provided |
 
-An additional human-readable format may be offered. The skill relies on stable structured output, documented errors, and built-in CLI help.
+An additional human-readable format may be offered. The skill relies on stable structured output, documented errors, and built-in CLI help. Limits and time bounds in CLI-08 and CLI-09 come from the per-connection resource bounds (CONN-09), not from access rules.
 
 ### 7.6. Skill for AI Agents
 
@@ -246,21 +259,24 @@ A request event contains:
 - User and CLI session identifiers, plus an agent label if supplied.
 - The connection and operation type.
 - Timestamp, duration, and outcome.
+- Result size and whether the result was truncated or timed out.
 - Safe details about the request target and error category.
 
 The authenticated session determines the user's identity. A client-supplied agent name is supplementary metadata and does not replace that identity.
 
 For administrative operations, the platform records the actor, the affected object, and changes to non-secret settings or permissions. Failed and denied attempts are also recorded.
 
-**MVP storage rule:** SQL query results, time series, and other source responses are not stored persistently. This applies to audit records, service logs, and platform error diagnostics. Full query text and arbitrary parameters are also excluded by default because they may contain sensitive values. The audit records the action and target at a safe level of detail but does not promise exact query replay.
+**MVP storage rule:** SQL query results, time series, and other source responses are not stored persistently. This applies to audit records, service logs, and platform error diagnostics. Query text and arbitrary operation parameters are never stored, because they may contain sensitive values; there is no per-connection option to record them in the MVP. The audit records the action, connection, outcome and size at a safe level of detail and does not offer query replay.
+
+**Retention:** the MVP does not purge audit records; the operator is responsible for database growth. A retention window that an administrator configures through the CLI or the web interface is a later stage.
 
 Once a result is sent to an agent, the agent's own environment may retain the conversation history. The policy against persistent storage of external data applies to our platform.
 
 ### 7.8. Minimal Web Interface
 
-The MVP needs screens for sign-in and initial access setup, plus a minimal administrative view of users, connections, permissions, and audit records.
+The MVP needs screens for sign-in and initial access setup, plus read-only administrative views of users, connections, permissions, and audit records. The browser does not offer management forms in the MVP; every mutation goes through the CLI.
 
-Administrative capabilities are also available through the CLI. Data exploration takes place through the agent and CLI; dedicated log browsers, query editors, monitoring dashboards, and investigation interfaces are not required for the MVP.
+Administrative capabilities are available through the CLI. Data exploration takes place through the agent and CLI; dedicated log browsers, query editors, monitoring dashboards, and investigation interfaces are not required for the MVP.
 
 ## 8. Core User Scenarios
 
@@ -268,7 +284,7 @@ Administrative capabilities are also available through the CLI. Data exploration
 
 1. An administrator prepares a PostgreSQL reporting role and a connection.
 2. The administrator grants the connection to the manager or their group.
-3. The manager signs in using an available method and authenticates the CLI.
+3. The manager signs in with the local account an administrator created and authenticates the CLI.
 4. They ask their agent for information, such as the number of orders in a particular status yesterday.
 5. The agent uses the skill, explores the accessible structure, and executes queries.
 6. The manager receives an answer with its source and time range; the platform records the operations in the audit log.
@@ -297,8 +313,8 @@ Success: platform administration uses the same agent interaction model.
 
 1. The user has access to a connection.
 2. The agent requests an object that the preconfigured external role is not allowed to access.
-3. The source rejects the query.
-4. The platform returns a clear denial and records an audit event.
+3. The platform forwards the query unchanged; the source rejects it.
+4. The platform returns the source's denial clearly and records an audit event without the query text.
 
 Success: permission to use a connection does not expand its actual external permissions.
 
@@ -306,18 +322,24 @@ Success: permission to use a connection does not expand its actual external perm
 
 ### Included
 
-- Local authentication, optional Google sign-in, and external OIDC verified with authentik.
+- Local authentication with administrator-managed passwords.
 - Users, basic roles, groups, and manageable CLI sessions.
-- A catalog of providers and preconfigured connections.
-- Connection access assignments.
-- PostgreSQL and VictoriaMetrics.
+- A catalog of providers and preconfigured connections with encrypted credentials.
+- Connection access assignments; management is the administrator role.
+- PostgreSQL (pass-through SQL) and VictoriaMetrics (none, basic, bearer, custom-header authentication).
+- Per-connection timeouts and result caps.
 - A CLI with structured output and administrative operations.
-- A skill and instructions for using it with agents.
-- Request proxying and auditing.
-- A minimal sign-in and administration interface.
+- A skill and instructions for using it with Claude Code and Codex.
+- Request proxying and auditing without stored query text or purge.
+- A sign-in page and read-only administration views.
 
 ### Later Stages
 
+- Optional Google sign-in, external OIDC (authentik), management of enabled sign-in methods, and controlled linking of sign-in methods to users.
+- Self-service password change, account recovery, and credential-key rotation.
+- Per-connection manager permissions.
+- Mutual TLS and OAuth2 client-credential authentication for VictoriaMetrics and other HTTP sources.
+- Administrator-configurable audit retention.
 - Other databases, Prometheus, and log and trace sources.
 - GitHub/GitLab, issue trackers, Slack, and other external systems.
 - Additional permitted operations, including data modification subject to a separate product decision.
@@ -337,16 +359,16 @@ Success: permission to use a connection does not expand its actual external perm
 
 The MVP is ready for a pilot when the following end-to-end scenarios have been verified:
 
-1. **All sign-in methods:** a local account, Google when enabled, and authentik through OIDC.
-2. **No mandatory Google dependency:** full functionality with local sign-in and with corporate OIDC.
-3. **Two providers:** PostgreSQL and VictoriaMetrics are configured and used with preconfigured restricted permissions.
+1. **Local sign-in:** an administrator creates a local account, the user signs in through the browser and CLI, and an administrator can block the user, reset the password and revoke sessions.
+2. **Administrator role:** the role can be granted and revoked, and the last enabled administrator cannot be removed.
+3. **Two providers:** PostgreSQL and VictoriaMetrics are configured and used with preconfigured restricted permissions, and each of the MVP VictoriaMetrics authentication methods is verified.
 4. **Connection isolation:** a user can discover and use only assigned connections; a denied operation is not sent to the external source.
 5. **External restrictions:** connection access cannot exceed the permissions of the external role or configured endpoint.
 6. **Access revocation:** subsequent requests are rejected after all applicable grants are removed or the session is revoked.
 7. **Skill-based usage:** an agent completes data retrieval and administration scenarios without the user manually explaining commands.
 8. **Auditing:** successful, denied, and failed operations are attributed to the user; role and connection changes are traceable.
-9. **Data handling:** credentials and external system responses are absent from persistent logs; sensitive query values are not recorded by default.
-10. **Accurate results:** source unavailability, errors, timeouts, and incomplete responses are visible to both the person and the agent.
+9. **Data handling:** credentials are encrypted at rest and absent from logs and audit; external system responses and query text are never persisted.
+10. **Accurate results:** source unavailability, errors, per-connection timeouts, and truncated responses are visible to both the person and the agent.
 
 ## 11. Pilot Success Metrics
 
@@ -361,18 +383,33 @@ The MVP is ready for a pilot when the following end-to-end scenarios have been v
 
 Numerical targets for performance and user metrics will be defined around the pilot team's circumstances. Permission enforcement, the absence of secrets in logs, and audit completeness are mandatory acceptance criteria.
 
-## 12. Decisions to Clarify Before Implementation
+## 12. Decisions Made and Remaining
 
-These questions do not change the agreed product concept:
+Decided on September 11, 2026 (applied throughout this document):
 
-- Delivery model: self-hosted, managed service, or gradual support for both.
-- Supported PostgreSQL and VictoriaMetrics versions and deployment options for the pilot.
-- The exact set of diagnostic operations offered by the initial providers.
-- Initial administrator access, local account recovery, and rules for linking sign-in methods.
-- Session lifetimes, query duration and result size limits, and audit retention.
+| Topic | Decision |
+|---|---|
+| Delivery model | Self-hosted, single tenant: one Go server executable plus an external PostgreSQL platform database |
+| Sign-in methods | Local only in the MVP; Google and OIDC deferred |
+| Passwords | Administrators set and reset passwords; no self-service change or recovery in the MVP |
+| Initial administrator | Created once at startup from deployment configuration and a mounted password file |
+| Management permission | The administrator role; grants mean "may use" only |
+| Credential storage | Encrypted at rest with a mounted deployment key; rotation deferred |
+| PostgreSQL operations | Pass-through of any submitted SQL; the external role is the only access boundary |
+| Resource bounds | Per-connection timeout and result cap with explicit truncation |
+| Audit content | Query text is never stored |
+| Audit retention | No purge in the MVP; administrator-configurable window deferred |
+| Web interface | Sign-in plus read-only administration tables; no browser management forms |
+| VictoriaMetrics authentication | None, basic, bearer, custom header; mutual TLS and OAuth2 deferred |
+| Pilot targets | Small teams; PostgreSQL 17 and 18; single-node VictoriaMetrics; Claude Code and Codex agents |
+| Session lifetime | Fixed, eight hours by default, configurable between five minutes and 24 hours |
+
+Still open, to be settled with the pilot team:
+
+- Default values for per-connection timeouts and result caps.
 - The first real questions from managers and developers used to evaluate the pilot.
 
-The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. The current milestone adds automated initial administrator setup, local browser/CLI sign-in, revocable sessions and a minimal protected admin page. Google/OIDC, recovery, full user/permission management, providers and broader audit inspection remain planned.
+The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. Implemented so far: automated initial administrator setup, local browser/CLI sign-in, revocable sessions and a minimal protected admin page. In progress: local user and administrator role management. Planned next: groups and connection grants, providers and connections with encrypted credentials, PostgreSQL and VictoriaMetrics pass-through with resource bounds, request auditing and inspection, and the agent skill.
 
 ## 13. Sources and Context
 
