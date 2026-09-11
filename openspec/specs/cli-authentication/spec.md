@@ -1,4 +1,10 @@
-## ADDED Requirements
+# cli-authentication Specification
+
+## Purpose
+
+Provide authenticated CLI access with safe credential input, origin-bound session storage, authoritative identity and explicit session revocation.
+
+## Requirements
 
 ### Requirement: Safe local CLI sign-in
 

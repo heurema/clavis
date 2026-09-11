@@ -1,3 +1,7 @@
+## Purpose
+
+Authenticate local users and enforce expiring, revocable browser and CLI sessions with current authorization and secret-free audit events.
+
 ## ADDED Requirements
 
 ### Requirement: Local credential verification
