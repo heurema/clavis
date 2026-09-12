@@ -270,3 +270,65 @@ func TestAdminConnectionListEmptyTruncatedAndEscaped(t *testing.T) {
 		assert.Equal(t, badge.VariantDestructive, checkOutcomeVariant(outcome))
 	}
 }
+
+func grantFixtures() []auth.Grant {
+	return []auth.Grant{
+		{
+			User:       auth.GrantParty{ID: "12345678-1234-4234-8234-1234567890a1", Name: "alice"},
+			Connection: auth.GrantParty{ID: "12345678-1234-4234-8234-1234567890c1", Name: "warehouse-primary"},
+			CreatedAt:  time.Date(2026, 6, 7, 10, 11, 12, 0, time.FixedZone("ahead", 2*60*60)),
+			CreatedBy:  auth.GrantParty{ID: "12345678-1234-4234-8234-123456789abc", Name: "personal-admin"},
+		},
+		{
+			User:       auth.GrantParty{ID: "12345678-1234-4234-8234-1234567890a2", Name: "bob"},
+			Connection: auth.GrantParty{ID: "12345678-1234-4234-8234-1234567890c2", Name: "metrics-eu"},
+			CreatedAt:  time.Date(2026, 7, 8, 9, 10, 11, 0, time.UTC),
+			CreatedBy:  auth.GrantParty{ID: "12345678-1234-4234-8234-123456789abc", Name: "personal-admin"},
+		},
+	}
+}
+
+func TestAdminGrantListRendering(t *testing.T) {
+	identity := auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}
+	body := adminBody(t, AdminModel{
+		User:        identity,
+		Users:       []auth.UserRecord{{Username: "personal-admin", Role: auth.Admin}},
+		Connections: connectionFixtures(),
+		Grants:      grantFixtures(),
+	})
+	assert.Contains(t, body, ">Grants<")
+	assert.Less(t, strings.Index(body, ">Connections<"), strings.Index(body, ">Grants<"), "grants render below the connections table")
+	assert.Equal(t, 3, strings.Count(body, "overflow-x-auto"), "every table scrolls instead of widening the page")
+	for _, fragment := range []string{
+		">Username<", ">Connection<", ">Granted<", ">Granted by<",
+		">alice<", ">bob<", ">warehouse-primary<", ">metrics-eu<", ">personal-admin<",
+		"2026-06-07 08:11 UTC", "2026-07-08 09:10 UTC",
+	} {
+		assert.Contains(t, body, fragment)
+	}
+	assert.Less(t, strings.Index(body, ">alice<"), strings.Index(body, ">bob<"), "grants render in listing order")
+	// Identifiers are not display data.
+	for _, forbidden := range []string{"1234567890a1", "1234567890a2", "1234567890c1", "1234567890c2", "the list is limited"} {
+		assert.NotContains(t, body, forbidden)
+	}
+	assert.NotContains(t, body, `href="/admin/grants`)
+
+	empty := adminBody(t, AdminModel{User: identity})
+	assert.Contains(t, empty, "No grants are recorded.")
+
+	truncated := adminBody(t, AdminModel{User: identity, Grants: grantFixtures(), GrantsTruncated: true})
+	assert.Contains(t, truncated, "Showing the first 1000 grants; the list is limited.")
+	assert.Equal(t, "Showing the first "+strconv.Itoa(auth.MaxGrantListing)+" grants; the list is limited.", grantsTruncationNotice())
+
+	escaped := adminBody(t, AdminModel{User: identity, Grants: []auth.Grant{{
+		User:       auth.GrantParty{Name: `<script>alert("user")</script>`},
+		Connection: auth.GrantParty{Name: `<img src=x onerror=alert(1)>`},
+		CreatedBy:  auth.GrantParty{Name: `<b>admin</b>`},
+		CreatedAt:  time.Unix(0, 0),
+	}}})
+	assert.NotContains(t, escaped, "<script>alert")
+	assert.NotContains(t, escaped, "<img src")
+	assert.NotContains(t, escaped, "<b>admin</b>")
+	assert.Contains(t, escaped, "&lt;script&gt;alert(&#34;user&#34;)&lt;/script&gt;")
+	assert.Contains(t, escaped, "1970-01-01 00:00 UTC")
+}

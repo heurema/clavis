@@ -39,6 +39,8 @@ type authHTTP struct {
 	service     auth.Service
 	admin       auth.Administration
 	connections auth.Connections
+	grants      auth.Grants
+	members     MemberConnections
 	recorder    auth.EventRecorder
 	origin      string
 	secure      bool
@@ -71,6 +73,9 @@ func (a *authHTTP) mount(router chi.Router) {
 	router.With(a.operation).Post(auth.ConnectionDisablePath, a.disableConnectionJSON)
 	router.With(a.operation).Post(auth.ConnectionDeletePath, a.deleteConnectionJSON)
 	router.With(a.operation).Post(auth.ConnectionCheckPath, a.checkConnectionJSON)
+	router.With(a.operation).Get(auth.GrantsPath, a.listGrantsJSON)
+	router.With(a.operation).Post(auth.GrantsPath, a.createGrantJSON)
+	router.With(a.operation).Post(auth.GrantRevokePath, a.revokeGrantJSON)
 }
 
 type responseBuffer struct {
@@ -138,6 +143,13 @@ func rejectionAction(r *http.Request) (auth.EventAction, bool) {
 		return auth.EventConnectionDelete, true
 	case auth.ConnectionCheckPath:
 		return auth.EventConnectionCheck, true
+	case auth.GrantsPath:
+		if r.Method == http.MethodGet {
+			return auth.EventGrantsList, true
+		}
+		return auth.EventGrantCreate, true
+	case auth.GrantRevokePath:
+		return auth.EventGrantRevoke, true
 	}
 	return "", false
 }
@@ -223,7 +235,7 @@ func (a *authHTTP) operation(next http.Handler) http.Handler {
 					a.logoutResult(buffer, r, auth.LogoutOutcome(true, failure))
 				}
 			case "/admin":
-				a.adminResult(buffer, r, auth.Session{}, auth.UserList{}, auth.ConnectionList{}, failure)
+				a.adminResult(buffer, r, auth.Session{}, auth.UserList{}, auth.ConnectionList{}, auth.GrantList{}, failure)
 			default:
 				jsonFailure(buffer, failure)
 			}
@@ -583,13 +595,50 @@ func (a *authHTTP) cliSession(r *http.Request) (auth.Session, error) {
 	return a.authenticate(r, token, auth.CLI)
 }
 
+// identityJSON answers the caller's own identity and, for a member, the names
+// of the connections they may use, so an agent's first call already says what
+// is available. Administrators need no grant, so their list stays empty rather
+// than enumerating every connection. Login responses are untouched: only this
+// route fills the names.
 func (a *authHTTP) identityJSON(w http.ResponseWriter, r *http.Request) {
 	session, err := a.cliSession(r)
+	if err == nil && session.User.Role != auth.Admin {
+		if err = a.requireMembers(); err == nil {
+			session.Connections, session.ConnectionsTruncated, err =
+				a.members.ListGrantedConnectionNames(r.Context(), session, auth.MaxConnectionListing)
+		}
+	}
+	if err == nil {
+		session.Connections, session.ConnectionsTruncated = boundedNames(session.Connections, session.ConnectionsTruncated)
+	}
 	if err != nil {
 		jsonFailure(w, err)
 		return
 	}
 	writeJSON(w, 200, session.Identity)
+}
+
+// identityHeadroom is what the identity carries besides the names: the user
+// record, the expiry and the envelope, all far below this reservation.
+const identityHeadroom = 4096
+
+// boundedNames keeps whoami inside the general response limit, which is the
+// limit the CLI reads it under: 1,000 names of 64 bytes would exceed it. Names
+// beyond the byte budget are dropped in order and reported as truncation.
+func boundedNames(names []string, truncated bool) ([]string, bool) {
+	budget := auth.MaxResponseBody - identityHeadroom
+	size := 0
+	for index, name := range names {
+		next := size + len(name) + 2 // quotes
+		if index > 0 {
+			next++ // the separating comma
+		}
+		if next > budget {
+			return names[:index], true
+		}
+		size = next
+	}
+	return names, truncated
 }
 
 func emptyBody(r *http.Request) error {
@@ -623,7 +672,10 @@ func (a *authHTTP) revokeJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session, err := a.cliSession(r)
-	if err == nil && !auth.ValidUserID(chi.URLParam(r, "userID")) {
+	// The target is a reference: a UUID or a username. The service resolves it
+	// inside its transaction; the adapter only refuses a shape that can be
+	// neither, including the empty segment of a doubled slash.
+	if err == nil && !auth.ValidUserRef(chi.URLParam(r, "userID")) {
 		err = &auth.Error{Code: auth.InvalidArgument}
 	}
 	if err == nil {
@@ -739,7 +791,7 @@ func (a *authHTTP) logoutBrowser(w http.ResponseWriter, r *http.Request) {
 	a.logoutResult(w, r, auth.LogoutOutcome(true, err))
 }
 
-func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, users auth.UserList, connections auth.ConnectionList, err error) {
+func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, users auth.UserList, connections auth.ConnectionList, grants auth.GrantList, err error) {
 	outcome := auth.AdminOutcome(err)
 	if outcome.Location != "" {
 		w.Header().Set("Cache-Control", "no-store")
@@ -754,6 +806,7 @@ func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session a
 	a.render(w, r, 200, a.views.Admin(web.AdminModel{
 		User: session.User, Users: users.Users, Truncated: users.Truncated,
 		Connections: connections.Connections, ConnectionsTruncated: connections.Truncated,
+		Grants: grants.Grants, GrantsTruncated: grants.Truncated,
 	}))
 }
 
@@ -785,7 +838,14 @@ func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
 			connections, err = a.connections.ListConnections(r.Context(), session, nil, auth.MaxConnectionListing)
 		}
 	}
-	a.adminResult(w, r, session, users, connections, err)
+	// Grants load last and the page fails closed without them too.
+	var grants auth.GrantList
+	if err == nil {
+		if err = a.requireGrants(); err == nil {
+			grants, err = a.grants.ListGrants(r.Context(), session, auth.GrantFilter{Limit: auth.MaxGrantListing})
+		}
+	}
+	a.adminResult(w, r, session, users, connections, grants, err)
 }
 
 func newAuthHTTP(origin string, service auth.Service, views AuthViews) (*authHTTP, error) {

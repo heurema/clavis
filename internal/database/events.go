@@ -19,7 +19,7 @@ func (s *LocalAuth) RecordEvent(ctx context.Context, event auth.Event) error {
 		return unavailable()
 	}
 	defer rollback(ctx, tx)
-	if err := audit(ctx, tx, event.ActorID, event.TargetID, event.SessionID, string(event.Action), string(event.Outcome)); err != nil {
+	if err := auditWith(ctx, tx, event.ActorID, event.TargetID, event.SessionID, event.ConnectionID, string(event.Action), string(event.Outcome)); err != nil {
 		return unavailable()
 	}
 	if err := tx.Commit(ctx); err != nil {

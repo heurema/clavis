@@ -15,7 +15,15 @@ import (
 
 var usernamePattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{2,63}$`)
 
-func ValidUsername(value string) bool { return usernamePattern.MatchString(value) }
+// UsernameHint explains the username rule to agents; it names the UUID
+// exclusion so a refused UUID-shaped name is not a mystery.
+const UsernameHint = "Usernames are 3 to 64 characters: a lowercase letter followed by lowercase letters, digits, '.', '_' or '-', and never UUID-shaped"
+
+// ValidUsername refuses UUID-shaped names so a user reference that is a UUID
+// can never be mistaken for a username; the users table enforces the same.
+func ValidUsername(value string) bool {
+	return usernamePattern.MatchString(value) && !ValidUserID(value)
+}
 
 func ValidPassword(value Secret) bool {
 	s := string(value)

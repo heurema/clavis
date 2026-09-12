@@ -49,18 +49,31 @@ func (s *LocalAuth) ready(ctx context.Context) error {
 }
 
 func audit(ctx context.Context, tx pgx.Tx, actor, target, session, action, outcome string) error {
+	return auditWith(ctx, tx, actor, target, session, "", action, outcome)
+}
+
+// auditWith records an event that references a connection besides its user
+// target; grant events use it. All identifiers are UUIDs or empty.
+func auditWith(ctx context.Context, tx pgx.Tx, actor, target, session, connection, action, outcome string) error {
 	id, err := bootstrapID()
 	if err != nil {
 		return err
 	}
 	return sqlc.New(tx).InsertAuthEvent(ctx, sqlc.InsertAuthEventParams{
-		ID: id, ActorID: actor, TargetID: target, SessionID: session,
+		ID: id, ActorID: actor, TargetID: target, SessionID: session, ConnectionID: connection,
 		Action: action, Outcome: outcome,
 	})
 }
 
 func deny(ctx context.Context, tx pgx.Tx, actor, target, session, action, code string) error {
-	if err := audit(ctx, tx, actor, target, session, action, strings.ToLower(code)); err != nil {
+	return denyWith(ctx, tx, actor, target, session, "", action, code)
+}
+
+// denyWith commits one denial event that may name a connection besides its
+// user target, which grant denials do. The returned error carries the code
+// alone; callers that own a hint re-attach it.
+func denyWith(ctx context.Context, tx pgx.Tx, actor, target, session, connection, action, code string) error {
+	if err := auditWith(ctx, tx, actor, target, session, connection, action, strings.ToLower(code)); err != nil {
 		return unavailable()
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -207,17 +220,23 @@ func recheck(ctx context.Context, tx pgx.Tx, previous auth.Session) (auth.Sessio
 }
 
 func (s *LocalAuth) Logout(ctx context.Context, session auth.Session) error {
-	return s.mutate(ctx, session, "")
+	return s.mutate(ctx, session, "", false)
 }
 
-func (s *LocalAuth) RevokeUserSessions(ctx context.Context, session auth.Session, userID string) error {
-	if !auth.ValidUserID(userID) {
+// RevokeUserSessions addresses its target by UUID or username; the reference
+// is resolved inside the transaction, under the same lock, so both forms have
+// the same outcome and the same event.
+func (s *LocalAuth) RevokeUserSessions(ctx context.Context, session auth.Session, userRef string) error {
+	if !auth.ValidUserRef(userRef) {
 		return &auth.Error{Code: auth.InvalidArgument}
 	}
-	return s.mutate(ctx, session, userID)
+	return s.mutate(ctx, session, userRef, true)
 }
 
-func (s *LocalAuth) mutate(ctx context.Context, previous auth.Session, target string) error {
+// mutate revokes either the caller's own session or every session of another
+// user. revoke tells the two apart, because an unknown target reference must
+// still be answered as a revocation denial rather than as a logout.
+func (s *LocalAuth) mutate(ctx context.Context, previous auth.Session, ref string, revoke bool) error {
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
 	defer cancel()
 	if !auth.ValidUserID(previous.ID) || !auth.ValidUserID(previous.User.ID) {
@@ -233,13 +252,11 @@ func (s *LocalAuth) mutate(ctx context.Context, previous auth.Session, target st
 	defer rollback(ctx, tx)
 	queries := sqlc.New(tx)
 	action := "logout"
-	if target != "" {
+	if revoke {
 		action = "revoke"
 	}
 	// Consistent ordering prevents opposing admin revocations from deadlocking.
-	if err := queries.LockMutationUsers(ctx, sqlc.LockMutationUsersParams{
-		ActorID: previous.User.ID, TargetID: target,
-	}); err != nil {
+	if err := lockMutationUsers(ctx, queries, previous.User.ID, ref); err != nil {
 		return unavailable()
 	}
 	current, err := recheck(ctx, tx, previous)
@@ -250,25 +267,25 @@ func (s *LocalAuth) mutate(ctx context.Context, previous auth.Session, target st
 		}
 		return unavailable()
 	}
-	if target != "" && current.User.Role != auth.Admin {
+	if revoke && current.User.Role != auth.Admin {
 		return deny(ctx, tx, current.User.ID, "", current.ID, action, auth.Forbidden)
 	}
-	if target != "" {
-		exists, err := queries.UserExists(ctx, target)
+	target := current.User.ID
+	if revoke {
+		found, err := lockUser(ctx, queries, ref)
 		if err != nil {
+			var failure *auth.Error
+			if errors.As(err, &failure) && failure.Code == auth.UserNotFound {
+				return deny(ctx, tx, current.User.ID, "", current.ID, action, auth.UserNotFound)
+			}
 			return unavailable()
 		}
-		if !exists {
-			return deny(ctx, tx, current.User.ID, "", current.ID, action, auth.UserNotFound)
-		}
+		target = found.ID
 		if err := queries.RevokeUserSessions(ctx, target); err != nil {
 			return unavailable()
 		}
-	} else {
-		target = current.User.ID
-		if err := queries.RevokeSession(ctx, current.ID); err != nil {
-			return unavailable()
-		}
+	} else if err := queries.RevokeSession(ctx, current.ID); err != nil {
+		return unavailable()
 	}
 	if err := audit(ctx, tx, current.User.ID, target, current.ID, action, "success"); err != nil {
 		return unavailable()

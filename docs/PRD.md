@@ -408,12 +408,14 @@ Decided on September 11, 2026 (applied throughout this document):
 | VictoriaMetrics authentication | None, basic, bearer, custom header; mutual TLS and OAuth2 deferred |
 | Pilot targets | Small teams; PostgreSQL 17 and 18; single-node VictoriaMetrics; Claude Code and Codex agents |
 | Session lifetime | Fixed, eight hours by default, configurable between five minutes and 24 hours |
+| Grants | Per user and per connection, no expiry, idempotent; administrators use any connection without a grant; members see granted connections only, in a reduced projection, with disabled ones visible but unusable; groups deferred |
+| User references | Any `--user` accepts a UUID or a username; usernames are never UUID-shaped |
 
 Still open, to be settled with the pilot team:
 
 - The first real questions from managers and developers used to evaluate the pilot.
 
-The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. Implemented so far: automated initial administrator setup, local browser/CLI sign-in, revocable sessions, administrator-managed local users with the peer administrator model and self-protection, registered connections with encrypted credentials, labels, resource bounds and connectivity checks for both providers, and a protected admin page with read-only user and connection lists. Planned next: connection grants, PostgreSQL and VictoriaMetrics pass-through with resource bounds, groups, request auditing and inspection, the CLI `describe` schema, and the agent skill.
+The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. Implemented so far: automated initial administrator setup, local browser/CLI sign-in, revocable sessions, administrator-managed local users with the peer administrator model and self-protection, registered connections with encrypted credentials, labels, resource bounds and connectivity checks for both providers, connection grants with member visibility, the per-request authorization check the providers will call, users addressable by UUID or username, and a protected admin page with read-only user, connection and grant lists. Planned next: PostgreSQL and VictoriaMetrics pass-through with resource bounds, groups, request auditing and inspection, the CLI `describe` schema, and the agent skill.
 
 ## 13. Sources and Context
 

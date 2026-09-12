@@ -133,31 +133,51 @@ func (a *authHTTP) listConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	}, func(session auth.Session, _ string) (any, int, error) {
+		// The two GET routes are the only connection routes members may call.
+		// The projection follows the role of the authenticated session; the
+		// service rechecks it again inside its own transaction, so a stale role
+		// fails closed there. Administrators receive the full record, members
+		// the summary, which has no target, bound or secret field at all.
+		if session.User.Role != auth.Admin {
+			if err := a.requireMembers(); err != nil {
+				return nil, 0, err
+			}
+			list, err := a.members.ListGrantedConnections(r.Context(), session, terms, limit)
+			if err != nil {
+				return nil, 0, err
+			}
+			records, truncated, err := boundedListing("connections", list.Connections, list.Truncated)
+			if err != nil {
+				return nil, 0, err
+			}
+			return auth.ConnectionSummaryList{Connections: records, Truncated: truncated}, http.StatusOK, nil
+		}
 		list, err := a.connections.ListConnections(r.Context(), session, terms, limit)
 		if err != nil {
 			return nil, 0, err
 		}
-		bounded, err := boundedListing(list)
+		records, truncated, err := boundedListing("connections", list.Connections, list.Truncated)
 		if err != nil {
 			return nil, 0, err
 		}
-		return bounded, http.StatusOK, nil
+		return auth.ConnectionList{Connections: records, Truncated: truncated}, http.StatusOK, nil
 	})
 }
 
 // boundedListing keeps the encoded listing inside the documented body limit.
 // The row bound alone cannot guarantee it: a thousand records with long text
 // and sixteen labels each are far larger than the budget, so trailing records
-// are dropped in name order and the response says so, exactly as it does when
-// the row bound truncates.
-func boundedListing(list auth.ConnectionList) (auth.ConnectionList, error) {
+// are dropped in listing order and the response says so, exactly as it does
+// when the row bound truncates. field names the array member of the envelope,
+// which is all that differs between the connection and grant listings.
+func boundedListing[T any](field string, records []T, truncated bool) ([]T, bool, error) {
 	// The envelope with the longer "false" and the encoder's trailing newline.
-	size := len(`{"connections":[],"truncated":false}`) + 1
+	size := len(`{"":[],"truncated":false}`) + len(field) + 1
 	kept := 0
-	for index, record := range list.Connections {
+	for index, record := range records {
 		encoded, err := json.Marshal(record)
 		if err != nil {
-			return auth.ConnectionList{}, &auth.Error{Code: auth.ServiceUnavailable}
+			return nil, false, &auth.Error{Code: auth.ServiceUnavailable}
 		}
 		next := size + len(encoded)
 		if index > 0 {
@@ -169,10 +189,10 @@ func boundedListing(list auth.ConnectionList) (auth.ConnectionList, error) {
 		size = next
 		kept++
 	}
-	if kept == len(list.Connections) {
-		return list, nil
+	if kept == len(records) {
+		return records, truncated, nil
 	}
-	return auth.ConnectionList{Connections: list.Connections[:kept], Truncated: true}, nil
+	return records[:kept], true, nil
 }
 
 func (a *authHTTP) createConnectionJSON(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +240,13 @@ func (a *authHTTP) getConnectionJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		return emptyBody(r)
 	}, func(session auth.Session, target string) (any, int, error) {
+		if session.User.Role != auth.Admin {
+			if err := a.requireMembers(); err != nil {
+				return nil, 0, err
+			}
+			summary, err := a.members.GetGrantedConnection(r.Context(), session, target)
+			return summary, http.StatusOK, err
+		}
 		record, err := a.connections.GetConnection(r.Context(), session, target)
 		return record, http.StatusOK, err
 	})

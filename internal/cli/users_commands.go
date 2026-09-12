@@ -12,7 +12,9 @@ import (
 // create and reset-password use the login input path (hidden prompt or
 // --password-stdin); no command accepts a password or token argument.
 func usersCommands(makeCommand func(operation, usage string, extra ...urfave.Flag) *urfave.Command) []*urfave.Command {
-	user := func() urfave.Flag { return &urfave.StringFlag{Name: "user", Usage: "Target user UUID"} }
+	user := func() urfave.Flag {
+		return &urfave.StringFlag{Name: "user", Usage: "Target user UUID or username"}
+	}
 	stdin := func() urfave.Flag {
 		return &urfave.BoolFlag{Name: "password-stdin", Usage: "Read a bounded password from stdin instead of a hidden terminal prompt"}
 	}

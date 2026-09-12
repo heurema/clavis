@@ -89,6 +89,36 @@ type ConnectionList struct {
 	Truncated   bool         `json:"truncated"`
 }
 
+// ConnectionSummary is what a member sees of a granted connection: identity,
+// descriptive text, labels, state and the last check. It has no target,
+// bounds or secret fields, so a member response can never carry them.
+type ConnectionSummary struct {
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Title       string            `json:"title"`
+	Description string            `json:"description"`
+	Scope       string            `json:"scope"`
+	Provider    ProviderType      `json:"provider"`
+	Labels      map[string]string `json:"labels"`
+	Enabled     bool              `json:"enabled"`
+	LastCheck   *CheckResult      `json:"lastCheck"`
+}
+
+// Summary projects a full record to the member view.
+func (c Connection) Summary() ConnectionSummary {
+	return ConnectionSummary{
+		ID: c.ID, Name: c.Name, Title: c.Title, Description: c.Description, Scope: c.Scope,
+		Provider: c.Provider, Labels: c.Labels, Enabled: c.Enabled, LastCheck: c.LastCheck,
+	}
+}
+
+// ConnectionSummaryList is the member listing: summaries only, with the same
+// truncation flag as the administrator listing.
+type ConnectionSummaryList struct {
+	Connections []ConnectionSummary `json:"connections"`
+	Truncated   bool                `json:"truncated"`
+}
+
 // CreateConnectionRequest carries the only secret a connection request may
 // hold; it is transport input, never result data.
 type CreateConnectionRequest struct {
@@ -159,7 +189,9 @@ var labelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 // ValidConnectionName uses the username character rule and additionally
 // refuses anything shaped like a UUID, so UUID-or-name lookups stay
 // unambiguous. The migration enforces the same exclusion.
-func ValidConnectionName(value string) bool { return ValidUsername(value) && !ValidUserID(value) }
+// ValidConnectionName shares the username rule, which already refuses the
+// UUID shape, so a reference that is a UUID can never be a name.
+func ValidConnectionName(value string) bool { return ValidUsername(value) }
 
 // ValidConnectionRef accepts a UUID or a connection name.
 func ValidConnectionRef(value string) bool {

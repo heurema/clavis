@@ -125,6 +125,29 @@ func TestCLIProcesses(t *testing.T) {
 		require.Equal(t, "CONNECTION_IN_USE: The connection must be disabled and have no grants before deletion\n"+
 			"Hint: "+inUseHint+"\n", output)
 
+		// Grants are addressed by name in the isolated process too, creating
+		// one twice is idempotent, and a blocked user keeps the grant.
+		exit, output, _ = processCLI(t, binary, "", "grants", "create", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Contains(t, output, "Grant: alice → payments-prod-reporting\n")
+		require.Contains(t, output, "Created: true\n")
+		exit, output, _ = processCLI(t, binary, "", "grants", "create", "--user", alice, "--connection", "payments-prod-reporting", "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Contains(t, output, "Created: false\n")
+		exit, output, _ = processCLI(t, binary, "", "grants", "list", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Regexp(t, `^alice payments-prod-reporting \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$`, output)
+		exit, output, _ = processCLI(t, binary, "", "grants", "revoke", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Equal(t, "Revoked: true\n", output)
+		exit, output, _ = processCLI(t, binary, "", "grants", "revoke", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Equal(t, "Revoked: false\n", output)
+		// A user command takes the username as readily as the UUID.
+		exit, output, _ = processCLI(t, binary, "", "users", "unblock", "--user", "alice", "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Contains(t, output, "User: alice ("+alice+")\nRole: member\nStatus: enabled\n")
+
 		exit, output, _ = processCLI(t, binary, "", "sessions", "revoke", "--user", testIdentity().User.ID, "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, "Revoked: true\n", output)
@@ -147,6 +170,8 @@ func TestCLIProcesses(t *testing.T) {
 			{"connections", "create", "--help"}, {"connections", "update", "--help"}, {"connections", "set-credentials", "--help"},
 			{"connections", "enable", "--help"}, {"connections", "disable", "--help"}, {"connections", "delete", "--help"},
 			{"connections", "check", "--help"},
+			{"grants", "--help"}, {"grants"}, {"grants", "list", "--help"},
+			{"grants", "create", "--help"}, {"grants", "revoke", "--help"},
 		} {
 			exit, output, prompt = processCLI(t, binary, "", args...)
 			require.Equal(t, 0, exit, "%v: %s", args, output)
@@ -162,6 +187,8 @@ func TestCLIProcesses(t *testing.T) {
 			{"connections", "set-credentials", "--connection", "payments-prod-reporting", "--output=text"},
 			{"connections", "create", "--name", "metrics-prod", "--provider", "victoriametrics",
 				"--url", "https://metrics.example:8428", "--password-file", "relative", "--output=text"},
+			{"grants", "create", "--user", "ALICE", "--connection", "payments-prod-reporting", "--output=text"},
+			{"grants", "revoke", "--user", "alice", "--output=text"},
 		} {
 			exit, output, prompt = processCLI(t, binary, string(password), args...)
 			require.Equal(t, 2, exit, "%v", args)

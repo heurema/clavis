@@ -93,8 +93,19 @@ func uniqueJSONKeys(d *json.Decoder) bool {
 	return err == nil
 }
 
+// validIdentity accepts the optional granted-connection names whoami adds for
+// members: bounded, each a valid connection name. They are absent from every
+// other identity response, which stays valid with an empty list.
 func validIdentity(value auth.Identity) bool {
 	_, offset := value.ExpiresAt.Zone()
+	if len(value.Connections) > auth.MaxConnectionListing {
+		return false
+	}
+	for _, name := range value.Connections {
+		if !auth.ValidConnectionName(name) {
+			return false
+		}
+	}
 	return auth.ValidUserID(value.User.ID) && auth.ValidUsername(value.User.Username) &&
 		validRole(value.User.Role) && !value.ExpiresAt.IsZero() && offset == 0
 }
@@ -151,10 +162,10 @@ func validTarget(target map[string]string) bool {
 	return true
 }
 
-// validConnection accepts only the safe administrative projection: identifiers,
-// bounded text, valid labels, in-range resource bounds and UTC timestamps. A
-// response carrying any extra field is already refused by strict decoding.
-func validConnection(value auth.Connection) bool {
+// validConnectionSummary accepts the member projection: identifiers, bounded
+// text, valid labels and an optional last check. It has no target, bound or
+// timestamp member at all, so a summary can never carry one.
+func validConnectionSummary(value auth.ConnectionSummary) bool {
 	if !auth.ValidUserID(value.ID) || !auth.ValidConnectionName(value.Name) || !auth.ValidProvider(value.Provider) {
 		return false
 	}
@@ -167,7 +178,30 @@ func validConnection(value auth.Connection) bool {
 	if (value.Title != "" && !printableSetting(value.Title)) || !printableText(value.Description) || !printableText(value.Scope) {
 		return false
 	}
-	if !auth.ValidLabels(value.Labels) || !validTarget(value.Target) {
+	if !auth.ValidLabels(value.Labels) {
+		return false
+	}
+	return value.LastCheck == nil || validCheck(*value.LastCheck)
+}
+
+func validConnectionSummaryList(value auth.ConnectionSummaryList) bool {
+	if len(value.Connections) > auth.MaxConnectionListing {
+		return false
+	}
+	for _, connection := range value.Connections {
+		if !validConnectionSummary(connection) {
+			return false
+		}
+	}
+	return true
+}
+
+// validConnection accepts only the safe administrative projection: everything
+// the summary carries plus a target, in-range resource bounds and UTC
+// timestamps. A response carrying any extra field is already refused by strict
+// decoding, and one missing any of these is not a full record.
+func validConnection(value auth.Connection) bool {
+	if !validConnectionSummary(value.Summary()) || !validTarget(value.Target) {
 		return false
 	}
 	if value.StatementTimeoutMS < int(auth.MinStatementTimeout/time.Millisecond) ||
@@ -196,6 +230,108 @@ func validConnectionList(value auth.ConnectionList) bool {
 	return true
 }
 
+// validGrantParty accepts one side of a grant: a stable UUID and the human
+// name it resolved to, so a rendered grant never needs a second lookup.
+func validGrantParty(value auth.GrantParty, name func(string) bool) bool {
+	return auth.ValidUserID(value.ID) && name(value.Name)
+}
+
+func validGrant(value auth.Grant) bool {
+	return validGrantParty(value.User, auth.ValidUsername) &&
+		validGrantParty(value.Connection, auth.ValidConnectionName) &&
+		validGrantParty(value.CreatedBy, auth.ValidUsername) && validTimestamp(value.CreatedAt)
+}
+
+func validGrantList(value auth.GrantList) bool {
+	if len(value.Grants) > auth.MaxGrantListing {
+		return false
+	}
+	for _, grant := range value.Grants {
+		if !validGrant(grant) {
+			return false
+		}
+	}
+	return true
+}
+
+// A revocation that removed nothing is a documented success, so Revoked is not
+// required to be true; both parties must still be named.
+func validGrantRevocation(value auth.GrantRevocation) bool {
+	return validGrantParty(value.User, auth.ValidUsername) &&
+		validGrantParty(value.Connection, auth.ValidConnectionName)
+}
+
+// responseDecoder is the seam for the two connection reads, the only routes
+// whose success body has two documented shapes. Everything else decodes into
+// one DTO and is validated by the type switch below.
+type responseDecoder interface{ decode(body []byte) bool }
+
+// connectionRecord holds whichever shape `connections get` received: the
+// administrator's full record or the member's summary. Each is decoded
+// strictly and validated on its own, so a response that mixes the two - a
+// summary carrying a target, or a record missing its bounds - matches neither
+// and is refused as an invalid response.
+type connectionRecord struct {
+	full    *auth.Connection
+	summary *auth.ConnectionSummary
+}
+
+func (c *connectionRecord) decode(body []byte) bool {
+	var full auth.Connection
+	if strictJSON(body, &full) && validConnection(full) {
+		c.full = &full
+		return true
+	}
+	var summary auth.ConnectionSummary
+	if strictJSON(body, &summary) && validConnectionSummary(summary) {
+		c.summary = &summary
+		return true
+	}
+	return false
+}
+
+// data returns the projection that arrived, so the result envelope carries the
+// server's shape unchanged rather than a widened one.
+func (c *connectionRecord) data() any {
+	if c.full != nil {
+		return *c.full
+	}
+	return *c.summary
+}
+
+// connectionListing is connectionRecord for `connections list`.
+type connectionListing struct {
+	full    *auth.ConnectionList
+	summary *auth.ConnectionSummaryList
+}
+
+func (c *connectionListing) decode(body []byte) bool {
+	var full auth.ConnectionList
+	if strictJSON(body, &full) && validConnectionList(full) {
+		c.full = &full
+		return true
+	}
+	var summary auth.ConnectionSummaryList
+	if strictJSON(body, &summary) && validConnectionSummaryList(summary) {
+		c.summary = &summary
+		return true
+	}
+	return false
+}
+
+func (c *connectionListing) data() any {
+	if c.full != nil {
+		if c.full.Connections == nil {
+			c.full.Connections = []auth.Connection{}
+		}
+		return *c.full
+	}
+	if c.summary.Connections == nil {
+		c.summary.Connections = []auth.ConnectionSummary{}
+	}
+	return *c.summary
+}
+
 // documentedFailure is the per-route error allowlist from the HTTP contract.
 // Codes every bearer route may return (400, 401, 403, 503) pass; the rest are
 // only accepted where routeFailures lists them for that method and path.
@@ -206,7 +342,8 @@ func documentedFailure(code, method, path string) bool {
 	case auth.Unauthenticated:
 		return path != auth.LoginPath
 	case auth.UserNotFound, auth.UsernameTaken, auth.LastAdministrator, auth.SelfTarget, auth.RateLimited,
-		auth.ConnectionExists, auth.ConnectionNotFound, auth.ConnectionInUse, auth.CredentialsUnavailable:
+		auth.ConnectionExists, auth.ConnectionNotFound, auth.ConnectionInUse, auth.CredentialsUnavailable,
+		auth.ConnectionDisabled:
 		return slices.Contains(routeFailures(method, path), code)
 	}
 	return true
@@ -234,6 +371,10 @@ func routeFailures(method, path string) []string {
 	target := strings.HasPrefix(path, auth.UsersPath+"/")
 	connection := strings.HasPrefix(path, auth.ConnectionsPath+"/")
 	switch {
+	case path == auth.GrantRevokePath || (path == auth.GrantsPath && method == http.MethodPost):
+		return []string{auth.UserNotFound, auth.ConnectionNotFound}
+	case path == auth.GrantsPath: // the bounded listing
+		return nil
 	case path == auth.ConnectionsPath && method == http.MethodPost:
 		return []string{auth.ConnectionExists}
 	case path == auth.ConnectionsPath: // the bounded listing
@@ -288,6 +429,18 @@ type apiCall struct {
 	status int
 }
 
+// accepts reports whether a response status is a documented success for this
+// route. Grant creation is the one idempotent mutation: it answers 201 when it
+// committed and 200 with the same body when the grant was already in place, so
+// a retrying agent needs exactly one request either way.
+func (route apiCall) accepts(status int) bool {
+	if status == route.status {
+		return true
+	}
+	return route.method == http.MethodPost && route.path == auth.GrantsPath &&
+		route.status == http.StatusCreated && status == http.StatusOK
+}
+
 // call performs one bounded request on a route without query parameters.
 // Creation (POST UsersPath) is the only such route whose documented success
 // status is 201; every other one expects 200.
@@ -340,7 +493,7 @@ func (a authTransport) send(ctx context.Context, route apiCall, token auth.Secre
 	defer func() { _ = response.Body.Close() }()
 	// Only the bounded listings may exceed the general response limit.
 	limit := auth.MaxResponseBody
-	if method == http.MethodGet && (path == auth.UsersPath || path == auth.ConnectionsPath) {
+	if method == http.MethodGet && (path == auth.UsersPath || path == auth.ConnectionsPath || path == auth.GrantsPath) {
 		limit = auth.MaxListingBody
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, int64(limit)+1))
@@ -354,7 +507,7 @@ func (a authTransport) send(ctx context.Context, route apiCall, token auth.Secre
 		!bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
 		return &invalid
 	}
-	if response.StatusCode != route.status {
+	if !route.accepts(response.StatusCode) {
 		var remote auth.ErrorResponse
 		if !strictJSON(data, &remote) || remote.Error.Message == "" {
 			return &invalid
@@ -367,6 +520,12 @@ func (a authTransport) send(ctx context.Context, route apiCall, token auth.Secre
 		// hint is server-authored, and it is rendered as guidance.
 		r := failureWithHint(safe.Code, safe.Message, safeHint(remote.Error.Hint))
 		return &r
+	}
+	if decoder, twoShapes := output.(responseDecoder); twoShapes {
+		if !decoder.decode(data) {
+			return &invalid
+		}
+		return nil
 	}
 	if !strictJSON(data, output) {
 		return &invalid
@@ -395,6 +554,12 @@ func (a authTransport) send(ctx context.Context, route apiCall, token auth.Secre
 		valid = auth.ValidUserID(value.ID) && auth.ValidConnectionName(value.Name) && value.Deleted
 	case *auth.ConnectionCheck:
 		valid = validConnection(value.Connection) && validCheck(value.Check)
+	case *auth.GrantList:
+		valid = validGrantList(*value)
+	case *auth.GrantMutation:
+		valid = validGrant(value.Grant)
+	case *auth.GrantRevocation:
+		valid = validGrantRevocation(*value)
 	}
 	if !valid {
 		return &invalid

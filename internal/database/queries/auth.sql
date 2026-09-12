@@ -34,10 +34,13 @@ WHERE s.id = sqlc.arg(session_id)::text::uuid
 FOR UPDATE OF s;
 
 -- name: LockMutationUsers :exec
--- Consistent ordering serializes issuance/revocation without opposing-admin deadlocks.
+-- Consistent ordering serializes issuance/revocation without opposing-admin
+-- deadlocks. A target addressed by username is locked by this same statement,
+-- so resolving a name never splits acquisition into two ordered waits.
 SELECT id FROM users
 WHERE id = sqlc.arg(actor_id)::text::uuid
     OR id = NULLIF(sqlc.arg(target_id)::text, '')::uuid
+    OR username = NULLIF(sqlc.arg(target_username)::text, '')
 ORDER BY id FOR UPDATE;
 
 -- name: UserExists :one
@@ -51,12 +54,13 @@ WHERE user_id = sqlc.arg(user_id)::text::uuid AND revoked_at IS NULL;
 UPDATE sessions SET revoked_at = clock_timestamp() WHERE id = sqlc.arg(id)::text::uuid;
 
 -- name: InsertAuthEvent :exec
-INSERT INTO auth_events (id, actor_id, target_id, session_id, action, outcome)
+INSERT INTO auth_events (id, actor_id, target_id, session_id, connection_id, action, outcome)
 VALUES (
     sqlc.arg(id)::text::uuid,
     NULLIF(sqlc.arg(actor_id)::text, '')::uuid,
     NULLIF(sqlc.arg(target_id)::text, '')::uuid,
     NULLIF(sqlc.arg(session_id)::text, '')::uuid,
+    NULLIF(sqlc.arg(connection_id)::text, '')::uuid,
     sqlc.arg(action),
     sqlc.arg(outcome)
 );

@@ -106,24 +106,26 @@ func (q *Queries) FindLoginUser(ctx context.Context, username string) (FindLogin
 }
 
 const insertAuthEvent = `-- name: InsertAuthEvent :exec
-INSERT INTO auth_events (id, actor_id, target_id, session_id, action, outcome)
+INSERT INTO auth_events (id, actor_id, target_id, session_id, connection_id, action, outcome)
 VALUES (
     $1::text::uuid,
     NULLIF($2::text, '')::uuid,
     NULLIF($3::text, '')::uuid,
     NULLIF($4::text, '')::uuid,
-    $5,
-    $6
+    NULLIF($5::text, '')::uuid,
+    $6,
+    $7
 )
 `
 
 type InsertAuthEventParams struct {
-	ID        string
-	ActorID   string
-	TargetID  string
-	SessionID string
-	Action    string
-	Outcome   string
+	ID           string
+	ActorID      string
+	TargetID     string
+	SessionID    string
+	ConnectionID string
+	Action       string
+	Outcome      string
 }
 
 func (q *Queries) InsertAuthEvent(ctx context.Context, arg InsertAuthEventParams) error {
@@ -132,6 +134,7 @@ func (q *Queries) InsertAuthEvent(ctx context.Context, arg InsertAuthEventParams
 		arg.ActorID,
 		arg.TargetID,
 		arg.SessionID,
+		arg.ConnectionID,
 		arg.Action,
 		arg.Outcome,
 	)
@@ -166,17 +169,21 @@ const lockMutationUsers = `-- name: LockMutationUsers :exec
 SELECT id FROM users
 WHERE id = $1::text::uuid
     OR id = NULLIF($2::text, '')::uuid
+    OR username = NULLIF($3::text, '')
 ORDER BY id FOR UPDATE
 `
 
 type LockMutationUsersParams struct {
-	ActorID  string
-	TargetID string
+	ActorID        string
+	TargetID       string
+	TargetUsername string
 }
 
-// Consistent ordering serializes issuance/revocation without opposing-admin deadlocks.
+// Consistent ordering serializes issuance/revocation without opposing-admin
+// deadlocks. A target addressed by username is locked by this same statement,
+// so resolving a name never splits acquisition into two ordered waits.
 func (q *Queries) LockMutationUsers(ctx context.Context, arg LockMutationUsersParams) error {
-	_, err := q.db.Exec(ctx, lockMutationUsers, arg.ActorID, arg.TargetID)
+	_, err := q.db.Exec(ctx, lockMutationUsers, arg.ActorID, arg.TargetID, arg.TargetUsername)
 	return err
 }
 

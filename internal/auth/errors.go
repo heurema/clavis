@@ -21,6 +21,7 @@ const (
 	ConnectionNotFound     = "CONNECTION_NOT_FOUND"
 	ConnectionInUse        = "CONNECTION_IN_USE"
 	CredentialsUnavailable = "CREDENTIALS_UNAVAILABLE"
+	ConnectionDisabled     = "CONNECTION_DISABLED"
 	RateLimited            = "RATE_LIMITED"
 	ServiceUnavailable     = "SERVICE_UNAVAILABLE"
 )
@@ -78,6 +79,8 @@ func LookupFailure(code string) (int, platform.Failure, bool) {
 		status, message = http.StatusConflict, "The connection must be disabled and have no grants before deletion"
 	case CredentialsUnavailable:
 		status, message = http.StatusConflict, "The stored credentials cannot be decrypted with the configured key"
+	case ConnectionDisabled:
+		status, message = http.StatusConflict, "The connection is disabled"
 	case RateLimited:
 		status, message = http.StatusTooManyRequests, "Too many attempts; try again later"
 	case ServiceUnavailable:

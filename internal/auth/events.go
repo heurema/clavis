@@ -27,6 +27,9 @@ const (
 	EventConnectionCheck   EventAction  = "connection.check"
 	EventConnectionGet     EventAction  = "connection.get"
 	EventConnectionsList   EventAction  = "connections.list"
+	EventGrantCreate       EventAction  = "grant.create"
+	EventGrantRevoke       EventAction  = "grant.revoke"
+	EventGrantsList        EventAction  = "grants.list"
 	OutcomeInvalidArgument EventOutcome = "invalid_argument"
 	OutcomeUnauthenticated EventOutcome = "unauthenticated"
 	OutcomeForbidden       EventOutcome = "forbidden"
@@ -34,11 +37,12 @@ const (
 )
 
 type Event struct {
-	Action    EventAction
-	Outcome   EventOutcome
-	ActorID   string
-	TargetID  string
-	SessionID string
+	Action       EventAction
+	Outcome      EventOutcome
+	ActorID      string
+	TargetID     string
+	SessionID    string
+	ConnectionID string
 }
 
 type EventRecorder interface {
@@ -53,7 +57,8 @@ func ValidEventAction(action EventAction) bool {
 		EventUserCreate, EventUserBlock, EventUserUnblock, EventUserResetPassword,
 		EventUserPromote, EventUserDemote, EventUsersList,
 		EventConnectionCreate, EventConnectionUpdate, EventConnectionSecrets, EventConnectionEnable,
-		EventConnectionDisable, EventConnectionDelete, EventConnectionCheck, EventConnectionGet, EventConnectionsList:
+		EventConnectionDisable, EventConnectionDelete, EventConnectionCheck, EventConnectionGet, EventConnectionsList,
+		EventGrantCreate, EventGrantRevoke, EventGrantsList:
 		return true
 	}
 	return false
@@ -68,7 +73,7 @@ func (e Event) Valid() bool {
 	default:
 		return false
 	}
-	for _, id := range []string{e.ActorID, e.TargetID, e.SessionID} {
+	for _, id := range []string{e.ActorID, e.TargetID, e.SessionID, e.ConnectionID} {
 		if id != "" && !ValidUserID(id) {
 			return false
 		}

@@ -8,7 +8,7 @@ SELECT id, username, password_hash, role, disabled, created_at, updated_at FROM 
 SELECT id, token_digest, user_id, kind, created_at, expires_at, revoked_at FROM sessions LIMIT 0;
 
 -- name: CheckAuthEventsColumns :exec
-SELECT id, actor_id, target_id, session_id, action, outcome, created_at FROM auth_events LIMIT 0;
+SELECT id, actor_id, target_id, session_id, connection_id, action, outcome, created_at FROM auth_events LIMIT 0;
 
 -- name: CheckLoginLimitsColumns :exec
 SELECT key, failures, expires_at FROM login_limits LIMIT 0;
