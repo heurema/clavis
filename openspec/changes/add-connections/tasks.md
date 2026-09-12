@@ -1,0 +1,59 @@
+Slices are ordered by dependency. Each names its requirements, owned paths and verification; implementation and independent acceptance review are separate tasks, and a reviewer never approves their own implementation. Slice 1 lands first; slices 2 and 3 depend on it and are independent of each other; slice 4 depends on 1 to 3; slices 5 and 6 depend on 1 and can run against fakes in parallel with 4; slice 7 needs everything. Expect roughly 900 to 1,200 changed handwritten lines across the change; each slice stays reviewable on its own, and generated sqlc/templ output is reported separately.
+
+## 1. Contracts, configuration, key handling and schema
+
+Requirements: project-bootstrap "Required encryption key configuration"; connection-management "Connection records" (DTO shape), "Encrypted credentials at rest" (envelope), "Provider registry" (types only); local-authentication "Secret-free authentication events" (allowlist and migration). Owned paths: `internal/auth/connections.go` (DTOs, `Connections` interface, paths, codes, actions, `hint`), `internal/auth/errors.go`, `internal/auth/events.go`, `internal/config/config.go`, new `internal/secrets/`, `internal/database/migrations/003_connections.sql`, `internal/database/queries/connections.sql`, `internal/database/sqlc/`, `cmd/server` (key loading before listen), `.env.example`, related `_test.go`. Verify: `make generate-db && make check-db-generated && make check-sql-boundaries && go test -race ./internal/auth/ ./internal/config/ ./internal/secrets/ ./internal/database/ -run 'Migrat|Manifest|Generated|Event|Config|Key|Seal|Connection'`.
+
+- [ ] 1.1 Add the connection DTOs and `Connections` service interface, route constants, error codes (`CONNECTION_EXISTS`, `CONNECTION_NOT_FOUND`, `CONNECTION_IN_USE`, `CREDENTIALS_UNAVAILABLE` at the documented statuses), optional `hint` on the error response, event actions and outcomes; verify allowlist tables, `Event.Valid`, and that no DTO with a secret field is a result type and hints never carry submitted values.
+- [ ] 1.2 Add `CLAVIS_ENCRYPTION_KEY_FILE` to configuration with the documented failure categories and `secrets.LoadKeyFile` reusing the bootstrap file rules; add `secrets.Keyring` with AES-256-GCM seal/open, versioned envelope and associated data; load the key in `cmd/server` before listening; document the setting and generation command in `.env.example`; verify wrong length, non-hex, unsafe permissions, symlinked projected files, round trip, nonce uniqueness, tampered envelope, wrong associated data and wrong key.
+- [ ] 1.3 Add migration `003` (table, GIN index, widened event constraints) and named queries for insert, find by id, find by name, list with selector predicates and limit, update fields, set envelope and clear check, set enabled, set check result, delete; regenerate sqlc; verify fresh and initialized databases apply `003` once, constraints reject out-of-range bounds and unknown outcomes, selector predicates match containment, inequality and existence, and the CLI-only build stays Go-only.
+- [ ] 1.4 Independent acceptance review of slice 1 against the inherited persistence, secret-file, allowlist and immutability requirements, with a focused cryptography review of the envelope; record the revision, generated size and findings.
+
+## 2. Provider registry and probes
+
+Requirements: connection-management "Provider registry", "Explicit connectivity check" (probe semantics). Depends on slice 1 DTOs only. Owned paths: new `internal/provider/` (registry, postgres, victoriametrics, tests). Verify: `CLAVIS_BACKEND_TEST_DATABASE_URL=... go test -race ./internal/provider/`.
+
+- [ ] 2.1 Implement the registry and both providers: target parsing and validation (PostgreSQL URL without password or unknown parameters; VictoriaMetrics base URL plus auth method with non-secret username or header name), secret validation, and probes mapping every driver outcome to `reachable`, `auth_rejected` or `unreachable` with no driver text retained.
+- [ ] 2.2 Tests: parsing tables for valid and rejected targets (embedded password, unknown query parameter, credentials in URL, bad scheme, bad auth method); PostgreSQL probe against the real test database with a valid role, a wrong password and a closed port; VictoriaMetrics probe against an in-process HTTP server for each auth method with right and wrong secrets, a 5xx, a timeout and a redirect (not followed); sentinel host and secret never appear in outcomes or errors.
+- [ ] 2.3 Independent acceptance review of slice 2; record the revision.
+
+## 3. Connection service
+
+Requirements: connection-management "Connection records", "Administrator-only connection operations", "Explicit connectivity check"; local-authentication event scenario. Depends on slices 1 and 2. Owned paths: `internal/database/connections.go`, `internal/database/connections_test.go`, `internal/database/admin.go` (add `dryRun` to `administer` only). Verify: `CLAVIS_BACKEND_TEST_DATABASE_URL=... go test -race ./internal/database/`.
+
+- [ ] 3.1 Implement list, get, create, update, set-credentials, enable, disable, delete and check on the store with the design's transaction shape, a fourth advisory key, id-or-name resolution, provider parsing, sealing before insert, guarded delete, check outcome storage, dry-run rollback (no success or denial event), and denial events for every documented failure.
+- [ ] 3.2 Real-PostgreSQL tests: create/read/update/rename keep identity; duplicate name; bound and label validation; selector listing order, 1,000 bound and truncation; disable idempotent; delete guard and success; set-credentials clears the last check; check stores each outcome using the real database and a stub HTTP server; wrong key → `CREDENTIALS_UNAVAILABLE` with event; member and unauthenticated denials; dry run of success and of each denial leaves no row change and no event; injected audit-write failure; sentinel secrets and hosts absent from events and errors.
+- [ ] 3.3 Independent acceptance review of slice 3 including a race and held-lock check; record the revision.
+
+## 4. JSON connection routes
+
+Requirements: connection-management "JSON connection routes"; inherited transport rules. Depends on slice 3 (or a fake `Connections`). Owned paths: `internal/server/connections.go`, `internal/server/auth.go` (route mounting, `auditRejection` mapping, `dryRun` query handling, `hint` passthrough in `jsonFailure`), `internal/server/server.go` (dependency), `internal/server/*_test.go`. Verify: `go test -race ./internal/server/`.
+
+- [ ] 4.1 Mount the routes with the shared handler shape, id-or-name path validation, strict bounded bodies including the secret field, `?dryRun=true` handling, 201 for create, `hint` in error bodies, and rejection-action mapping; require the connections dependency in `HandlerWithAuth`.
+- [ ] 4.2 Contract tests: every route's success body and error table, hints present and free of submitted values, cookie-only 401, no redirects, oversized and malformed bodies rejected without service calls, dry-run marker, pre-service rejections recorded once, listing under the body limit, real-database round trip.
+- [ ] 4.3 Independent acceptance review of slice 4; record the revision.
+
+## 5. Browser connections table
+
+Requirements: connection-management "Read-only connections table in the browser". Depends on slice 1 DTOs. Owned paths: `internal/web/auth.templ`, `auth_templ.go`, `auth_models.go`, `internal/web/*_test.go`, `internal/server/auth.go` (`adminBrowser` listing call only), new `internal/server/connections_page_test.go`. Verify: `make generate-web && make check-web-generated && go test ./internal/web/ ./internal/server/ -run 'Admin|Render|Connections'`.
+
+- [ ] 5.1 Extend the admin model and template with a connections table (name, title, provider, labels, status, last check outcome and time), truncation notice, no forms; load it in `adminBrowser` after the users list and fail closed on error; regenerate templ.
+- [ ] 5.2 Rendering and HTTP tests: populated, empty, truncated, escaped label text, no hosts or secrets in HTML, list failure 503, no event on page load.
+- [ ] 5.3 Independent acceptance review of slice 5; record the revision.
+
+## 6. CLI connections commands
+
+Requirements: cli-authentication "Connection management commands"; inherited CLI conventions. Depends on slice 1 contracts; tests use the fake HTTP server. Owned paths: `internal/cli/connections_commands.go`, `internal/cli/secret_input.go`, `internal/cli/auth_transport.go` (route allowlist, `hint`, query parameters), `internal/cli/result.go`, `internal/cli/*_test.go`. Verify: `go test -race ./internal/cli/ && make build-cli`.
+
+- [ ] 6.1 Register the `connections` group with the documented commands and flags; implement the four secret inputs with mutual exclusion and the file and environment rules; `--dry-run`; label and selector flag parsing; `hint` in JSON and text; per-route error allowlist; text rendering for lists, records, check results and deletions.
+- [ ] 6.2 Unit and subprocess tests for every spec scenario: file and environment secret inputs, rejection of a value flag, two inputs, relative path, unsafe file and unset variable with exit 2 and no request; dry-run pass-through; selector text listing; hint rendering; pass-through and `INVALID_RESPONSE` per route; no secret in output; offline help; Go-only build.
+- [ ] 6.3 Independent acceptance review of slice 6; record the revision.
+
+## 7. Integration, smoke, documentation and whole-change verification
+
+Requirements: all delta specs end to end; project-bootstrap quality and smoke requirements. Depends on slices 1 to 6. Owned paths: `scripts/smoke.mjs`, `README.md`, `docs/PRD.md` (section 5 connection concept and section 12 status), `Makefile` if needed, `reports/` (ignored). Verify: `make check && make smoke && make test-mutation`.
+
+- [ ] 7.1 Extend smoke with the key file, the connection flow against the real database and a local VictoriaMetrics health stub (all four probe outcomes, update, credential replacement, disable, delete guard, selector listing, dry run leaving no trace, event counts), a restart without the key failing with the configuration error, and a restart with a different key yielding `CREDENTIALS_UNAVAILABLE`; confirm cleanup removes the key file and stub.
+- [ ] 7.2 Update README (key generation in quick start, `connections` section with the agent-first conventions, secret inputs, dry run, hints), `.env.example` wording, and PRD sections 5 and 12 (labels replace environment/service/tags; bounds defaults and ceilings; status sentence).
+- [ ] 7.3 Run clean-checkout `make setup`, `make check`, the real-database race suite, `make smoke` and `make test-mutation`; report handwritten and generated line counts separately; confirm no tracked source is rewritten by successful checks.
+- [ ] 7.4 Whole-change independent review against the inherited requirements, all four delta specs and the design's inherited-decisions table, including the cryptography and secret-handling paths end to end; record the final revision, limits and any exceptions for owner acceptance before archive.
