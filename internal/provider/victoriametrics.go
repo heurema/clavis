@@ -169,6 +169,13 @@ func (victoriaMetrics) ValidateSecret(target map[string]string, secret auth.Secr
 	return nil
 }
 
+// Execute is not implemented for this provider yet. It reports the fact
+// without contacting anything, so a query against such a connection never
+// opens a credential and never reaches a network.
+func (victoriaMetrics) Execute(context.Context, map[string]string, auth.Secret, ExecuteRequest) (ExecuteResult, error) {
+	return ExecuteResult{}, ErrUnsupported
+}
+
 // Probe sends exactly one GET to the health endpoint. The client is built per
 // probe so no connection, cookie or redirect state is shared between
 // connections, and a redirect is reported rather than followed: following one

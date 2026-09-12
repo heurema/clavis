@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -22,6 +24,11 @@ const (
 	ConnectionInUse        = "CONNECTION_IN_USE"
 	CredentialsUnavailable = "CREDENTIALS_UNAVAILABLE"
 	ConnectionDisabled     = "CONNECTION_DISABLED"
+	SourceError            = "SOURCE_ERROR"
+	SourceTimeout          = "SOURCE_TIMEOUT"
+	SourceUnreachable      = "SOURCE_UNREACHABLE"
+	SourceAuthRejected     = "SOURCE_AUTH_REJECTED"
+	ProviderUnsupported    = "PROVIDER_UNSUPPORTED"
 	RateLimited            = "RATE_LIMITED"
 	ServiceUnavailable     = "SERVICE_UNAVAILABLE"
 )
@@ -33,6 +40,11 @@ type Error struct {
 	Code       string
 	RetryAfter time.Duration
 	Hint       string
+	// Source carries the external source's own rejection and is set only by an
+	// execution the source refused. It is the one message in the envelope the
+	// platform did not write: it goes to the caller who submitted the SQL and
+	// never into a log.
+	Source *SourceFailure
 }
 
 func (e *Error) Error() string {
@@ -43,8 +55,42 @@ func (e *Error) Error() string {
 	return failure.Message
 }
 
+// ErrorResponse is the one failure envelope. Source is optional detail the
+// external source reported; it is rendered inside the error object as
+// error.source rather than beside it, so a client that knows only the shared
+// failure shape still sees the envelope it already knows.
 type ErrorResponse struct {
-	Error platform.Failure `json:"error"`
+	Error  platform.Failure `json:"error"`
+	Source *SourceFailure   `json:"-"`
+}
+
+// wireFailure is the error object as it travels: the shared failure fields
+// with the optional source block.
+type wireFailure struct {
+	platform.Failure
+	Source *SourceFailure `json:"source,omitempty"`
+}
+
+type wireEnvelope struct {
+	Error wireFailure `json:"error"`
+}
+
+func (r ErrorResponse) MarshalJSON() ([]byte, error) {
+	return json.Marshal(wireEnvelope{Error: wireFailure{Failure: r.Error, Source: r.Source}})
+}
+
+// UnmarshalJSON keeps the strict reading a client needs even though the
+// envelope is now assembled by hand: an unknown key inside the error object is
+// still a rejection rather than a silently dropped field.
+func (r *ErrorResponse) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var wire wireEnvelope
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	r.Error, r.Source = wire.Error.Failure, wire.Error.Source
+	return nil
 }
 
 // LookupFailure is the wire allowlist for both adapters and strict clients.
@@ -81,6 +127,16 @@ func LookupFailure(code string) (int, platform.Failure, bool) {
 		status, message = http.StatusConflict, "The stored credentials cannot be decrypted with the configured key"
 	case ConnectionDisabled:
 		status, message = http.StatusConflict, "The connection is disabled"
+	case SourceError:
+		status, message = http.StatusUnprocessableEntity, "The source rejected the SQL"
+	case SourceTimeout:
+		status, message = http.StatusGatewayTimeout, "The statement timeout was exceeded"
+	case SourceUnreachable:
+		status, message = http.StatusBadGateway, "The source could not be reached"
+	case SourceAuthRejected:
+		status, message = http.StatusBadGateway, "The source refused the connection's credentials"
+	case ProviderUnsupported:
+		status, message = http.StatusBadRequest, "The connection's provider does not support this operation"
 	case RateLimited:
 		status, message = http.StatusTooManyRequests, "Too many attempts; try again later"
 	case ServiceUnavailable:
@@ -98,7 +154,7 @@ func FailureFor(err error) (int, ErrorResponse) {
 	if errors.As(err, &failure) && failure != nil {
 		if status, value, ok := LookupFailure(failure.Code); ok {
 			value.Hint = failure.Hint
-			return status, ErrorResponse{Error: value}
+			return status, ErrorResponse{Error: value, Source: failure.Source}
 		}
 	}
 	status, value, _ := LookupFailure(ServiceUnavailable)

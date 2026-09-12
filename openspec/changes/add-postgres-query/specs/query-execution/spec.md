@@ -58,11 +58,15 @@ The connection's statement timeout SHALL be set as PostgreSQL's `statement_timeo
 
 ### Requirement: Distinguishable failures
 
-Failures SHALL use distinct codes: `SOURCE_ERROR` (422) when PostgreSQL rejects or aborts the SQL, carrying the source's `sqlstate`, `message`, `detail`, `hint`, `position` and the zero-based index of the failing statement in `source`; `SOURCE_TIMEOUT` (504) for the statement timeout; `SOURCE_UNREACHABLE` (502) when the source cannot be connected to, including TLS and unknown-database failures; `SOURCE_AUTH_REJECTED` (502) when the source refuses the credentials; `CREDENTIALS_UNAVAILABLE` (409) when the stored secret cannot be decrypted; `PROVIDER_UNSUPPORTED` (400); and the authorization codes `UNAUTHENTICATED`, `FORBIDDEN`, `CONNECTION_NOT_FOUND` and `CONNECTION_DISABLED`. The source's message MAY contain values from the caller's own SQL and SHALL be passed to the caller unchanged; it SHALL NOT enter any log or operational output. Results completed before a failing statement SHALL NOT be returned, because the implicit transaction rolled them back.
+Failures SHALL use distinct codes: `SOURCE_ERROR` (422) when PostgreSQL rejects or aborts the SQL, carrying the source's `sqlstate`, `message`, `detail`, `hint`, `position` and, as `statement`, the number of statements that completed before the failure (the zero-based index of the failing statement, or 0 when the whole string was rejected at parse time) in `source`; `SOURCE_TIMEOUT` (504) for the statement timeout; `SOURCE_UNREACHABLE` (502) when the source cannot be connected to, including TLS and unknown-database failures; `SOURCE_AUTH_REJECTED` (502) when the source refuses the credentials; `CREDENTIALS_UNAVAILABLE` (409) when the stored secret cannot be decrypted; `PROVIDER_UNSUPPORTED` (400); and the authorization codes `UNAUTHENTICATED`, `FORBIDDEN`, `CONNECTION_NOT_FOUND` and `CONNECTION_DISABLED`. The source's message MAY contain values from the caller's own SQL and SHALL be passed to the caller unchanged; it SHALL NOT enter any log or operational output. Results completed before a failing statement SHALL NOT be returned, because the implicit transaction rolled them back.
 
-#### Scenario: Syntax error in the second statement
-- **WHEN** a two-statement script fails on the second statement
+#### Scenario: Failure in the second statement
+- **WHEN** a two-statement script fails on the second statement because a column does not exist
 - **THEN** the response is `SOURCE_ERROR` with the SQLSTATE, message and position from PostgreSQL and `statement: 1`, and no results are returned
+
+#### Scenario: Syntax error anywhere in the script
+- **WHEN** a script contains a syntax error in any statement
+- **THEN** PostgreSQL rejects the whole string before running anything, the response is `SOURCE_ERROR` with `statement: 0` and the position of the error in the submitted string, and no statement has run
 
 #### Scenario: Source unreachable or refusing credentials
 - **WHEN** the target host is down, or the role's password was changed in the source

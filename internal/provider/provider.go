@@ -10,6 +10,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"net"
 	"slices"
 	"strconv"
@@ -27,7 +28,52 @@ type Provider interface {
 	ParseTarget(raw map[string]string) (map[string]string, error)
 	ValidateSecret(target map[string]string, secret auth.Secret) error
 	Probe(ctx context.Context, target map[string]string, secret auth.Secret) auth.CheckOutcome
+	Execute(ctx context.Context, target map[string]string, secret auth.Secret, request ExecuteRequest) (ExecuteResult, error)
 }
+
+// ExecuteRequest is one pass-through execution under the connection's bounds.
+// The SQL reaches the source unchanged. Application is the application_name
+// the source will see; the service composes it, because only the service knows
+// the connection name and the caller.
+type ExecuteRequest struct {
+	SQL         string
+	Timeout     time.Duration
+	MaxRows     int
+	MaxBytes    int
+	Application string
+}
+
+// ExecuteResult is the bounded view of what the source produced. Results is
+// one entry per statement in order. Statements, Rows and Bytes count what was
+// kept, not what the source sent: the rest was read and dropped, so the
+// counters describe the response rather than the work.
+type ExecuteResult struct {
+	Results    []auth.QueryResult
+	Truncated  bool
+	Statements int64
+	Rows       int64
+	Bytes      int64
+}
+
+// The execution failures a provider may report. They are sentinel values, not
+// messages: the service maps them to codes, and none of them can carry driver
+// text, a target or a secret into a response or a log.
+var (
+	ErrTimeout      = errors.New("the statement timeout was exceeded")
+	ErrUnreachable  = errors.New("the source could not be reached")
+	ErrAuthRejected = errors.New("the source refused the credentials")
+	ErrUnsupported  = errors.New("the provider does not support this operation")
+)
+
+// SourceError is the source's own rejection of the submitted SQL, the one
+// failure whose text the caller sees. Error() is fixed application text: the
+// source's message travels in Failure, which the service puts in the
+// envelope's source block and nothing logs.
+type SourceError struct {
+	Failure auth.SourceFailure
+}
+
+func (e *SourceError) Error() string { return "the source rejected the statement" }
 
 // A probe without a caller deadline still has to end. The service always
 // passes the remaining part of the operation deadline; this is the fallback.
