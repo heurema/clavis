@@ -2,7 +2,7 @@
 
 ### Requirement: Provider registry
 
-The system SHALL define a closed registry of provider types, initially `postgresql` and `victoriametrics`. Each provider SHALL declare its non-secret target settings, its secret fields, its supported authentication methods, a connectivity probe and an execute operation that runs one request against the source under a decrypted secret and the connection's bounds. Creating a connection with an unknown provider SHALL fail with `INVALID_ARGUMENT` and a hint listing the registered providers. A provider whose execute operation is not implemented SHALL report `PROVIDER_UNSUPPORTED` without contacting the source. The registry SHALL be the only place that knows provider-specific parsing and execution; connection storage, authorization and audit SHALL be provider-neutral.
+The system SHALL define a closed registry of provider types, initially `postgresql` and `victoriametrics`. Each provider SHALL declare its non-secret target settings, its secret fields, its supported authentication methods, a connectivity probe and an execute operation that runs one request against the source under a decrypted secret and the connection's bounds. Creating a connection with an unknown provider SHALL fail with `INVALID_ARGUMENT` and a hint listing the registered providers. A provider whose execute operation is not implemented SHALL report `PROVIDER_UNSUPPORTED` without contacting the source. The registry SHALL be the only place that knows provider-specific parsing and execution; connection storage and authorization SHALL be provider-neutral.
 
 #### Scenario: Create with a registered provider
 - **WHEN** an administrator creates a connection with provider `postgresql` and a valid target URL
@@ -36,7 +36,7 @@ For `postgresql` the target SHALL be a `postgres://` or `postgresql://` URL carr
 
 #### Scenario: Rename keeps identity
 - **WHEN** an administrator changes a connection's name
-- **THEN** the UUID, credentials, labels and check history are unchanged and audit events continue to reference the UUID
+- **THEN** the UUID, credentials, labels, grants and check history are unchanged
 
 #### Scenario: Bounds applied to an execution
 - **WHEN** a connection with a 2 s timeout and a 50-row cap executes a slow or wide query

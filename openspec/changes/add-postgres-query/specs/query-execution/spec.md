@@ -1,6 +1,6 @@
 ## Purpose
 
-Let a user with access execute SQL against a PostgreSQL connection through the platform, under the connection's credentials and bounds, with structured results, distinguishable failures and a secret-free audit record.
+Let a user with access execute SQL against a PostgreSQL connection through the platform, under the connection's credentials and bounds, with structured results and distinguishable failures.
 
 ## ADDED Requirements
 
@@ -9,7 +9,7 @@ Let a user with access execute SQL against a PostgreSQL connection through the p
 The system SHALL execute one SQL string per request against a connection the caller may use, as decided by the per-request connection authorization: administrators without a grant, members with one, never a disabled connection. The string SHALL be forwarded to PostgreSQL unchanged over the simple query protocol under the connection's stored credentials; the platform SHALL NOT parse, rewrite, restrict by statement type or wrap the string in a transaction, so a string with several statements runs in order under PostgreSQL's implicit transaction unless it contains its own transaction control. No session state SHALL survive a request: each request SHALL open one fresh connection with the connection's statement timeout, `client_encoding` `UTF8` and an `application_name` naming the platform, the connection name and the user, and SHALL close it when the request ends. The platform SHALL impose no pool and no concurrency limit of its own; a role connection limit in the external system is the documented throttle. The SQL SHALL be bounded to 256 KiB and rejected above it with `INVALID_ARGUMENT` and a hint. A connection whose provider does not support execution SHALL answer `PROVIDER_UNSUPPORTED` with a hint before any credential is opened.
 
 #### Scenario: Granted member runs a script
-- **WHEN** a member holding a grant sends `insert into audit_notes values ('x'); select count(*) from audit_notes;`
+- **WHEN** a member holding a grant sends `insert into notes values ('x'); select count(*) from notes;`
 - **THEN** both statements run under the connection's role in one implicit transaction and the response lists two results in order
 
 #### Scenario: Statement the role may not run
@@ -58,11 +58,11 @@ The connection's statement timeout SHALL be set as PostgreSQL's `statement_timeo
 
 ### Requirement: Distinguishable failures
 
-Failures SHALL use distinct codes: `SOURCE_ERROR` (422) when PostgreSQL rejects or aborts the SQL, carrying the source's `sqlstate`, `message`, `detail`, `hint`, `position` and the zero-based index of the failing statement in `source`; `SOURCE_TIMEOUT` (504) for the statement timeout; `SOURCE_UNREACHABLE` (502) when the source cannot be connected to, including TLS and unknown-database failures; `SOURCE_AUTH_REJECTED` (502) when the source refuses the credentials; `CREDENTIALS_UNAVAILABLE` (409) when the stored secret cannot be decrypted; `PROVIDER_UNSUPPORTED` (400); and the authorization codes `UNAUTHENTICATED`, `FORBIDDEN`, `CONNECTION_NOT_FOUND` and `CONNECTION_DISABLED`. The source's message MAY contain values from the caller's own SQL and SHALL be passed to the caller unchanged; it SHALL NOT enter any event, log or operational output. Results completed before a failing statement SHALL NOT be returned, because the implicit transaction rolled them back.
+Failures SHALL use distinct codes: `SOURCE_ERROR` (422) when PostgreSQL rejects or aborts the SQL, carrying the source's `sqlstate`, `message`, `detail`, `hint`, `position` and the zero-based index of the failing statement in `source`; `SOURCE_TIMEOUT` (504) for the statement timeout; `SOURCE_UNREACHABLE` (502) when the source cannot be connected to, including TLS and unknown-database failures; `SOURCE_AUTH_REJECTED` (502) when the source refuses the credentials; `CREDENTIALS_UNAVAILABLE` (409) when the stored secret cannot be decrypted; `PROVIDER_UNSUPPORTED` (400); and the authorization codes `UNAUTHENTICATED`, `FORBIDDEN`, `CONNECTION_NOT_FOUND` and `CONNECTION_DISABLED`. The source's message MAY contain values from the caller's own SQL and SHALL be passed to the caller unchanged; it SHALL NOT enter any log or operational output. Results completed before a failing statement SHALL NOT be returned, because the implicit transaction rolled them back.
 
 #### Scenario: Syntax error in the second statement
 - **WHEN** a two-statement script fails on the second statement
-- **THEN** the response is `SOURCE_ERROR` with the SQLSTATE, message and position from PostgreSQL and `statement: 1`, no results are returned, and the audit records only the outcome
+- **THEN** the response is `SOURCE_ERROR` with the SQLSTATE, message and position from PostgreSQL and `statement: 1`, and no results are returned
 
 #### Scenario: Source unreachable or refusing credentials
 - **WHEN** the target host is down, or the role's password was changed in the source
@@ -83,15 +83,3 @@ The system SHALL expose `POST /api/query` accepting `{connection, sql, maxRows?}
 #### Scenario: Truncated result as text
 - **WHEN** a text-output query hits the row cap
 - **THEN** the table shows the kept rows, `(1000 rows)` and a notice that the result was truncated, and the exit code is 0
-
-### Requirement: Audited executions
-
-Every execution request that reaches the service SHALL record one `query.execute` event with the actor, the actor's session, the connection in the connection column, the outcome (`success`, `truncated`, `source_error`, `source_timeout`, `source_unreachable`, `source_auth_rejected`, `credentials_unavailable`, or the denial outcomes `unauthenticated`, `forbidden`, `connection_not_found`, `connection_disabled`), the duration in milliseconds, the number of statements executed, and the rows and bytes returned when known. The event SHALL be written after the external request in its own short transaction, never inside a platform transaction held across the external call. Neither the SQL, the source's message nor any value SHALL be stored. A member's denied request SHALL record its denial.
-
-#### Scenario: Successful and truncated executions
-- **WHEN** a request completes and a later one is cut by the row cap
-- **THEN** the first event has outcome `success` and the second `truncated`, both with duration, statement count, rows and bytes, and no event row contains SQL text
-
-#### Scenario: Source error stays out of the audit
-- **WHEN** a statement fails with a message that includes a value from the SQL
-- **THEN** the event records `source_error` and no message, and the caller still receives the message
