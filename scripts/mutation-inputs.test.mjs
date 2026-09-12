@@ -7,11 +7,13 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs"
 import { join, relative } from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import {
+  changedSources,
   copyMutationInputs,
   goSources,
   isMutationTarget,
@@ -71,4 +73,69 @@ test("isolated mutation inputs compile with embedded assets and exclude develope
   })
   assert.ifError(result.error)
   assert.equal(result.status, 0, result.stdout + result.stderr)
+})
+
+test("changed sources come from the git diff against a verified ref, including untracked files", (t) => {
+  mkdirSync(join(root, ".local"), { recursive: true })
+  const repo = mkdtempSync(join(root, ".local/mutation-diff-test-"))
+  t.after(() => rmSync(repo, { recursive: true, force: true }))
+  // The fixture's own commits must not depend on the developer's global git
+  // configuration (signing, hooks, default branch).
+  const git = (...args) => {
+    const result = spawnSync("git", args, {
+      cwd: repo,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+      },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    return result.stdout
+  }
+  git("init", "-q", "-b", "main")
+  git("config", "user.email", "test@example.invalid")
+  git("config", "user.name", "test")
+  mkdirSync(join(repo, "internal", "auth"), { recursive: true })
+  writeFileSync(join(repo, "internal", "auth", "kept.go"), "package auth\n")
+  writeFileSync(join(repo, "internal", "auth", "edited.go"), "package auth\n")
+  writeFileSync(join(repo, "README.md"), "docs\n")
+  git("add", "-A")
+  git("commit", "-q", "-m", "base")
+  git("checkout", "-q", "-b", "feature")
+  writeFileSync(
+    join(repo, "internal", "auth", "edited.go"),
+    "package auth\n// changed\n",
+  )
+  git("commit", "-q", "-am", "edit")
+  writeFileSync(join(repo, "internal", "auth", "unstaged.go"), "package auth\n")
+  git("add", "internal/auth/unstaged.go")
+  git("commit", "-q", "-m", "add")
+  writeFileSync(
+    join(repo, "internal", "auth", "unstaged.go"),
+    "package auth\n// dirty\n",
+  )
+  writeFileSync(
+    join(repo, "internal", "auth", "untracked.go"),
+    "package auth\n",
+  )
+  writeFileSync(join(repo, "README.md"), "docs changed\n")
+
+  assert.deepEqual(
+    changedSources(repo, "main").map((path) => relative(repo, path)),
+    [
+      "internal/auth/edited.go",
+      "internal/auth/unstaged.go",
+      "internal/auth/untracked.go",
+    ],
+  )
+  assert.deepEqual(
+    changedSources(repo, "HEAD").map((path) => relative(repo, path)),
+    ["internal/auth/unstaged.go", "internal/auth/untracked.go"],
+  )
+  assert.throws(
+    () => changedSources(repo, "no-such-ref"),
+    /CLAVIS_MUTATION_DIFF names an unknown git ref "no-such-ref"/,
+  )
 })

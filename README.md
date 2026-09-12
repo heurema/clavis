@@ -80,7 +80,8 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make lint-go` | Run golangci-lint |
 | `make format` | Format maintained Go, templates and JavaScript; regenerate templ Go source |
 | `make smoke` | Test standalone server HTTP/API/CLI behavior with real database outage, recovery and cleanup |
-| `make test-mutation` | Prepare embedded inputs, run isolated Go mutation testing and report survivors |
+| `make test-mutation` | Mutation-test the handwritten Go files changed against `main` in an isolated copy and report survivors |
+| `make test-mutation-full` | Mutation-test the whole handwritten scope with the extended bound |
 | `make down` | Stop the database and keep its data |
 | `make reset-db` | Delete the local Clavis database and its data |
 
@@ -135,9 +136,16 @@ test fixtures. A compatibility probe must distinguish a known detected mutation
 from a known survivor before
 the application run is accepted. Results and survivors go to ignored
 `reports/mutation-summary.json` and `reports/mutations.json`; a completed run
-is not a claim that every mutation was detected. Tool failures or the default
-600-second deadline return nonzero. Optional `CLAVIS_MUTATION_WORKERS` and
-`CLAVIS_MUTATION_TIMEOUT_SECONDS` adjust concurrency and the execution bound.
+is not a claim that every mutation was detected. By default only the eligible
+files that differ from `main` (committed, uncommitted or untracked) are mutated,
+which keeps a per-change run to minutes; the summary's `scope` names the base
+ref and `targets` the files. `make test-mutation-full` mutates every eligible
+file with a 3,600-second bound and is the run recorded before a change is
+archived. Tool failures, an unknown base ref or the deadline (600 seconds by
+default) return nonzero. `CLAVIS_MUTATION_DIFF` sets another base ref, or the
+full scope when empty; `CLAVIS_MUTATION_WORKERS` (default: available cores
+minus two) and `CLAVIS_MUTATION_TIMEOUT_SECONDS` adjust concurrency and the
+execution bound.
 
 `web/` holds pinned development dependencies, styles and application scripts,
 not a separately deployed application. UI source lives in

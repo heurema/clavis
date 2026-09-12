@@ -14,7 +14,7 @@ TEMPL := $(CURDIR)/.tools/templ/bin/templ
 GOLANGCI := $(CURDIR)/.tools/golangci-lint/bin/golangci-lint
 SQLC := $(CURDIR)/.tools/sqlc/bin/sqlc
 
-.PHONY: setup dev dev-db dev-api build build-server build-cli build-web-assets install-templ install-golangci-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go format test-mutation smoke down reset-db
+.PHONY: setup dev dev-db dev-api build build-server build-cli build-web-assets install-templ install-golangci-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go format test-mutation test-mutation-full smoke down reset-db
 
 setup:
 	go mod download
@@ -130,6 +130,11 @@ format:
 test-mutation: check-db-generated check-web-generated
 	$(MAKE) build-web-assets
 	$(NODE) scripts/mutation.mjs
+
+# The full scope needs the extended bound; the diff-scoped default does not.
+test-mutation-full: check-db-generated check-web-generated
+	$(MAKE) build-web-assets
+	CLAVIS_MUTATION_DIFF= CLAVIS_MUTATION_TIMEOUT_SECONDS=$${CLAVIS_MUTATION_TIMEOUT_SECONDS:-3600} $(NODE) scripts/mutation.mjs
 
 smoke: build
 	$(NODE) scripts/smoke.mjs
