@@ -96,7 +96,7 @@ templ Admin(model AdminModel) {
 	@authDocument("Administration") {
 		<p class="text-sm text-muted-foreground">Signed in as</p>
 		<p class="break-all text-lg font-semibold">{ model.User.Username }</p>
-		<p class="text-sm leading-6 text-muted-foreground">Administrator access. Manage users through the CLI; connection management is not available in this release.</p>
+		<p class="text-sm leading-6 text-muted-foreground">Administrator access. Manage users and connections through the CLI; this page only lists them.</p>
 		@userList(model)
 		@connectionList(model)
 		<form action="/logout" method="post">

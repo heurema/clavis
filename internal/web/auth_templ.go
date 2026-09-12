@@ -421,7 +421,7 @@ func Admin(model AdminModel) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, "</p><p class=\"text-sm leading-6 text-muted-foreground\">Administrator access. Manage users through the CLI; connection management is not available in this release.</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, "</p><p class=\"text-sm leading-6 text-muted-foreground\">Administrator access. Manage users and connections through the CLI; this page only lists them.</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

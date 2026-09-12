@@ -80,7 +80,7 @@ func adminBody(t *testing.T, model AdminModel) string {
 	assert.NotContains(t, body, "hx-")
 	assert.Equal(t, 1, strings.Count(body, "<script"), "only the shared appearance script belongs on this page")
 	assert.Contains(t, body, `<script src="/assets/appearance.js">`)
-	assert.Contains(t, body, "Manage users through the CLI")
+	assert.Contains(t, body, "Manage users and connections through the CLI")
 	assert.NotContains(t, body, "User and connection management are not available")
 	return body
 }

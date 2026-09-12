@@ -4,12 +4,13 @@ Clavis is a CLI-first platform by heurema for controlled access to operational
 systems by people and agents.
 
 Currently, it provides automated initial administrator setup, local browser/CLI
-sign-in, revocable sessions and administrator-managed local users, with external
-PostgreSQL. Goose manages embedded migrations and sqlc generates the pgx
+sign-in, revocable sessions, administrator-managed local users and registered
+data-source connections with encrypted credentials and connectivity checks, with
+external PostgreSQL. Goose manages embedded migrations and sqlc generates the pgx
 application queries. The embedded templ/htmx interface includes setup/readiness,
-sign-in and a protected admin page with a read-only user list. There is no
-separate frontend server. Groups, connection grants, providers and audit
-inspection remain planned; Google/OIDC sign-in, self-service password change and
+sign-in and a protected admin page with read-only user and connection lists.
+There is no separate frontend server. Connection grants, query execution,
+groups and audit inspection remain planned; Google/OIDC sign-in, self-service password change and
 account recovery are outside the MVP.
 
 ## Quick start
@@ -20,8 +21,16 @@ and GNU Make on macOS or Linux.
 ```sh
 make setup
 cp -n .env.example .env
+umask 077 && openssl rand -hex 32 > "$HOME/.config/clavis/encryption-key"
 make dev-db
 ```
+
+Every installation needs `CLAVIS_ENCRYPTION_KEY_FILE`: the absolute path to a
+protected regular file holding a 32-byte key as 64 hexadecimal characters. Connection
+credentials are encrypted under it at rest, the server refuses to start without
+it, and losing it makes every stored connection credential unrecoverable, so keep
+it in the operator's secret manager next to the bootstrap password. The command
+above creates one with owner-only permissions; point `.env` at that path.
 
 For the first installation, supply these settings in `.env`:
 
@@ -90,9 +99,13 @@ not install browser binaries.
 and runs it there with an empty executable search path. HTTP requests verify the
 login document and availability of its referenced embedded assets. JSON API
 requests and the CLI exercise concurrent initialization, authentication, expiry,
-multi-client revocation and user administration (creation, listing, blocking,
-password reset, role changes and self-protection), then outage/recovery by
-stopping and restarting an isolated PostgreSQL database and the copied server. Test credentials
+multi-client revocation, user administration (creation, listing, blocking,
+password reset, role changes and self-protection) and connection management
+(creation with an encrypted secret, connectivity checks against the real database
+and a local VictoriaMetrics health stub, updates, credential replacement, the delete
+guard, selector listing, dry runs and a restart with a different key), then
+outage/recovery by stopping and restarting an isolated PostgreSQL database and the
+copied server. Test credentials
 and CLI homes are private temporary inputs, not companion application assets,
 and are removed during cleanup. An additional loopback HTTPS proxy uses an
 in-memory test certificate to verify that the CLI rejects a self-signed
@@ -228,6 +241,47 @@ records none. Listing is bounded to 1,000 users and reports
 The MVP has no self-service password change and no account recovery: a lost
 password is replaced by an administrator with `reset-password`, and a lost
 administrator password is replaced by another administrator.
+
+## Connections
+
+A connection is a registered external data source: a stable UUID, a unique
+mutable name, a provider (`postgresql` or `victoriametrics`), non-secret target
+settings, labels, resource bounds and one encrypted secret. Administrators manage
+them through the CLI; the browser admin page only lists them. The commands follow
+the same conventions as `users` and are designed for agents: one verb vocabulary,
+`--connection <uuid-or-name>` everywhere, `--dry-run` on every mutation, machine
+readable errors with a `hint` naming the next step, and secrets that never appear
+on the command line.
+
+```sh
+clavis connections create --name payments-prod-reporting --provider postgresql \
+  --url 'postgres://reporting@db.payments.internal:5432/payments?sslmode=require' \
+  --label env=prod --label service=payments --title "Payments (reporting)" \
+  --password-file /run/secrets/reporting
+clavis connections check --connection payments-prod-reporting
+clavis connections list --selector env=prod,service=payments
+clavis connections update --connection payments-prod-reporting --statement-timeout 60s
+clavis connections set-credentials --connection payments-prod-reporting --password-env REPORTING_PW
+clavis connections disable --connection payments-prod-reporting
+clavis connections delete --connection payments-prod-reporting --dry-run
+```
+
+Secrets come from exactly one of a hidden terminal prompt, `--password-stdin`,
+`--password-file <absolute owner-only file>` or `--password-env <NAME>` (the CLI
+reads the named variable; the agent never sees the value). The PostgreSQL target
+is a URL without a password; VictoriaMetrics takes a base URL plus `--auth
+none|basic|bearer|header` with `--auth-user` or `--auth-header` where needed.
+Labels are `key=value` pairs; `--selector` accepts comma-separated `key=value`,
+`key!=value` and `key` terms combined with AND. Creation never contacts the
+source; `check` runs one probe and records `reachable`, `auth_rejected`,
+`unreachable` or `credentials_unavailable` with its time, claiming nothing about
+which data the credentials can read. Replacing credentials clears the last check.
+Delete requires a disabled connection with no grants. Listing is bounded to 1,000
+connections and to the response body limit, always with an explicit `truncated`
+flag. Statement timeout and result caps default to 30 s, 1,000 rows and 1 MiB
+with ceilings of 120 s, 100,000 rows and 10 MiB; they are enforced once query
+execution ships. Every mutation, check and denied attempt is audited without
+secrets or target hosts; a dry run records nothing.
 
 For a custom API address, add `--server <url>` or export `CLAVIS_SERVER_URL`; the
 CLI does not load `.env`. Authentication requires a root-origin HTTPS URL except
