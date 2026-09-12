@@ -42,8 +42,8 @@ func HandlerWithReadiness(checkTimeout time.Duration, checker platform.Checker, 
 }
 
 // HandlerWithAuth is the explicit runtime/test composition boundary.
-func HandlerWithAuth(checkTimeout time.Duration, checker platform.Checker, service auth.Service, recorder auth.EventRecorder, origin string, views AuthViews, logger *slog.Logger) (http.Handler, error) {
-	if service == nil || recorder == nil || checker == nil {
+func HandlerWithAuth(checkTimeout time.Duration, checker platform.Checker, service auth.Service, recorder auth.EventRecorder, admin auth.Administration, origin string, views AuthViews, logger *slog.Logger) (http.Handler, error) {
+	if service == nil || recorder == nil || admin == nil || checker == nil {
 		return nil, &auth.Error{Code: auth.InvalidArgument}
 	}
 	adapter, err := newAuthHTTP(origin, service, views)
@@ -51,6 +51,7 @@ func HandlerWithAuth(checkTimeout time.Duration, checker platform.Checker, servi
 		return nil, err
 	}
 	adapter.recorder = recorder
+	adapter.admin = admin
 	return handler(checkTimeout, checker, logger, adapter), nil
 }
 
@@ -141,7 +142,7 @@ func Serve(ctx context.Context, listener net.Listener, cfg config.Config, databa
 			database.Close()
 			return err
 		}
-		httpHandler, err = HandlerWithAuth(cfg.DBCheckTimeout, initializer, service, service, origin, AuthViews{}, logger)
+		httpHandler, err = HandlerWithAuth(cfg.DBCheckTimeout, initializer, service, service, service, origin, AuthViews{}, logger)
 		if err != nil {
 			_ = listener.Close()
 			database.Close()

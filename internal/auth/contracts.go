@@ -24,6 +24,21 @@ const (
 	WhoAmIPath = "/api/auth/whoami"
 	LogoutPath = "/api/auth/logout"
 	RevokePath = "/api/admin/users/{userID}/sessions/revoke"
+
+	// Administration routes: GET UsersPath lists, POST UsersPath creates.
+	UsersPath        = "/api/admin/users"
+	UserBlockPath    = "/api/admin/users/{userID}/block"
+	UserUnblockPath  = "/api/admin/users/{userID}/unblock"
+	UserPasswordPath = "/api/admin/users/{userID}/password"
+	UserRolePath     = "/api/admin/users/{userID}/role"
+)
+
+// MaxUserListing bounds one listing; a longer list reports truncation.
+// MaxListingBody bounds the listing response alone: 1,000 records exceed the
+// general MaxResponseBody, so GET UsersPath has its own documented limit.
+const (
+	MaxUserListing = 1000
+	MaxListingBody = 256 * 1024
 )
 
 type Role string
@@ -97,4 +112,52 @@ type Service interface {
 	Authenticate(context.Context, Secret, Kind) (Session, error)
 	Logout(context.Context, Session) error
 	RevokeUserSessions(context.Context, Session, string) error
+}
+
+// UserRecord is the safe administrative projection of an account. It never
+// carries a password hash or session data.
+type UserRecord struct {
+	ID        string    `json:"id"`
+	Username  string    `json:"username"`
+	Role      Role      `json:"role"`
+	Disabled  bool      `json:"disabled"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
+type UserList struct {
+	Users     []UserRecord `json:"users"`
+	Truncated bool         `json:"truncated"`
+}
+
+// Request DTOs carrying a Secret are transport inputs only; they are never
+// result data.
+type CreateUserRequest struct {
+	Username string `json:"username"`
+	Password Secret `json:"password"`
+}
+
+type ResetPasswordRequest struct {
+	Password Secret `json:"password"`
+}
+
+type SetRoleRequest struct {
+	Role Role `json:"role"`
+}
+
+// UserMutation reports the account after a mutation and whether that
+// mutation revoked the target's sessions.
+type UserMutation struct {
+	User            UserRecord `json:"user"`
+	SessionsRevoked bool       `json:"sessionsRevoked"`
+}
+
+// Administration is separate from Service so sign-in contracts stay frozen.
+// Every method rechecks the actor's current session and administrator role
+// inside its own transaction; the passed Session is never trusted alone.
+type Administration interface {
+	ListUsers(context.Context, Session) (UserList, error)
+	CreateUser(context.Context, Session, CreateUserRequest) (UserRecord, error)
+	SetUserDisabled(context.Context, Session, string, bool) (UserMutation, error)
+	ResetPassword(context.Context, Session, string, Secret) (UserMutation, error)
+	SetRole(context.Context, Session, string, Role) (UserMutation, error)
 }

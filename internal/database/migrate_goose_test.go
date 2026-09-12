@@ -22,6 +22,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// embeddedMapFS copies every embedded migration so a test can append or alter
+// files without touching the immutable build inputs.
+func embeddedMapFS(t *testing.T) fstest.MapFS {
+	t.Helper()
+	root, err := fs.Sub(migrationFiles, "migrations")
+	require.NoError(t, err)
+	names, err := fs.Glob(root, "*.sql")
+	require.NoError(t, err)
+	files := fstest.MapFS{}
+	for _, name := range names {
+		data, err := fs.ReadFile(root, name)
+		require.NoError(t, err)
+		files[name] = &fstest.MapFile{Data: data}
+	}
+	return files
+}
+
+// appliedLedgerRows is Goose's zero row plus one row per embedded migration.
+func appliedLedgerRows() int { return 1 + len(embeddedMigrations()) }
+
 // Arbitrary filesystem migrations are a test seam, not a production entrypoint.
 func migrateFS(ctx context.Context, pool *pgxpool.Pool, root fs.FS) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -45,7 +65,9 @@ func TestGooseOwnsVersioningAndSQLParsing(t *testing.T) {
 	require.NoError(t, err)
 	version, err := provider.GetDBVersion(t.Context())
 	require.NoError(t, err)
-	require.EqualValues(t, 1, version)
+	embedded := embeddedMigrations()
+	require.EqualValues(t, embedded[len(embedded)-1].version, version)
+	applied := appliedLedgerRows()
 	pending, err := provider.HasPending(t.Context())
 	require.NoError(t, err)
 	require.False(t, pending)
@@ -55,12 +77,12 @@ func TestGooseOwnsVersioningAndSQLParsing(t *testing.T) {
 
 	initial, err := fs.ReadFile(root, "001_initial.sql")
 	require.NoError(t, err)
-	changed := fstest.MapFS{"001_initial.sql": {Data: append(append([]byte{}, initial...), []byte("\n-- changed after application\n")...)}}
+	changed := embeddedMapFS(t)
+	changed["001_initial.sql"] = &fstest.MapFile{Data: append(append([]byte{}, initial...), []byte("\n-- changed after application\n")...)}
 	require.ErrorIs(t, migrateFS(t.Context(), pool, changed), errSchema)
-	require.Equal(t, 2, countRows(t, pool, "goose_db_version"))
-	migrations := fstest.MapFS{
-		"001_initial.sql": {Data: initial},
-		"002_parser.sql": {Data: []byte(`-- +goose Up
+	require.Equal(t, applied, countRows(t, pool, "goose_db_version"))
+	migrations := embeddedMapFS(t)
+	migrations["999_parser.sql"] = &fstest.MapFile{Data: []byte(`-- +goose Up
 -- +goose StatementBegin
 CREATE FUNCTION goose_parser_probe() RETURNS integer LANGUAGE plpgsql AS $$
 BEGIN
@@ -70,14 +92,13 @@ $$;
 -- +goose StatementEnd
 -- +goose Down
 SELECT deliberate_down_must_not_run();
-`)},
-	}
+`)}
 	require.NoError(t, migrateFS(t.Context(), pool, migrations))
 	require.NoError(t, migrateFS(t.Context(), pool, migrations))
 	var value int
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT goose_parser_probe()`).Scan(&value))
 	require.Equal(t, 42, value)
-	require.Equal(t, 3, countRows(t, pool, "goose_db_version"))
+	require.Equal(t, applied+1, countRows(t, pool, "goose_db_version"))
 	// The old binary must not accept the newer ledger.
 	require.ErrorIs(t, Migrate(t.Context(), pool), errSchema)
 }
@@ -129,7 +150,7 @@ func TestGooseChecksumFailureRollsBackDDLAndVersion(t *testing.T) {
 	require.False(t, present)
 	execSQL(t, pool, `DROP TRIGGER reject_checksum ON goose_db_version`)
 	require.NoError(t, Migrate(t.Context(), pool))
-	require.Equal(t, 2, countRows(t, pool, "goose_db_version"))
+	require.Equal(t, appliedLedgerRows(), countRows(t, pool, "goose_db_version"))
 }
 
 func TestGooseRejectsExperimentalAndCorruptedLedgers(t *testing.T) {
@@ -194,22 +215,18 @@ func TestGooseReadinessIsReadOnlyBeforeAndAfterMigration(t *testing.T) {
 	checker := NewInitializer(readOnly, "", "")
 	checker.state.Store(platform.SetupRequired)
 	require.Equal(t, platform.SetupRequired, checker.Check(t.Context()).State)
-	require.Equal(t, 2, countRows(t, pool, "goose_db_version"))
+	require.Equal(t, appliedLedgerRows(), countRows(t, pool, "goose_db_version"))
 	require.Zero(t, countRows(t, pool, "users"))
 }
 
 func TestGooseCancellationRollsBackAndUnblocksBootstrap(t *testing.T) {
 	pool := testPool(t)
 	require.NoError(t, Migrate(t.Context(), pool))
-	initial, err := migrationFiles.ReadFile("migrations/001_initial.sql")
-	require.NoError(t, err)
-	migrations := fstest.MapFS{
-		"001_initial.sql": {Data: initial},
-		"002_slow.sql": {Data: []byte(`-- +goose Up
+	migrations := embeddedMapFS(t)
+	migrations["999_slow.sql"] = &fstest.MapFile{Data: []byte(`-- +goose Up
 CREATE TABLE interrupted_migration(id integer);
 SELECT pg_sleep(10);
-`)},
-	}
+`)}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	migrated := make(chan error, 1)
@@ -251,7 +268,7 @@ SELECT pg_sleep(10);
 	var present bool
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('interrupted_migration') IS NOT NULL`).Scan(&present))
 	require.False(t, present)
-	require.Equal(t, 2, countRows(t, pool, "goose_db_version"))
+	require.Equal(t, appliedLedgerRows(), countRows(t, pool, "goose_db_version"))
 	require.NoError(t, Migrate(t.Context(), pool))
 	require.Equal(t, platform.Ready, i.Check(t.Context()).State)
 }

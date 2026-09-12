@@ -47,6 +47,25 @@ func render(w io.Writer, result Result, format string) error {
 	case auth.Revocation:
 		_, err := fmt.Fprintf(w, "Revoked: %t\n", data.Revoked)
 		return err
+	case auth.UserRecord:
+		return renderUser(w, data)
+	case auth.UserMutation:
+		if err := renderUser(w, data.User); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(w, "Sessions revoked: %t\n", data.SessionsRevoked)
+		return err
+	case auth.UserList:
+		for _, user := range data.Users {
+			if _, err := fmt.Fprintf(w, "%s %s %s %s\n", user.ID, user.Username, user.Role, userStatus(user)); err != nil {
+				return err
+			}
+		}
+		if data.Truncated {
+			_, err := fmt.Fprintf(w, "Truncated: list is limited to %d users\n", auth.MaxUserListing)
+			return err
+		}
+		return nil
 	case Diagnosis:
 		_, err := fmt.Fprintf(w, "API: %s\nDatabase: %s\n", data.API, data.Database)
 		return err
@@ -55,4 +74,19 @@ func render(w io.Writer, result Result, format string) error {
 		return err
 	}
 	return nil
+}
+
+func userStatus(user auth.UserRecord) string {
+	if user.Disabled {
+		return "blocked"
+	}
+	return "enabled"
+}
+
+// renderUser prints the safe record projection only; a password never reaches
+// a result type.
+func renderUser(w io.Writer, user auth.UserRecord) error {
+	_, err := fmt.Fprintf(w, "User: %s (%s)\nRole: %s\nStatus: %s\nCreated: %s\n",
+		user.Username, user.ID, user.Role, userStatus(user), user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"))
+	return err
 }

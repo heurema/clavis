@@ -32,6 +32,7 @@ type backendFixture struct {
 	events                                               []auth.Event
 	role                                                 auth.Role
 	block                                                func(context.Context)
+	fakeAdministration
 }
 
 var fixtureToken = auth.Secret(strings.Repeat("A", 43))
@@ -106,7 +107,7 @@ func authHandler(t *testing.T, f *backendFixture, checker platform.Checker, orig
 	if checker == nil {
 		checker = platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
 	}
-	handler, err := HandlerWithAuth(time.Second, checker, f, f, origin, fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, checker, f, f, f, origin, fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	return handler
 }
@@ -142,7 +143,7 @@ func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
 				healthCalls++
 				return checker.Check(ctx)
 			})
-			handler, err := HandlerWithAuth(time.Second, health, service, recorder, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			handler, err := HandlerWithAuth(time.Second, health, service, recorder, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 			require.NoError(t, err)
 			code := (platform.Readiness{State: state}).Response().Error.Code
 			for _, tc := range []struct {
@@ -210,12 +211,14 @@ func TestHandlerWithAuthRequiresCompleteComposition(t *testing.T) {
 		checker  platform.Checker
 		service  auth.Service
 		recorder auth.EventRecorder
+		admin    auth.Administration
 	}{
-		{nil, fixture, fixture},
-		{checker, nil, fixture},
-		{checker, fixture, nil},
+		{nil, fixture, fixture, fixture},
+		{checker, nil, fixture, fixture},
+		{checker, fixture, nil, fixture},
+		{checker, fixture, fixture, nil},
 	} {
-		handler, err := HandlerWithAuth(time.Second, tc.checker, tc.service, tc.recorder, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		handler, err := HandlerWithAuth(time.Second, tc.checker, tc.service, tc.recorder, tc.admin, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 		require.Nil(t, handler)
 		require.Error(t, err)
 		status, failure := auth.FailureFor(err)

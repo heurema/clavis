@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heurema/clavis/internal/auth"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -81,6 +82,23 @@ func TestCLIProcesses(t *testing.T) {
 			require.False(t, strings.Contains(output, string(token)))
 		}
 		fixture.mu.Unlock()
+		secret := testToken()
+		exit, output, prompt = processCLI(t, binary, string(secret)+"\n", "users", "create", "--username=alice", "--password-stdin")
+		require.Equal(t, 0, exit)
+		require.Empty(t, prompt)
+		created := decode(t, output)
+		require.True(t, created.OK)
+		require.NotContains(t, output, "password")
+		require.False(t, strings.Contains(output, string(secret)))
+		alice, _ := created.Data.(map[string]any)["id"].(string)
+		require.True(t, auth.ValidUserID(alice))
+		exit, output, _ = processCLI(t, binary, "", "users", "list", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Equal(t, testIdentity().User.ID+" cli-test admin enabled\n"+alice+" alice member enabled\n", output)
+		exit, output, _ = processCLI(t, binary, "", "users", "block", "--user", alice, "--output=text")
+		require.Equal(t, 0, exit)
+		require.Contains(t, output, "User: alice ("+alice+")\nRole: member\nStatus: blocked\nCreated: ")
+		require.True(t, strings.HasSuffix(output, "Z\nSessions revoked: true\n"))
 		exit, output, _ = processCLI(t, binary, "", "sessions", "revoke", "--user", testIdentity().User.ID, "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, "Revoked: true\n", output)
@@ -95,14 +113,81 @@ func TestCLIProcesses(t *testing.T) {
 		config, err := os.UserConfigDir()
 		require.NoError(t, err)
 		require.NoError(t, os.Chmod(filepath.Join(config, "clavis"), 0755))
-		for _, args := range [][]string{{"--help"}, {"login", "--help"}, {"sessions", "revoke", "--help"}, {"version"}, {"version", "--output=text"}} {
-			exit, _, prompt = processCLI(t, binary, "", args...)
-			require.Equal(t, 0, exit)
+		for _, args := range [][]string{
+			{"--help"}, {"login", "--help"}, {"sessions", "revoke", "--help"}, {"users", "--help"}, {"users"},
+			{"users", "list", "--help"}, {"users", "create", "--help"}, {"users", "block", "--help"}, {"users", "unblock", "--help"},
+			{"users", "reset-password", "--help"}, {"users", "set-role", "--help"}, {"version"}, {"version", "--output=text"},
+		} {
+			exit, output, prompt = processCLI(t, binary, "", args...)
+			require.Equal(t, 0, exit, "%v: %s", args, output)
 			require.Empty(t, prompt)
 		}
-		exit, output, _ = processCLI(t, binary, string(password), "login", "--username=cli-test", "--output=text")
-		require.Equal(t, 2, exit)
-		require.Equal(t, "INVALID_ARGUMENT", decode(t, output).Error.Code)
+		for _, args := range [][]string{
+			{"login", "--username=cli-test", "--output=text"},
+			{"users", "create", "--username=alice", "--output=text"},
+			{"users", "reset-password", "--user", alice, "--output=text"},
+		} {
+			exit, output, prompt = processCLI(t, binary, string(password), args...)
+			require.Equal(t, 2, exit, "%v", args)
+			require.Equal(t, "INVALID_ARGUMENT", decode(t, output).Error.Code)
+			require.Empty(t, prompt, "noninteractive input must not prompt")
+		}
+	})
+	t.Run("terminal-users-reset", func(t *testing.T) {
+		cliHome(t)
+		password := testToken()
+		_, server := newCLIFixture(t, password)
+		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		exit, _, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin")
+		require.Equal(t, 0, exit)
+		exit, output, _ := processCLI(t, binary, string(testToken()), "users", "create", "--username=alice", "--password-stdin")
+		require.Equal(t, 0, exit)
+		alice, _ := decode(t, output).Data.(map[string]any)["id"].(string)
+		master, slave := testPTY(t)
+		original, err := term.GetState(int(slave.Fd()))
+		require.NoError(t, err)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, binary, "users", "reset-password", "--user", alice)
+		command.Stdin, command.Stderr = slave, slave
+		command.Env = append(os.Environ(), "PATH=")
+		var out bytes.Buffer
+		command.Stdout = &out
+		require.NoError(t, command.Start())
+		prompt := make([]byte, len("Password: "))
+		for i := range prompt {
+			b, err := inputByte(ctx, master)
+			require.NoError(t, err)
+			prompt[i] = b
+		}
+		require.Equal(t, "Password: ", string(prompt))
+		replacement := testToken()
+		_, err = io.WriteString(master, string(replacement)+"\r")
+		require.NoError(t, err)
+		require.NoError(t, command.Wait())
+		require.NoError(t, ctx.Err(), "terminal subprocess hung")
+		result := decode(t, out.String())
+		require.True(t, result.OK)
+		mutation, _ := result.Data.(map[string]any)
+		require.Equal(t, true, mutation["sessionsRevoked"])
+		require.Equal(t, alice, mutation["user"].(map[string]any)["id"])
+		require.False(t, strings.Contains(out.String(), string(replacement)))
+		require.NotContains(t, out.String(), "password")
+		restored, err := term.GetState(int(slave.Fd()))
+		require.NoError(t, err)
+		require.Equal(t, original, restored, "terminal state must always be restored")
+		assertTerminalInputEmpty(t, slave)
+		fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
+		n, err := unix.Poll(fds, 100)
+		require.NoError(t, err)
+		require.Positive(t, n)
+		var remaining [2048]byte
+		n, err = master.Read(remaining[:])
+		require.NoError(t, err)
+		require.Equal(t, "\r\n", string(remaining[:n]), "nothing but the prompt newline may be echoed")
+		exit, output, _ = processCLI(t, binary, "", "users", "block", "--user", alice, "--output=text")
+		require.Equal(t, 0, exit)
+		require.True(t, strings.HasSuffix(output, "Sessions revoked: true\n"))
 	})
 	t.Run("concurrent-login-logout", func(t *testing.T) {
 		cliHome(t)

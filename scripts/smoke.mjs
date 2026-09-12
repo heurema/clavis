@@ -257,15 +257,21 @@ try {
     )
     assert.equal(result.schemaVersion, 1)
     assert.equal(result.ok, expected === 0)
-    assert(!JSON.stringify(result).includes(password), "CLI exposed a password")
+    for (const secret of secrets)
+      assert(!JSON.stringify(result).includes(secret), "CLI exposed a password")
     return result
   }
-  async function login(name, username = "smoke-admin") {
+  async function login(
+    name,
+    username = "smoke-admin",
+    secret = password,
+    expected = 0,
+  ) {
     return cli(
       name,
       ["login", "--username", username, "--password-stdin"],
-      0,
-      password + "\n",
+      expected,
+      secret + "\n",
     )
   }
   async function sql(statement, name) {
@@ -382,51 +388,213 @@ try {
     assert.equal((await cli(name, ["whoami"], 1)).error.code, "UNAUTHENTICATED")
 
   await login("admin-one")
-  // Direct SQL is confined to this disposable fixture, not a product management
-  // API. It exercises current roles/expiry without inventing user-management UI.
-  await sql(
-    "UPDATE users SET role='member' WHERE username='smoke-admin'",
-    "fixture-demote",
+  // Users are created and managed through the product CLI. The only fixture
+  // SQL left here forces expiry and counts events, which have no product API.
+  const memberPassword = randomBytes(32).toString("hex")
+  secrets.add(memberPassword)
+  const created = await cli(
+    "admin-one",
+    ["users", "create", "--username", "smoke-member", "--password-stdin"],
+    0,
+    memberPassword + "\n",
+  )
+  const member = created.data
+  assert.equal(member.username, "smoke-member")
+  assert.equal(member.role, "member")
+  assert.equal(member.disabled, false)
+  assert.equal(
+    (
+      await cli(
+        "admin-one",
+        ["users", "create", "--username", "smoke-member", "--password-stdin"],
+        1,
+        memberPassword + "\n",
+      )
+    ).error.code,
+    "USERNAME_TAKEN",
+  )
+  const listed = await cli("admin-one", ["users", "list"])
+  assert.deepEqual(
+    listed.data.users.map((user) => user.username),
+    ["smoke-admin", "smoke-member"],
+  )
+  assert.equal(listed.data.truncated, false)
+  const listedText = await execute(
+    join(root, "bin/clavis"),
+    ["users", "list", "--output", "text", "--server", apiURL],
+    "auth-admin-one-users-text",
+    { env: clientEnv("admin-one") },
+  )
+  assert(listedText.includes(`${member.id} smoke-member member enabled`))
+  assert(!listedText.includes("Truncated"))
+
+  await login("member", "smoke-member", memberPassword)
+  for (const args of [
+    ["sessions", "revoke", "--user", administrator.id],
+    ["users", "list"],
+    ["users", "block", "--user", administrator.id],
+  ])
+    assert.equal((await cli("member", args, 1)).error.code, "FORBIDDEN")
+  // Administrators are peers who cannot remove themselves.
+  assert.equal(
+    (await cli("admin-one", ["users", "block", "--user", administrator.id], 1))
+      .error.code,
+    "SELF_TARGET",
   )
   assert.equal(
     (
       await cli(
         "admin-one",
-        ["sessions", "revoke", "--user", administrator.id],
+        ["users", "set-role", "--user", administrator.id, "--role", "member"],
         1,
       )
     ).error.code,
+    "SELF_TARGET",
+  )
+  assert.equal(
+    (
+      await cli(
+        "admin-one",
+        ["users", "block", "--user", "00000000-0000-4000-8000-000000000000"],
+        1,
+      )
+    ).error.code,
+    "USER_NOT_FOUND",
+  )
+  // Blocking revokes the member's session and refuses new sign-ins.
+  const blocked = await cli("admin-one", [
+    "users",
+    "block",
+    "--user",
+    member.id,
+  ])
+  assert.equal(blocked.data.user.disabled, true)
+  assert.equal(blocked.data.sessionsRevoked, true)
+  assert.equal(
+    (await cli("member", ["whoami"], 1)).error.code,
+    "UNAUTHENTICATED",
+  )
+  assert.equal(
+    (await login("member", "smoke-member", memberPassword, 1)).error.code,
+    "INVALID_CREDENTIALS",
+  )
+  const unblocked = await cli("admin-one", [
+    "users",
+    "unblock",
+    "--user",
+    member.id,
+  ])
+  assert.equal(unblocked.data.user.disabled, false)
+  assert.equal(unblocked.data.sessionsRevoked, false)
+  await login("member", "smoke-member", memberPassword)
+  // A reset replaces the password and revokes every session.
+  const resetPassword = randomBytes(32).toString("hex")
+  secrets.add(resetPassword)
+  const reset = await cli(
+    "admin-one",
+    ["users", "reset-password", "--user", member.id, "--password-stdin"],
+    0,
+    resetPassword + "\n",
+  )
+  assert.equal(reset.data.sessionsRevoked, true)
+  assert.equal(
+    (await cli("member", ["whoami"], 1)).error.code,
+    "UNAUTHENTICATED",
+  )
+  assert.equal(
+    (await login("member", "smoke-member", memberPassword, 1)).error.code,
+    "INVALID_CREDENTIALS",
+  )
+  await login("member", "smoke-member", resetPassword)
+  // Promotion authorizes the member's existing session; peers manage each
+  // other; demotion removes authority while identity still works.
+  const promoted = await cli("admin-one", [
+    "users",
+    "set-role",
+    "--user",
+    member.id,
+    "--role",
+    "admin",
+  ])
+  assert.equal(promoted.data.user.role, "admin")
+  await cli("member", ["users", "list"])
+  await cli("member", [
+    "users",
+    "set-role",
+    "--user",
+    administrator.id,
+    "--role",
+    "member",
+  ])
+  assert.equal(
+    (await cli("admin-one", ["users", "list"], 1)).error.code,
     "FORBIDDEN",
   )
-  await sql(
-    "UPDATE users SET role='admin' WHERE username='smoke-admin'",
-    "fixture-restore-role",
+  assert.equal((await cli("admin-one", ["whoami"])).data.user.role, "member")
+  assert.equal(
+    (
+      await cli(
+        "member",
+        ["users", "set-role", "--user", member.id, "--role", "member"],
+        1,
+      )
+    ).error.code,
+    "SELF_TARGET",
   )
+  await cli("member", [
+    "users",
+    "set-role",
+    "--user",
+    administrator.id,
+    "--role",
+    "admin",
+  ])
+  await cli("admin-one", [
+    "users",
+    "set-role",
+    "--user",
+    member.id,
+    "--role",
+    "member",
+  ])
+  assert.equal(
+    (await cli("member", ["users", "list"], 1)).error.code,
+    "FORBIDDEN",
+  )
+  for (const [filter, expected] of [
+    ["action='user.create' AND outcome='success'", "1"],
+    ["action='user.create' AND outcome='username_taken'", "1"],
+    ["action='user.block' AND outcome='self_target'", "1"],
+    ["action='user.demote' AND outcome='self_target'", "2"],
+    ["action='user.block' AND outcome='user_not_found'", "1"],
+    ["action='user.block' AND outcome='success'", "1"],
+    ["action='user.unblock' AND outcome='success'", "1"],
+    ["action='user.reset_password' AND outcome='success'", "1"],
+    ["action='user.promote' AND outcome='success'", "2"],
+    ["action='user.demote' AND outcome='success'", "2"],
+    ["action='users.list' AND outcome='forbidden'", "3"],
+    ["action='users.list' AND outcome='success'", "0"],
+    ["outcome='last_administrator'", "0"],
+  ])
+    assert.equal(
+      await sql(
+        `SELECT count(*) FROM auth_events WHERE ${filter}`,
+        `events-${filter.replace(/[^a-z_]+/g, "-")}`,
+      ),
+      expected,
+      filter,
+    )
+  summary.userAdministration = "passed"
+  console.log(
+    "[smoke] Real CLI user creation, listing, blocking, password reset, role changes and self-protection passed",
+  )
+
   await sql(
     "UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE user_id IN (SELECT id FROM users WHERE username='smoke-admin')",
     "fixture-expire",
   )
   assert.equal(
     (await cli("admin-one", ["whoami"], 1)).error.code,
-    "UNAUTHENTICATED",
-  )
-
-  await sql(
-    "INSERT INTO users(id,username,password_hash,role) SELECT gen_random_uuid(),'smoke-member',password_hash,'member' FROM users WHERE username='smoke-admin'",
-    "fixture-member",
-  )
-  await login("member", "smoke-member")
-  assert.equal(
-    (await cli("member", ["sessions", "revoke", "--user", administrator.id], 1))
-      .error.code,
-    "FORBIDDEN",
-  )
-  await sql(
-    "UPDATE users SET disabled=true WHERE username='smoke-member'",
-    "fixture-disable",
-  )
-  assert.equal(
-    (await cli("member", ["whoami"], 1)).error.code,
     "UNAUTHENTICATED",
   )
   await login("admin-one")

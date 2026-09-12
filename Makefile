@@ -106,7 +106,9 @@ check:
 	$(MAKE) build-web-assets
 	$(NODE) --test scripts/*.test.mjs
 	$(MAKE) lint-go
-	go test ./...
+	# Package binaries run serially: database-backed packages share one database
+	# and its database-wide advisory lock keys, so parallel packages can stall.
+	go test -p 1 ./...
 	$(PNPM) --dir web format:check
 	$(PNPM) --dir web lint
 	$(MAKE) build

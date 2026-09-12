@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -35,6 +36,18 @@ func strictJSON(body []byte, value any) bool {
 }
 
 func exactJSONKeys(wire, projected any) bool {
+	if items, ok := wire.([]any); ok {
+		expected, ok := projected.([]any)
+		if !ok || len(items) != len(expected) {
+			return false
+		}
+		for i := range items {
+			if !exactJSONKeys(items[i], expected[i]) {
+				return false
+			}
+		}
+		return true
+	}
 	object, ok := wire.(map[string]any)
 	if !ok {
 		return true
@@ -82,8 +95,62 @@ func uniqueJSONKeys(d *json.Decoder) bool {
 func validIdentity(value auth.Identity) bool {
 	_, offset := value.ExpiresAt.Zone()
 	return auth.ValidUserID(value.User.ID) && auth.ValidUsername(value.User.Username) &&
-		(value.User.Role == auth.Admin || value.User.Role == auth.Member) &&
-		!value.ExpiresAt.IsZero() && offset == 0
+		validRole(value.User.Role) && !value.ExpiresAt.IsZero() && offset == 0
+}
+
+func validRole(role auth.Role) bool { return role == auth.Admin || role == auth.Member }
+
+func validRecord(value auth.UserRecord) bool {
+	_, offset := value.CreatedAt.Zone()
+	return auth.ValidUserID(value.ID) && auth.ValidUsername(value.Username) &&
+		validRole(value.Role) && !value.CreatedAt.IsZero() && offset == 0
+}
+
+func validList(value auth.UserList) bool {
+	if len(value.Users) > auth.MaxUserListing {
+		return false
+	}
+	for _, user := range value.Users {
+		if !validRecord(user) {
+			return false
+		}
+	}
+	return true
+}
+
+// documentedFailure is the per-route error allowlist from the HTTP contract.
+// Codes every bearer route may return (400, 401, 403, 503) pass; the rest are
+// only accepted where routeFailures lists them for that method and path.
+func documentedFailure(code, method, path string) bool {
+	switch code {
+	case auth.InvalidCredentials:
+		return path == auth.LoginPath
+	case auth.Unauthenticated:
+		return path != auth.LoginPath
+	case auth.UserNotFound, auth.UsernameTaken, auth.LastAdministrator, auth.SelfTarget, auth.RateLimited:
+		return slices.Contains(routeFailures(method, path), code)
+	}
+	return true
+}
+
+// routeFailures is the positive list of route-specific codes from the design's
+// HTTP table. Administration routes are POST except the listing.
+func routeFailures(method, path string) []string {
+	target := strings.HasPrefix(path, auth.UsersPath+"/")
+	switch {
+	case path == auth.UsersPath && method == http.MethodPost:
+		return []string{auth.UsernameTaken, auth.RateLimited}
+	case path == auth.UsersPath:
+		return nil
+	case target && (strings.HasSuffix(path, "/block") || strings.HasSuffix(path, "/role")):
+		return []string{auth.UserNotFound, auth.LastAdministrator, auth.SelfTarget}
+	case target && strings.HasSuffix(path, "/unblock"):
+		return []string{auth.UserNotFound}
+	case target: // password reset and session revocation
+		return []string{auth.UserNotFound, auth.RateLimited}
+	default: // login, whoami, logout
+		return []string{auth.RateLimited}
+	}
 }
 
 type authTransport struct {
@@ -94,17 +161,26 @@ type authTransport struct {
 // Each call uses a fresh transport, with no reusable connection on which net/http
 // could retry a request. Redirect destinations never receive credentials.
 func (a authTransport) request(ctx context.Context, path string, token auth.Secret, input *auth.LoginRequest, output any) *Result {
-	ctx, cancel := context.WithTimeout(ctx, a.timeout)
-	defer cancel()
 	method := http.MethodPost
 	if path == auth.WhoAmIPath {
 		method = http.MethodGet
 	}
+	if input == nil {
+		return a.call(ctx, method, path, token, nil, output)
+	}
+	return a.call(ctx, method, path, token, input, output)
+}
+
+// call performs one bounded request. Creation (POST UsersPath) is the only
+// route whose documented success status is 201; every other route expects 200.
+func (a authTransport) call(ctx context.Context, method, path string, token auth.Secret, input, output any) *Result {
+	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	defer cancel()
 	var body io.Reader
 	if input != nil {
 		encoded, err := json.Marshal(input)
 		if err != nil || len(encoded) > auth.MaxCredentialBody {
-			r := failure("INVALID_ARGUMENT", "Invalid login input", nil)
+			r := failure("INVALID_ARGUMENT", "Invalid request input", nil)
 			return &r
 		}
 		body = bytes.NewReader(encoded)
@@ -130,25 +206,33 @@ func (a authTransport) request(ctx context.Context, path string, token auth.Secr
 		return transportFailure(ctx)
 	}
 	defer func() { _ = response.Body.Close() }()
-	data, err := io.ReadAll(io.LimitReader(response.Body, auth.MaxResponseBody+1))
+	// Only the bounded user listing may exceed the general response limit.
+	limit := auth.MaxResponseBody
+	if method == http.MethodGet && path == auth.UsersPath {
+		limit = auth.MaxListingBody
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, int64(limit)+1))
 	if ctx.Err() != nil {
 		return transportFailure(ctx)
 	}
 	invalid := failure("INVALID_RESPONSE", "Server returned an invalid authentication response", nil)
 	contentType, _, typeErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if err != nil || len(data) > auth.MaxResponseBody || typeErr != nil || contentType != "application/json" {
+	// Every documented body, success or error, is one JSON object.
+	if err != nil || len(data) > limit || typeErr != nil || contentType != "application/json" ||
+		!bytes.HasPrefix(bytes.TrimSpace(data), []byte("{")) {
 		return &invalid
 	}
-	if response.StatusCode != http.StatusOK {
+	expected := http.StatusOK
+	if method == http.MethodPost && path == auth.UsersPath {
+		expected = http.StatusCreated
+	}
+	if response.StatusCode != expected {
 		var remote auth.ErrorResponse
 		if !strictJSON(data, &remote) || remote.Error.Message == "" {
 			return &invalid
 		}
 		status, safe, known := auth.LookupFailure(remote.Error.Code)
-		if !known || status != response.StatusCode ||
-			(remote.Error.Code == auth.InvalidCredentials && path != auth.LoginPath) ||
-			(remote.Error.Code == auth.Unauthenticated && path == auth.LoginPath) ||
-			(remote.Error.Code == auth.UserNotFound && !strings.HasPrefix(path, "/api/admin/users/")) {
+		if !known || status != response.StatusCode || !documentedFailure(remote.Error.Code, method, path) {
 			return &invalid
 		}
 		r := failure(safe.Code, safe.Message, nil)
@@ -165,6 +249,12 @@ func (a authTransport) request(ctx context.Context, path string, token auth.Secr
 		valid = validIdentity(*value) && value.ExpiresAt.After(time.Now())
 	case *auth.Revocation:
 		valid = value.Revoked
+	case *auth.UserRecord:
+		valid = validRecord(*value)
+	case *auth.UserList:
+		valid = validList(*value)
+	case *auth.UserMutation:
+		valid = validRecord(value.User)
 	}
 	if !valid {
 		return &invalid
