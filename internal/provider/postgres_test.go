@@ -714,4 +714,12 @@ func TestStatementTimeoutMS(t *testing.T) {
 	// reads 0 as "no timeout", which would leave a statement nothing stops.
 	require.Equal(t, auth.DefaultStatementTimeout.Milliseconds(), statementTimeoutMS(0))
 	require.Equal(t, auth.DefaultStatementTimeout.Milliseconds(), statementTimeoutMS(-time.Second))
+	require.Equal(t, "clavis", applicationName(""))
+	require.Equal(t, "clavis:payments:alice", applicationName("clavis:payments:alice"))
+	defaulted := boundedRequest(ExecuteRequest{})
+	require.Equal(t, auth.DefaultMaxRows, defaulted.MaxRows)
+	require.Equal(t, auth.DefaultMaxBytes, defaulted.MaxBytes)
+	explicit := boundedRequest(ExecuteRequest{MaxRows: 5, MaxBytes: 2048})
+	require.Equal(t, 5, explicit.MaxRows)
+	require.Equal(t, 2048, explicit.MaxBytes)
 }

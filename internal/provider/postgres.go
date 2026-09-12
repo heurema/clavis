@@ -210,13 +210,34 @@ func (postgreSQL) Execute(ctx context.Context, target map[string]string, secret 
 	// is aborted with its implicit transaction and we never cancel anything.
 	config.RuntimeParams["statement_timeout"] = strconv.FormatInt(statementTimeoutMS(request.Timeout), 10)
 	config.RuntimeParams["client_encoding"] = "UTF8"
-	config.RuntimeParams["application_name"] = request.Application
+	config.RuntimeParams["application_name"] = applicationName(request.Application)
 	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
 		return ExecuteResult{}, postgresConnectError(err)
 	}
 	defer closePostgres(ctx, conn)
-	return postgresExecute(ctx, conn, request)
+	return postgresExecute(ctx, conn, boundedRequest(request))
+}
+
+// applicationName keeps the source from seeing an empty name: the platform
+// always identifies itself, even when a caller forgot to compose the name.
+func applicationName(value string) string {
+	if value == "" {
+		return "clavis"
+	}
+	return value
+}
+
+// boundedRequest gives missing caps their documented defaults, as the timeout
+// gets, so a zero cap can never mean "keep one row".
+func boundedRequest(request ExecuteRequest) ExecuteRequest {
+	if request.MaxRows <= 0 {
+		request.MaxRows = auth.DefaultMaxRows
+	}
+	if request.MaxBytes <= 0 {
+		request.MaxBytes = auth.DefaultMaxBytes
+	}
+	return request
 }
 
 // statementTimeoutMS keeps a missing bound from becoming an unbounded
