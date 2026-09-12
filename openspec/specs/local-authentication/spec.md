@@ -65,7 +65,7 @@ The system SHALL allow users to revoke their current session and current adminis
 
 ### Requirement: Protected browser authentication
 
-The same server SHALL provide public setup and login documents, same-origin login/logout form actions and a minimal administrator-only page. Browser sessions SHALL use host-only HttpOnly cookies, SameSite protection and Secure cookies on HTTPS. Authentication tokens SHALL NOT appear in URLs, rendered HTML, JavaScript storage or application logs. Browser mutations SHALL reject absent, null, multiple or nonmatching configured Origin headers and cross-site Fetch Metadata. GET requests SHALL only validate existing credentials, never issue/rotate/revoke credentials or mutate accounts/sessions. Authentication documents SHALL reject framing.
+The same server SHALL provide public setup and login documents, same-origin login/logout form actions and a minimal administrator-only page. Browser sessions SHALL use host-only HttpOnly cookies, SameSite protection and Secure cookies on HTTPS. Authentication tokens SHALL NOT appear in URLs, rendered HTML, JavaScript storage or application logs. Browser mutations SHALL reject absent, null, multiple or nonmatching configured Origin headers and cross-site Fetch Metadata. GET requests SHALL only validate existing credentials, never issue/rotate/revoke credentials or mutate accounts/sessions. Authentication documents SHALL reject framing. The administrator page SHALL include the read-only bounded user list defined by user-administration and SHALL fail closed when that list cannot be loaded.
 
 #### Scenario: Browser sign-in and protected navigation
 - **WHEN** a user signs in through the same-origin form
@@ -93,6 +93,10 @@ The same server SHALL provide public setup and login documents, same-origin logi
 - **WHEN** a same-origin logout cannot confirm server-side revocation because storage is unavailable
 - **THEN** the browser cookie is cleared and a safe 503 document distinguishes local sign-out from unconfirmed remote revocation
 
+#### Scenario: Administrator page cannot load the user list
+- **WHEN** an administrator's valid session requests the admin shell but the user list query fails or times out
+- **THEN** the server returns safe 503 rather than rendering the page without current data
+
 ### Requirement: Explicit authentication transports
 
 JSON authentication endpoints SHALL use the route, status and body contracts in the design. They SHALL never redirect to HTML, authenticate from browser cookies or expose arbitrary driver messages. Browser form routes SHALL NOT accept CLI bearer tokens. Credential transport SHALL require HTTPS outside literal loopback development; configured origin and TLS policy SHALL NOT be inferred from untrusted Host or forwarded headers. Authentication responses SHALL prevent caching.
@@ -119,7 +123,9 @@ Credential-processing and protected operations SHALL use a five-second context d
 
 ### Requirement: Secret-free authentication events
 
-The system SHALL persist safe bootstrap, sign-in and session-administration events, including denied/failed attempts when storage is available. Events SHALL contain only documented identifiers and outcome metadata, not submitted unknown usernames, passwords, session tokens/digests, cookies, request bodies or raw errors. Successful mutations and their events SHALL commit together. Storage failure SHALL NOT be represented as successful durable auditing.
+The system SHALL persist safe bootstrap, sign-in, session-administration and user-administration events, including denied/failed attempts when storage is available. Events SHALL contain only documented identifiers and outcome metadata, not submitted unknown usernames, passwords, password hashes, session tokens/digests, cookies, request bodies or raw errors. Successful mutations and their events SHALL commit together. Storage failure SHALL NOT be represented as successful durable auditing.
+
+The event action allowlist SHALL be `bootstrap`, `login`, `logout`, `revoke`, `user.create`, `user.block`, `user.unblock`, `user.reset_password`, `user.promote`, `user.demote` and `users.list`. The outcome allowlist SHALL add `username_taken`, `last_administrator` and `self_target` to the existing outcomes. Extending either allowlist SHALL use a new forward Goose migration that replaces the check constraints without rewriting applied migrations or existing rows. User-administration events SHALL record the actor UUID, the actor's session UUID and the target user UUID when known; a created user's UUID SHALL be the target of its creation event.
 
 Sign-in/logout/revocation rejections before service invocation SHALL use an explicit recorder with allowlisted action/outcome metadata and absent identifiers for anonymous requests. Service-owned outcomes SHALL NOT be recorded twice by the adapter. Valid-origin browser logout with no cookie or a single malformed cookie SHALL remain idempotent local cleanup without a database/audit dependency; rejected API mutations and ambiguous browser credentials SHALL NOT use that exemption.
 
@@ -127,6 +133,11 @@ Sign-in/logout/revocation rejections before service invocation SHALL use an expl
 - **WHEN** a user attempts session revocation
 - **THEN** the outcome is recorded with safe actor/target identifiers and an allowlisted action/result
 - **AND** successful revocation is not committed without its event
+
+#### Scenario: Successful or denied user administration
+- **WHEN** a user attempts to create, block, unblock, reset the password of or change the role of a user, or to list users
+- **THEN** the outcome is recorded with the actor, actor session and target identifiers when known, using the allowlisted action/outcome
+- **AND** a successful mutation is not committed without its event and a successful listing records no event
 
 #### Scenario: Authentication failure contains sensitive input
 - **WHEN** a failed sign-in contains sentinel credentials or a dependency emits a raw error
@@ -156,3 +167,7 @@ Sign-in/logout/revocation rejections before service invocation SHALL use an expl
 #### Scenario: Recording an origin rejection fails
 - **WHEN** an invalid-origin mutation is rejected but its required event cannot be persisted
 - **THEN** the response reports safe 503 without clearing cookies, revoking sessions or claiming durable auditing
+
+#### Scenario: Event schema is extended on an initialized installation
+- **WHEN** a server with the extended event allowlist starts against a database migrated by the previous release
+- **THEN** the new forward migration applies once under the shared lock, existing event rows are unchanged and readiness succeeds
