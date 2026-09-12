@@ -1,3 +1,9 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/clavis-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/clavis-light.svg">
+  <img src="docs/assets/clavis-light.svg" width="264" height="96" alt="Clavis">
+</picture>
+
 # Clavis
 
 Clavis is a CLI-first platform by heurema for controlled access to operational
