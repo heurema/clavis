@@ -5,7 +5,8 @@ import {
   readFileSync,
   readdirSync,
 } from "node:fs"
-import { join, relative } from "node:path"
+import { spawnSync } from "node:child_process"
+import { join, relative, resolve } from "node:path"
 
 export function goSources(root) {
   function walk(directory) {
@@ -20,6 +21,37 @@ export function goSources(root) {
     })
   }
   return [...walk(join(root, "cmd")), ...walk(join(root, "internal"))]
+}
+
+// changedSources lists the Go files that differ from a git ref: committed and
+// working-tree differences plus untracked files, as absolute paths. The ref is
+// verified first so a typo cannot silently widen or narrow the scope.
+export function changedSources(root, ref) {
+  const git = (args) => {
+    const result = spawnSync("git", args, { cwd: root, encoding: "utf8" })
+    if (result.status !== 0)
+      throw new Error(
+        `git ${args[0]} failed: ${(result.stderr || "").trim() || result.status}`,
+      )
+    return result.stdout.split("\n").filter(Boolean)
+  }
+  const verify = spawnSync(
+    "git",
+    ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+    {
+      cwd: root,
+      encoding: "utf8",
+    },
+  )
+  if (verify.status !== 0)
+    throw new Error(
+      `CLAVIS_MUTATION_DIFF names an unknown git ref "${ref}"; fetch it, set another ref, or set CLAVIS_MUTATION_DIFF= for the full scope`,
+    )
+  const names = new Set([
+    ...git(["diff", "--name-only", ref, "--", "*.go"]),
+    ...git(["ls-files", "--others", "--exclude-standard", "--", "*.go"]),
+  ])
+  return [...names].map((name) => resolve(root, name)).sort()
 }
 
 export function isMutationTarget(root, path) {

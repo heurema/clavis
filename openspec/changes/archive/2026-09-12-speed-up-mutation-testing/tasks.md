@@ -1,0 +1,8 @@
+One slice; implementation and independent acceptance review are separate tasks. Expect under 150 changed handwritten lines.
+
+## 1. Diff-scoped default and derived concurrency
+
+Requirements: project-bootstrap "Focused mutation testing" (all scenarios). Owned paths: `scripts/mutation.mjs`, `scripts/mutation-inputs.mjs`, `scripts/mutation-inputs.test.mjs`, `Makefile`, `README.md`. Verify: `make check` (runs the script tests) and `make test-mutation` on this branch (diff mode selects the changed files, which are not Go, so the run reports the empty state) plus `CLAVIS_MUTATION_DIFF=HEAD~1 make test-mutation` against a commit that changed Go files.
+
+- [x] 1.1 Add `changedSources(root, ref)` with ref validation, the scope field in the summary, the exclusion of unchanged eligible files, the empty-state message naming the ref, and the derived worker default; add `make test-mutation-full`; document both commands and the variables in the README; unit-test the selection helper against a temporary git repository.
+- [x] 1.2 Independent acceptance review; record the revision. Reviewed 2026-09-12 on the working tree over `6468222`: ACCEPT WITH FOLLOW-UPS, all applied: the base ref is resolved before the baseline run so a typo fails at once; the fixture test creates `.local` itself and isolates its git commits from global configuration; the tool's own empty result names the base ref; README says "uncommitted" rather than "unstaged". Verified: `make check` passes; a probe run with one touched file selected exactly that file, ran with eight workers and finished in under three minutes including the baseline tests; an unknown ref fails with the documented message. Handwritten about 130 changed lines, no generated output.

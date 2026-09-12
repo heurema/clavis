@@ -9,10 +9,11 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs"
-import { tmpdir } from "node:os"
+import { availableParallelism, tmpdir } from "node:os"
 import { join, relative } from "node:path"
 import { fileURLToPath } from "node:url"
 import {
+  changedSources,
   copyMutationInputs,
   goSources,
   isMutationTarget,
@@ -40,7 +41,15 @@ const summary = () => {
 rmSync(reportPath, { force: true })
 writeFileSync(logPath, "")
 summary()
-const workers = Number(process.env.CLAVIS_MUTATION_WORKERS ?? 2)
+// Each test run is pinned to one core, so the machine can carry almost as
+// many workers as it has cores; two are left for the tool and the editor.
+const workers = Number(
+  process.env.CLAVIS_MUTATION_WORKERS ??
+    Math.max(1, availableParallelism() - 2),
+)
+// The default scope is the files that differ from a base ref; an empty
+// variable selects the full scope for archive and release verification.
+const diffRef = process.env.CLAVIS_MUTATION_DIFF ?? "main"
 const timeout =
   Number(process.env.CLAVIS_MUTATION_TIMEOUT_SECONDS ?? 600) * 1000
 let temporaryRoot, workspace, active, timeoutTimer, forcedStop
@@ -120,18 +129,31 @@ try {
       "Mutation workers must be a positive integer and timeout must be positive seconds",
     )
   timeoutTimer = setTimeout(() => stop("OVERALL_TIMEOUT"), timeout)
+  // Selection happens in the repository root, which has the git history the
+  // isolated copy lacks, and before anything expensive so an unknown ref
+  // fails at once; the copy is then told to skip every other file.
+  let targets = source.filter(eligible)
+  if (diffRef === "") {
+    run.scope = { mode: "full" }
+  } else {
+    const changed = new Set(changedSources(root, diffRef))
+    targets = targets.filter((path) => changed.has(path))
+    run.scope = { mode: "diff", ref: diffRef }
+  }
+  run.targets = targets.map((path) => relative(root, path))
   temporaryRoot = mkdtempSync(join(tmpdir(), "clavis-mutation-"))
   workspace = join(temporaryRoot, "source")
   mkdirSync(workspace)
   copyMutationInputs(root, workspace, source)
   console.log("[mutation] Running baseline tests in an isolated copy")
   await execute("go", ["test", "./..."])
-  const targets = source.filter(eligible)
-  run.targets = targets.map((path) => relative(root, path))
   if (targets.length === 0) {
     run.status = "empty"
     run.message =
-      "No eligible handwritten Go files; no mutation effectiveness claimed."
+      diffRef === ""
+        ? "No eligible handwritten Go files; no mutation effectiveness claimed."
+        : `No eligible handwritten Go files differ from ${diffRef}; no mutation effectiveness claimed.`
+    console.log(`[mutation] ${run.message}`)
   } else {
     const binary = join(root, ".tools", "bin", "gremlins")
     mkdirSync(join(root, ".tools", "bin"), { recursive: true })
@@ -206,10 +228,14 @@ try {
       "--output",
       join(workspace, "mutations.json"),
     ]
-    for (const path of source.filter((path) => !eligible(path)))
+    const selected = new Set(targets)
+    for (const path of source.filter((path) => !selected.has(path)))
       args.push("--exclude-files", `(^|/)${escapeRegex(relative(root, path))}$`)
     console.log(
-      `[mutation] Gremlins 0.6.0; ${workers} workers; ${timeout / 1000}s total bound`,
+      `[mutation] Gremlins 0.6.0; ${workers} workers; ${timeout / 1000}s total bound; ` +
+        (diffRef === ""
+          ? "full scope"
+          : `${targets.length} file(s) changed against ${diffRef}`),
     )
     const output = await execute(binary, args, { env: mutationEnv })
     const nativePath = join(workspace, "mutations.json")
@@ -217,7 +243,10 @@ try {
       if (!/No mutations found/i.test(output))
         throw new Error("Gremlins did not produce its report")
       run.status = "empty"
-      run.message = "No eligible mutations; no mutation effectiveness claimed."
+      run.message =
+        diffRef === ""
+          ? "No eligible mutations; no mutation effectiveness claimed."
+          : `No eligible mutations in the files that differ from ${diffRef}; no mutation effectiveness claimed.`
     } else {
       const report = JSON.parse(readFileSync(nativePath, "utf8"))
       if (!Array.isArray(report.files))
