@@ -171,8 +171,7 @@ type ConnectionCheck struct {
 
 // Connections is the administrator-only connection lifecycle. Every method
 // rechecks the actor's current session and role inside its own transaction.
-// A dry run performs validation, authorization and guards, then rolls back
-// and records nothing.
+// A dry run performs validation, authorization and guards, then rolls back.
 type Connections interface {
 	ListConnections(context.Context, Session, []SelectorTerm, int) (ConnectionList, error)
 	GetConnection(context.Context, Session, string) (Connection, error)

@@ -32,7 +32,7 @@ The platform addresses the following needs:
 - Managers retrieve permitted information through their usual agent without involving a developer in data collection.
 - Developers use their assigned connections for diagnosis and analysis.
 - Administrators configure a connection once, grant access to users or groups, and can revoke it.
-- The company gains a history of connection usage attributable to individual people.
+- The company can centrally grant and revoke access; a history of connection usage attributable to individual people is a later stage.
 - New integrations extend the shared CLI while retaining the same user, connection and permission model.
 
 The quality of an agent's answer depends on the available data and its analysis. The platform is responsible for exposing permitted capabilities and accurately returning source results, limitations, and errors.

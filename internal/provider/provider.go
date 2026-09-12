@@ -1,11 +1,11 @@
 // Package provider holds the closed registry of connection providers. It is
 // the only place that understands provider-specific target syntax and
-// connectivity; storage, authorization and audit stay provider-neutral.
+// connectivity; storage and authorization stay provider-neutral.
 //
 // Providers are stateless values: every method is safe for concurrent use and
 // keeps no state between calls. A probe reports one of the safe outcomes and
 // never returns driver text, so a source's error message cannot reach a
-// response, an event or a log.
+// response or a log.
 package provider
 
 import (

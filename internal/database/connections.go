@@ -99,8 +99,6 @@ func hinted(err error) error {
 		failure.Hint = hintConnectionNotFound
 	case auth.ConnectionInUse:
 		failure.Hint = hintConnectionInUse
-	case auth.CredentialsUnavailable:
-		failure.Hint = hintCredentials
 	case auth.UserNotFound:
 		failure.Hint = hintUserNotFound
 	}
