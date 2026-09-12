@@ -13,7 +13,7 @@ func TestCredentialValidationBoundaries(t *testing.T) {
 	for _, value := range []string{"abc", "a._-", "a" + strings.Repeat("9", 63)} {
 		require.True(t, ValidUsername(value))
 	}
-	for _, value := range []string{"ab", "Alice", " abc", "1abc", "a@example.com", strings.Repeat("a", 65), "ábc"} {
+	for _, value := range []string{"ab", "Alice", " abc", "1abc", "a@example.com", strings.Repeat("a", 65), "ábc", "abcdef12-3456-4890-abcd-ef1234567890"} {
 		require.False(t, ValidUsername(value))
 	}
 	for _, value := range []string{strings.Repeat(" ", 15), strings.Repeat("\x01", 1024), strings.Repeat("é", 512), "  valid password  "} {

@@ -181,10 +181,10 @@ func assertBootstrapFailureEvents(t *testing.T, pool *pgxpool.Pool, count int, p
 	require.Len(t, rows, count)
 	ids := make(map[string]bool)
 	for _, row := range rows {
-		require.Len(t, row, 7, "audit rows contain only the documented identifiers and metadata")
+		require.Len(t, row, 8, "audit rows contain only the documented identifiers and metadata")
 		require.Equal(t, "bootstrap", row["action"])
 		require.Equal(t, "invalid_argument", row["outcome"])
-		for _, field := range []string{"actor_id", "target_id", "session_id"} {
+		for _, field := range []string{"actor_id", "target_id", "session_id", "connection_id"} {
 			require.Nil(t, row[field], field)
 		}
 		id, ok := row["id"].(string)

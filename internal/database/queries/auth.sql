@@ -51,12 +51,13 @@ WHERE user_id = sqlc.arg(user_id)::text::uuid AND revoked_at IS NULL;
 UPDATE sessions SET revoked_at = clock_timestamp() WHERE id = sqlc.arg(id)::text::uuid;
 
 -- name: InsertAuthEvent :exec
-INSERT INTO auth_events (id, actor_id, target_id, session_id, action, outcome)
+INSERT INTO auth_events (id, actor_id, target_id, session_id, connection_id, action, outcome)
 VALUES (
     sqlc.arg(id)::text::uuid,
     NULLIF(sqlc.arg(actor_id)::text, '')::uuid,
     NULLIF(sqlc.arg(target_id)::text, '')::uuid,
     NULLIF(sqlc.arg(session_id)::text, '')::uuid,
+    NULLIF(sqlc.arg(connection_id)::text, '')::uuid,
     sqlc.arg(action),
     sqlc.arg(outcome)
 );

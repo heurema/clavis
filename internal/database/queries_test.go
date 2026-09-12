@@ -87,7 +87,8 @@ func TestGeneratedReadinessChecksEveryApplicationColumn(t *testing.T) {
 	for table, columns := range map[string][]string{
 		"users":        {"id", "username", "password_hash", "role", "disabled", "created_at", "updated_at"},
 		"sessions":     {"id", "token_digest", "user_id", "kind", "created_at", "expires_at", "revoked_at"},
-		"auth_events":  {"id", "actor_id", "target_id", "session_id", "action", "outcome", "created_at"},
+		"auth_events":  {"id", "actor_id", "target_id", "session_id", "connection_id", "action", "outcome", "created_at"},
+		"grants":       {"user_id", "connection_id", "created_at", "created_by"},
 		"login_limits": {"key", "failures", "expires_at"},
 		"installation": {"singleton", "initialized_at"},
 	} {
@@ -243,10 +244,13 @@ func TestEventAllowlistMigrationAppliesToInitializedInstallation(t *testing.T) {
 	previous := embeddedMapFS(t)
 	delete(previous, "002_user_administration.sql")
 	delete(previous, "003_connections.sql")
+	delete(previous, "004_grants.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	queries := sqlc.New(pool)
-	require.NoError(t, queries.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{ID: randomTestID(t), Action: "login", Outcome: "success"}))
-	err := queries.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{ID: randomTestID(t), Action: "user.create", Outcome: "success"})
+	// The previous release's events lack the connection column, so the
+	// generated insert cannot represent them; raw SQL is the test seam.
+	execSQL(t, pool, `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'login', 'success')`, randomTestID(t))
+	_, err := pool.Exec(t.Context(), `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'user.create', 'success')`, randomTestID(t))
 	var pgErr *pgconn.PgError
 	require.ErrorAs(t, err, &pgErr)
 	require.Equal(t, "23514", pgErr.Code)
@@ -403,9 +407,10 @@ func TestConnectionMigrationAppliesToInitializedInstallation(t *testing.T) {
 	pool := testPool(t)
 	previous := embeddedMapFS(t)
 	delete(previous, "003_connections.sql")
+	delete(previous, "004_grants.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	queries := sqlc.New(pool)
-	require.NoError(t, queries.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{ID: randomTestID(t), Action: "user.create", Outcome: "success"}))
+	execSQL(t, pool, `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'user.create', 'success')`, randomTestID(t))
 	var present bool
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('connections') IS NOT NULL`).Scan(&present))
 	require.False(t, present)

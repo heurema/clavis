@@ -49,12 +49,18 @@ func (s *LocalAuth) ready(ctx context.Context) error {
 }
 
 func audit(ctx context.Context, tx pgx.Tx, actor, target, session, action, outcome string) error {
+	return auditWith(ctx, tx, actor, target, session, "", action, outcome)
+}
+
+// auditWith records an event that references a connection besides its user
+// target; grant events use it. All identifiers are UUIDs or empty.
+func auditWith(ctx context.Context, tx pgx.Tx, actor, target, session, connection, action, outcome string) error {
 	id, err := bootstrapID()
 	if err != nil {
 		return err
 	}
 	return sqlc.New(tx).InsertAuthEvent(ctx, sqlc.InsertAuthEventParams{
-		ID: id, ActorID: actor, TargetID: target, SessionID: session,
+		ID: id, ActorID: actor, TargetID: target, SessionID: session, ConnectionID: connection,
 		Action: action, Outcome: outcome,
 	})
 }

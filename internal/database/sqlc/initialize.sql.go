@@ -27,7 +27,7 @@ func (q *Queries) BootstrapState(ctx context.Context) (BootstrapStateRow, error)
 }
 
 const checkAuthEventsColumns = `-- name: CheckAuthEventsColumns :exec
-SELECT id, actor_id, target_id, session_id, action, outcome, created_at FROM auth_events LIMIT 0
+SELECT id, actor_id, target_id, session_id, connection_id, action, outcome, created_at FROM auth_events LIMIT 0
 `
 
 func (q *Queries) CheckAuthEventsColumns(ctx context.Context) error {

@@ -252,7 +252,10 @@ func (s *LocalAuth) ListUsers(ctx context.Context, previous auth.Session) (auth.
 
 func (s *LocalAuth) CreateUser(ctx context.Context, session auth.Session, request auth.CreateUserRequest) (auth.UserRecord, error) {
 	var record auth.UserRecord
-	if !auth.ValidUsername(request.Username) || !auth.ValidPassword(request.Password) {
+	if !auth.ValidUsername(request.Username) {
+		return record, &auth.Error{Code: auth.InvalidArgument, Hint: auth.UsernameHint}
+	}
+	if !auth.ValidPassword(request.Password) {
 		return record, &auth.Error{Code: auth.InvalidArgument}
 	}
 	var hash string

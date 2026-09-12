@@ -45,7 +45,7 @@ type Grant struct {
     User       GrantParty `json:"user"`        // name is the username
     Connection GrantParty `json:"connection"`
     CreatedAt  time.Time  `json:"createdAt"`
-    CreatedBy  string     `json:"createdBy"`   // administrator UUID
+    CreatedBy  GrantParty `json:"createdBy"`   // administrator UUID and username
 }
 type GrantList struct { Grants []Grant `json:"grants"`; Truncated bool `json:"truncated"` }
 type GrantRequest struct { User string `json:"user"`; Connection string `json:"connection"` } // refs
@@ -61,7 +61,7 @@ type Grants interface {
 }
 ```
 
-`Identity` gains `Connections []string` and `ConnectionsTruncated bool` (JSON `connections`, `connectionsTruncated`), filled by `whoami` only; login responses leave them empty. `ValidUserRef(v) = ValidUserID(v) || ValidUsername(v)`; `ValidUsername` additionally refuses the UUID shape from this change on (bootstrap and create use it). New code `CONNECTION_DISABLED` (409, "The connection is disabled"). New actions `grant.create`, `grant.revoke`, `grants.list`; new outcome `connection_disabled`. Paths `GrantsPath = /api/admin/grants`, `GrantRevokePath = /api/admin/grants/revoke`.
+`CreatedBy` is a `GrantParty` rather than a bare UUID (slice 1 decision): the listing query already joins the granting administrator's username for the web table, and agents reading a grant should not need a second lookup to name who granted it. `Identity` gains `Connections []string` and `ConnectionsTruncated bool` (JSON `connections`, `connectionsTruncated`), filled by `whoami` only; login responses leave them empty. `ValidUserRef(v) = ValidUserID(v) || ValidUsername(v)`; `ValidUsername` additionally refuses the UUID shape from this change on (bootstrap and create use it). New code `CONNECTION_DISABLED` (409, "The connection is disabled"). New actions `grant.create`, `grant.revoke`, `grants.list`; new outcome `connection_disabled`. Paths `GrantsPath = /api/admin/grants`, `GrantRevokePath = /api/admin/grants/revoke`.
 
 Member projection: a separate `ConnectionSummary` struct (`id`, `name`, `title`, `description`, `scope`, `provider`, `labels`, `enabled`, `lastCheck`) is returned to members, so a member response can never carry a target by accident; `Connection` is not reused with blanked fields. The connection `GET` routes return `Connection` for administrators and `ConnectionSummary` for members, decided server-side from the current role, and the CLI validates whichever shape arrives (both strict; `target` and bounds absent is the summary). The CLI text rendering omits the target and bound lines for a summary.
 
@@ -111,7 +111,7 @@ Rejection mapping: `grants.list`, `grant.create`, `grant.revoke`. Connection `GE
 
 ### 5. CLI
 
-`grants` group: `list [--user] [--connection] [--limit]`, `create --user --connection [--dry-run]`, `revoke --user --connection [--dry-run]`. `--user` validated by `ValidUserRef`; `users` and `sessions revoke` switch their validation to `ValidUserRef` and send the reference unchanged (server resolves). Text: grant `Grant: alice → payments-prod-reporting`, `Granted: <time> by <uuid>`; list one line per grant `username connection createdAt`; revoke `Revoked: true|false`. `whoami` text gains `Connections: a, b` for members. Route allowlist: `USER_NOT_FOUND` and `CONNECTION_NOT_FOUND` on grant mutations; connection `GET` validators accept the summary shape.
+`grants` group: `list [--user] [--connection] [--limit]`, `create --user --connection [--dry-run]`, `revoke --user --connection [--dry-run]`. `--user` validated by `ValidUserRef`; `users` and `sessions revoke` switch their validation to `ValidUserRef` and send the reference unchanged (server resolves). Text: grant `Grant: alice → payments-prod-reporting`, `Granted: <time> by <username>`; list one line per grant `username connection createdAt`; revoke `Revoked: true|false`. `whoami` text gains `Connections: a, b` for members. Route allowlist: `USER_NOT_FOUND` and `CONNECTION_NOT_FOUND` on grant mutations; connection `GET` validators accept the summary shape.
 
 ### 6. Web
 
