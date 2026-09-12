@@ -21,7 +21,7 @@ and GNU Make on macOS or Linux.
 ```sh
 make setup
 cp -n .env.example .env
-umask 077 && openssl rand -hex 32 > "$HOME/.config/clavis/encryption-key"
+mkdir -p "$HOME/.config/clavis" && (umask 077 && openssl rand -hex 32 > "$HOME/.config/clavis/encryption-key")
 make dev-db
 ```
 

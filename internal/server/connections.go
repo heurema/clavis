@@ -249,15 +249,6 @@ func (a *authHTTP) updateConnectionJSON(w http.ResponseWriter, r *http.Request) 
 		if !updatesAnything(request) {
 			return &auth.Error{Code: auth.InvalidArgument, Hint: hintEmptyUpdate}
 		}
-		title, description, scope := "", "", ""
-		for _, field := range []struct {
-			value *string
-			into  *string
-		}{{request.Title, &title}, {request.Description, &description}, {request.Scope, &scope}} {
-			if field.value != nil {
-				*field.into = *field.value
-			}
-		}
 		return nil
 	}, func(session auth.Session, target string) (any, int, error) {
 		mutation, err := a.connections.UpdateConnection(r.Context(), session, target, request, dry)
