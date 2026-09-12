@@ -4,8 +4,6 @@
   <img src="docs/assets/clavis-light.svg" width="264" height="96" alt="Clavis">
 </picture>
 
-# Clavis
-
 Clavis is a CLI-first platform by heurema for controlled access to operational
 systems by people and agents.
 
