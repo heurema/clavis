@@ -204,7 +204,7 @@ func Page() templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<div class=\"px-1\"><h2 class=\"text-xs font-semibold uppercase tracking-wider text-muted-foreground\">A foundation, ready to grow</h2><p class=\"mt-3 text-sm leading-6 text-muted-foreground\">Initial administrator setup is managed by your deployment. Once the environment is ready, sign in with your local account. Permissions, external connections and audit inspection will follow.</p>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<div class=\"px-1\"><h2 class=\"text-xs font-semibold uppercase tracking-wider text-muted-foreground\">A foundation, ready to grow</h2><p class=\"mt-3 text-sm leading-6 text-muted-foreground\">Initial administrator setup is managed by your deployment. Once the environment is ready, sign in with your local account. Permissions and external connections will follow.</p>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

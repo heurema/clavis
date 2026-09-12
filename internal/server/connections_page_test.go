@@ -94,7 +94,6 @@ func connectionsPageHandler(t *testing.T, f *backendFixture, connections auth.Co
 	t.Helper()
 	adapter, err := newAuthHTTP("http://127.0.0.1", f, AuthViews{})
 	require.NoError(t, err)
-	adapter.recorder = f
 	adapter.admin = f
 	adapter.connections = connections
 	adapter.grants = f
@@ -142,7 +141,6 @@ func TestConnectionsPageRendersTheConnectionsTable(t *testing.T) {
 	require.Equal(t, fixtureIdentity.User, fake.session.User)
 	require.Equal(t, auth.MaxConnectionListing, fake.limit)
 	require.Nil(t, fake.terms, "the page lists without a selector")
-	require.Empty(t, f.events, "reading the page records no event")
 }
 
 func TestConnectionsPageMemberIsForbiddenWithoutListing(t *testing.T) {
@@ -154,7 +152,6 @@ func TestConnectionsPageMemberIsForbiddenWithoutListing(t *testing.T) {
 	require.NotContains(t, body, "warehouse-primary")
 	require.NotContains(t, body, "metrics-eu")
 	require.Zero(t, fake.calls, "the role check precedes the listing")
-	require.Empty(t, f.events)
 }
 
 // A failed or absent connection listing fails closed exactly like the user
@@ -175,7 +172,6 @@ func TestConnectionsPageFailsClosedWhenTheListingFails(t *testing.T) {
 			require.NotContains(t, body, "warehouse-primary")
 			require.NotContains(t, body, "metrics-eu")
 			require.NotContains(t, body, ">Connections<")
-			require.Empty(t, f.events)
 		})
 	}
 }
@@ -189,5 +185,4 @@ func TestConnectionsPageUnauthenticatedListingRedirects(t *testing.T) {
 	require.Empty(t, response.Header.Get("Set-Cookie"))
 	require.NoError(t, response.Body.Close())
 	require.Equal(t, 1, fake.calls)
-	require.Empty(t, f.events)
 }

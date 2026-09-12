@@ -1,10 +1,4 @@
-# connection-management Specification
-
-## Purpose
-
-Let administrators register external data-source connections with encrypted credentials, verify reachability, and manage their lifecycle, so later changes can grant and use them safely.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Provider registry
 
@@ -120,15 +114,3 @@ The server SHALL expose the operations as JSON routes under `/api/admin/connecti
 #### Scenario: Member reads through the API
 - **WHEN** a member's bearer request lists or gets connections
 - **THEN** the response contains only granted connections in the reduced projection, and a `POST` on any connection route with the same session is 403
-
-### Requirement: Read-only connections table in the browser
-
-The protected administrator page SHALL list connections with name, title, provider, labels, status and last check outcome and time, escaped, bounded like the user list, with a truncation notice and no management forms. It SHALL fail closed when the list cannot be loaded and SHALL never show target hosts, roles or secrets.
-
-#### Scenario: Administrator opens the page
-- **WHEN** a signed-in administrator requests the administration page
-- **THEN** the connections table renders below the users table with the documented columns and nothing more
-
-#### Scenario: List unavailable
-- **WHEN** the connection listing fails
-- **THEN** the page returns safe 503 rather than rendering without current data

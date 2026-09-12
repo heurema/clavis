@@ -13,8 +13,8 @@ data-source connections with encrypted credentials and connectivity checks, with
 external PostgreSQL. Goose manages embedded migrations and sqlc generates the pgx
 application queries. The embedded templ/htmx interface includes setup/readiness,
 sign-in and a protected admin page with read-only user, connection and grant
-lists. There is no separate frontend server. Query execution, groups and audit
-inspection remain planned; Google/OIDC sign-in, self-service password change and
+lists. There is no separate frontend server. Query execution and groups remain
+planned; an audit journal, Google/OIDC sign-in, self-service password change and
 account recovery are outside the MVP.
 
 ## Quick start
@@ -241,10 +241,9 @@ password. New users are members. Blocking and password reset revoke all of the
 target's sessions; unblocking does not restore them. Administrators are peers:
 any administrator can manage any other, an administrator cannot block or demote
 their own account (`SELF_TARGET`), and the installation always keeps at least
-one enabled administrator. Every mutation and every denied attempt is recorded
-as a safe audit event without passwords or query text; a successful listing
-records none. Listing is bounded to 1,000 users and reports
-`truncated` when more exist.
+one enabled administrator. Listing is bounded to 1,000 users and reports
+`truncated` when more exist. The MVP keeps no audit journal: no mutation, denial
+or sign-in is recorded.
 
 The MVP has no self-service password change and no account recovery: a lost
 password is replaced by an administrator with `reset-password`, and a lost
@@ -289,15 +288,14 @@ hint names what still blocks it, including the number of remaining grants.
 Listing is bounded to 1,000 connections and to the response body limit, always
 with an explicit `truncated` flag. Statement timeout and result caps default to 30 s, 1,000 rows and 1 MiB
 with ceilings of 120 s, 100,000 rows and 10 MiB; they are enforced once query
-execution ships. Every mutation, check and denied attempt is audited without
-secrets or target hosts; a dry run records nothing.
+execution ships. A dry run commits nothing.
 
 ## Grants
 
 A grant lets one user use one connection. Administrators use any connection
 without a grant; members may only use, list and inspect the connections they
 hold a grant on. Grants reference users and connections by UUID or name, are
-idempotent for retrying agents, and are audited with both parties:
+idempotent for retrying agents, and return both parties:
 
 ```sh
 clavis grants create --user alice --connection payments-prod-reporting
@@ -307,7 +305,7 @@ clavis grants revoke --user alice --connection payments-prod-reporting --dry-run
 ```
 
 `create` returns the grant with both identifiers and names (`created: false`
-when it already existed, without a second audit event); `revoke` reports
+when it already existed); `revoke` reports
 `revoked: false` when there was nothing to remove. A member's `connections list`
 and `connections get` return only granted connections in a reduced projection
 (`id`, `name`, `title`, `description`, `scope`, `provider`, `labels`, `enabled`,
@@ -315,7 +313,7 @@ and `connections get` return only granted connections in a reduced projection
 connection is `CONNECTION_NOT_FOUND`, and a disabled granted connection stays
 listed with `enabled: false`, and the authorization check that later query operations run refuses it with `CONNECTION_DISABLED`. Members
 may run `grants list` and see only their own grants; every administrative
-attempt by a member is refused with `FORBIDDEN` and recorded. Revocation takes
+attempt by a member is refused with `FORBIDDEN`. Revocation takes
 effect on the member's next request, and grants survive blocking and renames.
 Listing is bounded to 1,000 grants with an explicit `truncated` flag. The
 browser admin page lists grants read-only below the connections.

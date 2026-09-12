@@ -18,9 +18,9 @@ type MemberConnections interface {
 	ListGrantedConnectionNames(ctx context.Context, session auth.Session, limit int) (names []string, truncated bool, err error)
 }
 
-// The grant service owns readiness, authority rechecks and its own events,
-// exactly like user administration and connections; a composition without one
-// must reject protected requests instead of invoking anything.
+// The grant service owns readiness and authority rechecks, exactly like user
+// administration and connections; a composition without one must reject
+// protected requests instead of invoking anything.
 func (a *authHTTP) requireGrants() error {
 	if a.grants == nil {
 		return &auth.Error{Code: auth.ServiceUnavailable}
@@ -37,8 +37,7 @@ func (a *authHTTP) requireMembers() error {
 
 // grant is the shared shape of every JSON grant route and mirrors connections:
 // bounded query and body handling first, then a bearer-only session, then the
-// service call that owns its own success and denial events. The routes carry no
-// path target, so both references are validated out of the body or the query
+// service call. The routes carry no path target, so both references are validated out of the body or the query
 // before anything reaches the service. Listing is deliberately not restricted
 // to administrators here: the service scopes a member to their own grants.
 func (a *authHTTP) grant(w http.ResponseWriter, r *http.Request, body func() error,
@@ -58,7 +57,6 @@ func (a *authHTTP) grant(w http.ResponseWriter, r *http.Request, body func() err
 		jsonFailure(w, err)
 		return
 	}
-	serviceOwnsEvent(r)
 	result, status, err := call(session)
 	if err != nil {
 		jsonFailure(w, err)

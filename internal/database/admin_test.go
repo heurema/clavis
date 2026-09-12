@@ -44,23 +44,6 @@ func createMember(t *testing.T, s *LocalAuth, actor auth.Session, username strin
 
 var actorPeer = netip.MustParseAddr("127.0.0.1")
 
-func eventCount(t *testing.T, pool *pgxpool.Pool, action, outcome string) int {
-	t.Helper()
-	var count int
-	require.NoError(t, pool.QueryRow(t.Context(),
-		`SELECT count(*) FROM auth_events WHERE action=$1 AND outcome=$2`, action, outcome).Scan(&count))
-	return count
-}
-
-func lastEvent(t *testing.T, pool *pgxpool.Pool, action, outcome string) (actor, target, session string) {
-	t.Helper()
-	require.NoError(t, pool.QueryRow(t.Context(),
-		`SELECT coalesce(actor_id::text,''), coalesce(target_id::text,''), coalesce(session_id::text,'')
-		FROM auth_events WHERE action=$1 AND outcome=$2 ORDER BY created_at DESC LIMIT 1`, action, outcome).
-		Scan(&actor, &target, &session))
-	return actor, target, session
-}
-
 func enabledAdmins(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
 	var count int
@@ -76,7 +59,7 @@ func userState(t *testing.T, pool *pgxpool.Pool, id string) (role string, disabl
 
 func TestCreateUserSignsInOnBothTransports(t *testing.T) {
 	pool, s, admin, _ := adminFixture(t)
-	before := countRows(t, pool, "auth_events")
+	before := countRows(t, pool, "users")
 	for _, invalid := range []auth.CreateUserRequest{
 		{Username: "Bad", Password: "a valid test password"},
 		{Username: "valid-name", Password: "short"},
@@ -85,7 +68,7 @@ func TestCreateUserSignsInOnBothTransports(t *testing.T) {
 		_, err := s.CreateUser(t.Context(), admin, invalid)
 		code(t, err, auth.InvalidArgument)
 	}
-	require.Equal(t, before, countRows(t, pool, "auth_events"))
+	require.Equal(t, before, countRows(t, pool, "users"))
 	record, input := createMember(t, s, admin, "member-one")
 	require.True(t, auth.ValidUserID(record.ID))
 	require.Equal(t, "member-one", record.Username)
@@ -93,8 +76,6 @@ func TestCreateUserSignsInOnBothTransports(t *testing.T) {
 	require.False(t, record.Disabled)
 	require.Equal(t, time.UTC, record.CreatedAt.Location())
 	require.WithinDuration(t, time.Now(), record.CreatedAt, 5*time.Second)
-	actor, target, sessionID := lastEvent(t, pool, "user.create", "success")
-	require.Equal(t, []string{admin.User.ID, record.ID, admin.ID}, []string{actor, target, sessionID})
 	cli := login(t, s, input)
 	require.Equal(t, record.ID, cli.User.ID)
 	require.Equal(t, auth.Member, cli.User.Role)
@@ -109,9 +90,6 @@ func TestCreateUserSignsInOnBothTransports(t *testing.T) {
 	_, err = s.CreateUser(t.Context(), admin, auth.CreateUserRequest{Username: "member-one", Password: randomPassword(t)})
 	code(t, err, auth.UsernameTaken)
 	require.Equal(t, users, countRows(t, pool, "users"))
-	require.Equal(t, 1, eventCount(t, pool, "user.create", "username_taken"))
-	actor, target, sessionID = lastEvent(t, pool, "user.create", "username_taken")
-	require.Equal(t, []string{admin.User.ID, "", admin.ID}, []string{actor, target, sessionID})
 }
 
 func TestCreateUserMapsUniqueViolationUnderRace(t *testing.T) {
@@ -136,7 +114,6 @@ func TestCreateUserMapsUniqueViolationUnderRace(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond)
 	require.NoError(t, racer.Commit(t.Context()))
 	code(t, <-done, auth.UsernameTaken)
-	require.Equal(t, 1, eventCount(t, pool, "user.create", "username_taken"))
 	var n int
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM users WHERE username='racer'`).Scan(&n))
 	require.Equal(t, 1, n)
@@ -164,38 +141,29 @@ func TestAdministrationDeniesMembersRevokedSessionsAndUnknownTargets(t *testing.
 	}
 	users, sessions := countRows(t, pool, "users"), countRows(t, pool, "sessions")
 	for action, operation := range operations(memberSession, admin.User.ID) {
-		code(t, operation(), auth.Forbidden)
-		require.Equal(t, 1, eventCount(t, pool, action, "forbidden"), action)
-		actor, target, sessionID := lastEvent(t, pool, action, "forbidden")
-		require.Equal(t, []string{member.ID, "", memberSession.ID}, []string{actor, target, sessionID}, action)
+		code(t, operation(), auth.Forbidden, action)
 	}
 	for action, operation := range operations(revoked, member.ID) {
-		code(t, operation(), auth.Unauthenticated)
-		require.Equal(t, 1, eventCount(t, pool, action, "unauthenticated"), action)
-		actor, _, sessionID := lastEvent(t, pool, action, "unauthenticated")
-		require.Equal(t, []string{admin.User.ID, revoked.ID}, []string{actor, sessionID}, action)
+		code(t, operation(), auth.Unauthenticated, action)
 	}
 	unknown := randomTestID(t)
 	for action, operation := range operations(admin, unknown) {
 		if action == "users.list" || action == "user.create" {
 			continue
 		}
-		code(t, operation(), auth.UserNotFound)
-		require.Equal(t, 1, eventCount(t, pool, action, "user_not_found"), action)
+		code(t, operation(), auth.UserNotFound, action)
 	}
-	events := countRows(t, pool, "auth_events")
 	for _, operation := range operations(auth.Session{}, member.ID) {
 		code(t, operation(), auth.Unauthenticated)
 	}
 	// A reference that is neither a UUID nor a username is refused before the
-	// transaction, so it is not an attempt and records nothing.
+	// transaction, so it is not an attempt and changes nothing.
 	_, err := s.SetUserDisabled(t.Context(), admin, "Not A Ref", true)
 	code(t, err, auth.InvalidArgument)
 	_, err = s.SetRole(t.Context(), admin, member.ID, auth.Role("owner"))
 	code(t, err, auth.InvalidArgument)
 	_, err = s.ResetPassword(t.Context(), admin, member.ID, "short")
 	code(t, err, auth.InvalidArgument)
-	require.Equal(t, events, countRows(t, pool, "auth_events"))
 	require.Equal(t, users, countRows(t, pool, "users"))
 	require.Equal(t, sessions, countRows(t, pool, "sessions"))
 	role, disabled := userState(t, pool, admin.User.ID)
@@ -217,8 +185,9 @@ func TestUserMutationsAcceptUsernameReferences(t *testing.T) {
 	require.Equal(t, member.ID, blocked.User.ID)
 	require.True(t, blocked.User.Disabled)
 	require.True(t, blocked.SessionsRevoked)
-	_, target, sessionID := lastEvent(t, pool, "user.block", "success")
-	require.Equal(t, []string{member.ID, admin.ID}, []string{target, sessionID})
+	blockedRole, blockedDisabled := userState(t, pool, member.ID)
+	require.Equal(t, "member", blockedRole)
+	require.True(t, blockedDisabled)
 	_, err = s.ListUsers(t.Context(), cli)
 	code(t, err, auth.Unauthenticated)
 
@@ -230,12 +199,20 @@ func TestUserMutationsAcceptUsernameReferences(t *testing.T) {
 	require.Equal(t, member.ID, promoted.User.ID)
 	_, err = s.SetRole(t.Context(), admin, "named-member", auth.Member)
 	require.NoError(t, err)
-	reset, err := s.ResetPassword(t.Context(), admin, "named-member", randomPassword(t))
+	newPassword := randomPassword(t)
+	reset, err := s.ResetPassword(t.Context(), admin, "named-member", newPassword)
 	require.NoError(t, err)
 	require.Equal(t, member.ID, reset.User.ID)
+	input.Password = newPassword
+	renewed := login(t, s, input)
+	session(t, s, renewed, auth.CLI)
 	require.NoError(t, s.RevokeUserSessions(t.Context(), admin, "named-member"))
-	_, target, _ = lastEvent(t, pool, "revoke", "success")
-	require.Equal(t, member.ID, target)
+	// The username resolved to the member: their session is gone while the
+	// administrator's own session is untouched.
+	_, err = s.Authenticate(t.Context(), renewed.Token, auth.CLI)
+	code(t, err, auth.Unauthenticated)
+	_, err = s.ListUsers(t.Context(), admin)
+	require.NoError(t, err)
 	role, disabled := userState(t, pool, member.ID)
 	require.Equal(t, "member", role)
 	require.False(t, disabled)
@@ -251,16 +228,13 @@ func TestUserMutationsAcceptUsernameReferences(t *testing.T) {
 		"revoke":       func(ref string) error { return s.RevokeUserSessions(t.Context(), admin, ref) },
 	}
 	for action, operation := range unknown {
-		code(t, operation("nobody-here"), auth.UserNotFound)
-		require.Equal(t, 1, eventCount(t, pool, action, "user_not_found"), action)
+		code(t, operation("nobody-here"), auth.UserNotFound, action)
 	}
 	// A reference that is neither form is refused before the transaction, so
-	// it is not an attempt and records nothing.
-	events := countRows(t, pool, "auth_events")
+	// it is not an attempt and changes nothing.
 	for _, operation := range unknown {
 		code(t, operation("Not A Ref"), auth.InvalidArgument)
 	}
-	require.Equal(t, events, countRows(t, pool, "auth_events"))
 	require.Equal(t, 2, countRows(t, pool, "users"))
 }
 
@@ -288,7 +262,11 @@ func TestBlockRevokesSessionsAndUnblockRestoresLogin(t *testing.T) {
 	again, err := s.SetUserDisabled(t.Context(), admin, member.ID, true)
 	require.NoError(t, err)
 	require.True(t, again.SessionsRevoked)
-	require.Equal(t, 2, eventCount(t, pool, "user.block", "success"))
+	require.True(t, again.User.Disabled)
+	// The repeated block is a no-op on the row it already wrote.
+	role, disabled := userState(t, pool, member.ID)
+	require.Equal(t, "member", role)
+	require.True(t, disabled)
 	unblocked, err := s.SetUserDisabled(t.Context(), admin, member.ID, false)
 	require.NoError(t, err)
 	require.False(t, unblocked.SessionsRevoked)
@@ -299,10 +277,11 @@ func TestBlockRevokesSessionsAndUnblockRestoresLogin(t *testing.T) {
 	idempotent, err := s.SetUserDisabled(t.Context(), admin, member.ID, false)
 	require.NoError(t, err)
 	require.False(t, idempotent.SessionsRevoked)
-	require.Equal(t, 2, eventCount(t, pool, "user.unblock", "success"))
+	require.False(t, idempotent.User.Disabled)
+	role, disabled = userState(t, pool, member.ID)
+	require.Equal(t, "member", role)
+	require.False(t, disabled)
 	session(t, s, later, auth.Browser)
-	actor, target, sessionID := lastEvent(t, pool, "user.unblock", "success")
-	require.Equal(t, []string{admin.User.ID, member.ID, admin.ID}, []string{actor, target, sessionID})
 }
 
 func TestResetPasswordRevokesSessionsAndRedacts(t *testing.T) {
@@ -334,15 +313,12 @@ func TestResetPasswordRevokesSessionsAndRedacts(t *testing.T) {
 	_, err = s.ResetPassword(t.Context(), admin, randomTestID(t), newPassword)
 	code(t, err, auth.UserNotFound)
 	require.NotContains(t, err.Error(), "SENTINEL")
-	var events, users string
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT json_agg(auth_events)::text FROM auth_events`).Scan(&events))
+	var users string
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT json_agg(users)::text FROM users`).Scan(&users))
-	require.NotContains(t, events, "SENTINEL")
 	require.NotContains(t, users, "SENTINEL")
 	var hash string
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT password_hash FROM users WHERE id=$1`, created.ID).Scan(&hash))
 	require.True(t, strings.HasPrefix(hash, "$clavis$1$argon2id$"))
-	require.Equal(t, 1, eventCount(t, pool, "user.reset_password", "success"))
 }
 
 func TestRoleChangesApplyToExistingSessions(t *testing.T) {
@@ -362,7 +338,10 @@ func TestRoleChangesApplyToExistingSessions(t *testing.T) {
 	again, err := s.SetRole(t.Context(), admin, member.ID, auth.Admin)
 	require.NoError(t, err)
 	require.Equal(t, auth.Admin, again.User.Role)
-	require.Equal(t, 2, eventCount(t, pool, "user.promote", "success"))
+	// The repeated promotion is a no-op on the row it already wrote.
+	role, disabled := userState(t, pool, member.ID)
+	require.Equal(t, "admin", role)
+	require.False(t, disabled)
 	demoted, err := s.SetRole(t.Context(), admin, member.ID, auth.Member)
 	require.NoError(t, err)
 	require.False(t, demoted.SessionsRevoked)
@@ -374,9 +353,9 @@ func TestRoleChangesApplyToExistingSessions(t *testing.T) {
 	identity, err := s.Authenticate(t.Context(), login(t, s, input).Token, auth.CLI)
 	require.NoError(t, err)
 	require.Equal(t, auth.Member, identity.User.Role)
-	require.Equal(t, 1, eventCount(t, pool, "user.demote", "success"))
-	actor, target, sessionID := lastEvent(t, pool, "user.demote", "success")
-	require.Equal(t, []string{admin.User.ID, member.ID, admin.ID}, []string{actor, target, sessionID})
+	role, disabled = userState(t, pool, member.ID)
+	require.Equal(t, "member", role)
+	require.False(t, disabled)
 }
 
 func TestSelfTargetingIsRefusedExceptPasswordReset(t *testing.T) {
@@ -398,11 +377,6 @@ func TestSelfTargetingIsRefusedExceptPasswordReset(t *testing.T) {
 	require.False(t, disabled)
 	require.Equal(t, 2, enabledAdmins(t, pool))
 	require.Equal(t, sessions, countRows(t, pool, "sessions"))
-	for _, action := range []string{"user.block", "user.demote"} {
-		require.Equal(t, 2, eventCount(t, pool, action, "self_target"), action)
-		actor, target, sessionID := lastEvent(t, pool, action, "self_target")
-		require.Equal(t, []string{admin.User.ID, admin.User.ID, admin.ID}, []string{actor, target, sessionID}, action)
-	}
 	// Idempotent self promotion and self unblock are not removals.
 	promoted, err := s.SetRole(t.Context(), admin, admin.User.ID, auth.Admin)
 	require.NoError(t, err)
@@ -466,8 +440,6 @@ func TestLastAdministratorGuard(t *testing.T) {
 	_, err = s.SetUserDisabled(t.Context(), admin, other.ID, false)
 	require.NoError(t, err)
 	require.Equal(t, 1, enabledAdmins(t, pool))
-	require.Equal(t, 0, eventCount(t, pool, "user.demote", "last_administrator"))
-	require.Equal(t, 0, eventCount(t, pool, "user.block", "last_administrator"))
 	_, err = s.ListUsers(t.Context(), admin)
 	require.NoError(t, err)
 }
@@ -536,14 +508,6 @@ func TestConcurrentMutualDemotionAndBlock(t *testing.T) {
 			}
 		}
 	}
-	require.Equal(t, iterations, eventCount(t, pool, "user.demote", "success"))
-	require.Equal(t, iterations, eventCount(t, pool, "user.demote", "forbidden"))
-	require.Equal(t, iterations, eventCount(t, pool, "user.block", "success"))
-	require.Equal(t, iterations, eventCount(t, pool, "user.block", "unauthenticated"))
-	for _, action := range []string{"user.demote", "user.block"} {
-		require.Equal(t, 0, eventCount(t, pool, action, "last_administrator"), action)
-		require.Equal(t, 0, eventCount(t, pool, action, "self_target"), action)
-	}
 	require.Equal(t, 2, enabledAdmins(t, pool))
 }
 
@@ -566,10 +530,6 @@ func TestListUsersOrderFieldsAndTruncation(t *testing.T) {
 	encoded, err := json.Marshal(list)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "$clavis$")
-	require.Equal(t, 0, eventCount(t, pool, "users.list", "success"))
-	var n int
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events WHERE action='users.list'`).Scan(&n))
-	require.Equal(t, 0, n)
 	// Fixture rows only: the placeholder hash is not an account credential.
 	execSQL(t, pool, `INSERT INTO users(id,username,password_hash,role)
 		SELECT gen_random_uuid(), 'bulk-'||lpad(n::text,5,'0'), $1, 'member' FROM generate_series(1,$2) n`,
@@ -585,50 +545,6 @@ func TestListUsersOrderFieldsAndTruncation(t *testing.T) {
 	for index := 1; index < len(list.Users); index++ {
 		require.Less(t, list.Users[index-1].Username, list.Users[index].Username)
 	}
-}
-
-func TestAdministrationAuditFailureRollsBack(t *testing.T) {
-	pool, s, admin, _ := adminFixture(t)
-	member, input := createMember(t, s, admin, "audited-member")
-	issued := login(t, s, input)
-	memberSession := session(t, s, issued, auth.CLI)
-	users, sessions, events := countRows(t, pool, "users"), countRows(t, pool, "sessions"), countRows(t, pool, "auth_events")
-	execSQL(t, pool, `CREATE FUNCTION reject_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SENTINEL_PRIVATE_DRIVER'; END $$;
-		CREATE TRIGGER reject_event BEFORE INSERT ON auth_events FOR EACH ROW EXECUTE FUNCTION reject_event()`)
-	for name, operation := range map[string]func() error{
-		"create": func() error {
-			_, err := s.CreateUser(t.Context(), admin, auth.CreateUserRequest{Username: "never-created", Password: randomPassword(t)})
-			return err
-		},
-		"block":       func() error { _, err := s.SetUserDisabled(t.Context(), admin, member.ID, true); return err },
-		"unblock":     func() error { _, err := s.SetUserDisabled(t.Context(), admin, member.ID, false); return err },
-		"reset":       func() error { _, err := s.ResetPassword(t.Context(), admin, member.ID, randomPassword(t)); return err },
-		"promote":     func() error { _, err := s.SetRole(t.Context(), admin, member.ID, auth.Admin); return err },
-		"member list": func() error { _, err := s.ListUsers(t.Context(), memberSession); return err },
-		"not found":   func() error { _, err := s.SetRole(t.Context(), admin, randomTestID(t), auth.Admin); return err },
-	} {
-		err := operation()
-		require.Error(t, err, name)
-		code(t, err, auth.ServiceUnavailable)
-		require.NotContains(t, err.Error(), "SENTINEL", name)
-	}
-	// Listing writes no success event, so it still works.
-	list, err := s.ListUsers(t.Context(), admin)
-	require.NoError(t, err)
-	require.Len(t, list.Users, 2)
-	require.Equal(t, users, countRows(t, pool, "users"))
-	require.Equal(t, sessions, countRows(t, pool, "sessions"))
-	require.Equal(t, events, countRows(t, pool, "auth_events"))
-	session(t, s, issued, auth.CLI)
-	role, disabled := userState(t, pool, member.ID)
-	require.Equal(t, "member", role)
-	require.False(t, disabled)
-	execSQL(t, pool, `DROP TRIGGER reject_event ON auth_events`)
-	// The attempted reset never replaced the hash.
-	login(t, s, input)
-	blocked, err := s.SetUserDisabled(t.Context(), admin, member.ID, true)
-	require.NoError(t, err)
-	require.True(t, blocked.SessionsRevoked)
 }
 
 // The hashing budget lives in package auth; from here it is filled the way
@@ -654,7 +570,7 @@ func fillHashBudget(t *testing.T) func() {
 func TestAdministrationHonorsHashingBudget(t *testing.T) {
 	pool, s, admin, _ := adminFixture(t)
 	member, input := createMember(t, s, admin, "budget-member")
-	users, events := countRows(t, pool, "users"), countRows(t, pool, "auth_events")
+	users, sessions := countRows(t, pool, "users"), countRows(t, pool, "sessions")
 	for name, operation := range map[string]func() error{
 		"create": func() error {
 			_, err := s.CreateUser(t.Context(), admin, auth.CreateUserRequest{Username: "budget-user", Password: randomPassword(t)})
@@ -674,15 +590,10 @@ func TestAdministrationHonorsHashingBudget(t *testing.T) {
 		require.Positive(t, failure.RetryAfter)
 		require.Less(t, elapsed, time.Second, name)
 	}
+	// A rejected budget is a denied attempt: no account is created, no hash is
+	// replaced and no session is touched.
 	require.Equal(t, users, countRows(t, pool, "users"))
-	// A rejected budget is a denied attempt: one rate_limited event per call,
-	// attributed to the caller's session, with no target and no mutation.
-	require.Equal(t, events+2, countRows(t, pool, "auth_events"))
-	var recorded int
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events
-		WHERE outcome='rate_limited' AND actor_id=$1 AND session_id=$2 AND target_id IS NULL
-		AND action IN ('user.create','user.reset_password')`, admin.User.ID, admin.ID).Scan(&recorded))
-	require.Equal(t, 2, recorded)
+	require.Equal(t, sessions, countRows(t, pool, "sessions"))
 	login(t, s, input)
 	// A canceled context never commits, even though hashing is not cancelable.
 	ctx, cancel := context.WithCancel(t.Context())
@@ -699,7 +610,6 @@ func TestAdministrationHeldLockTimeout(t *testing.T) {
 	require.NoError(t, err)
 	_, err = holder.Exec(t.Context(), `SELECT pg_advisory_xact_lock($1)`, adminMutationLock)
 	require.NoError(t, err)
-	events := countRows(t, pool, "auth_events")
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	start := time.Now()
 	_, err = s.SetRole(ctx, admin, member.ID, auth.Admin)
@@ -712,8 +622,7 @@ func TestAdministrationHeldLockTimeout(t *testing.T) {
 	require.Len(t, list.Users, 2)
 	login(t, s, input)
 	require.NoError(t, holder.Rollback(t.Context()))
-	// Only the login above recorded an event; the timed-out mutation did not.
-	require.Equal(t, events+1, countRows(t, pool, "auth_events"))
+	// The timed-out mutation left the target row as it was.
 	role, _ := userState(t, pool, member.ID)
 	require.Equal(t, "member", role)
 	promoted, err := s.SetRole(t.Context(), admin, member.ID, auth.Admin)

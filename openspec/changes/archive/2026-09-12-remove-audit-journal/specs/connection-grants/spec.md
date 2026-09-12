@@ -1,10 +1,4 @@
-# connection-grants Specification
-
-## Purpose
-
-Let administrators grant connections to users, let members discover what they may use, and give every later operation one authoritative answer to "may this user use this connection now".
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Grant records
 
@@ -73,15 +67,3 @@ The server SHALL expose `GET /api/admin/grants`, `POST /api/admin/grants` and `P
 #### Scenario: Identity reports usable connections
 - **WHEN** a member calls `whoami`
 - **THEN** the response lists the names of connections they hold a grant on
-
-### Requirement: Read-only grants table in the browser
-
-The protected administrator page SHALL list grants with username, connection name, granted time in UTC and the granting administrator's username, escaped and bounded like the other tables, with a truncation notice and no forms. It SHALL fail closed when the list cannot be loaded.
-
-#### Scenario: Administrator opens the page
-- **WHEN** a signed-in administrator requests the administration page
-- **THEN** the grants table renders below the connections table with the documented columns
-
-#### Scenario: Grant list unavailable
-- **WHEN** the grant listing fails
-- **THEN** the page returns safe 503 rather than rendering without current data

@@ -73,7 +73,7 @@ func TestFailureAllowlist(t *testing.T) {
 	}
 }
 
-func TestAdministrationProjectionsAndEvents(t *testing.T) {
+func TestAdministrationProjections(t *testing.T) {
 	record := auth.UserRecord{
 		ID: "fixture-user", Username: "alice", Role: auth.Member, Disabled: true,
 		CreatedAt: time.Date(2026, 9, 11, 9, 0, 0, 0, time.UTC),
@@ -98,20 +98,6 @@ func TestAdministrationProjectionsAndEvents(t *testing.T) {
 		require.Contains(t, string(transport), "SENTINEL_SECRET_VALUE")
 	}
 
-	for _, action := range []auth.EventAction{
-		auth.EventLogin, auth.EventLogout, auth.EventRevoke, auth.EventUserCreate, auth.EventUserBlock,
-		auth.EventUserUnblock, auth.EventUserResetPassword, auth.EventUserPromote, auth.EventUserDemote, auth.EventUsersList,
-	} {
-		require.True(t, auth.ValidEventAction(action), string(action))
-		require.True(t, auth.Event{Action: action, Outcome: auth.OutcomeForbidden}.Valid(), string(action))
-	}
-	for _, action := range []auth.EventAction{"", "bootstrap", "user.delete", "USER.CREATE", "user.create "} {
-		require.False(t, auth.ValidEventAction(action), string(action))
-		require.False(t, auth.Event{Action: action, Outcome: auth.OutcomeForbidden}.Valid(), string(action))
-	}
-	// The recorder boundary still accepts only adapter rejection outcomes.
-	require.False(t, auth.Event{Action: auth.EventUserCreate, Outcome: "success"}.Valid())
-	require.False(t, auth.Event{Action: auth.EventUserCreate, Outcome: "username_taken"}.Valid())
 }
 
 func TestConnectionContracts(t *testing.T) {
@@ -128,13 +114,6 @@ func TestConnectionContracts(t *testing.T) {
 	encoded, err := json.Marshal(response)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "hint")
-	for _, action := range []auth.EventAction{
-		auth.EventConnectionCreate, auth.EventConnectionUpdate, auth.EventConnectionSecrets, auth.EventConnectionEnable,
-		auth.EventConnectionDisable, auth.EventConnectionDelete, auth.EventConnectionCheck, auth.EventConnectionGet, auth.EventConnectionsList,
-	} {
-		require.True(t, auth.ValidEventAction(action), string(action))
-	}
-	require.False(t, auth.ValidEventAction("connection.delete "))
 
 	// The secret-bearing request DTOs redact under ordinary formatting.
 	for _, value := range []any{

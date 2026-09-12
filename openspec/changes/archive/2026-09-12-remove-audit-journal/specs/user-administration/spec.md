@@ -1,10 +1,4 @@
-# user-administration Specification
-
-## Purpose
-
-Let current administrators manage local user accounts and the administrator role through transactional operations that never lock the installation out or expose secrets.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Administrator-only user operations
 
@@ -121,15 +115,3 @@ The server SHALL expose the operations as JSON routes under `/api/admin/users` f
 #### Scenario: Malformed administration body
 - **WHEN** a create or reset body is oversized, form-encoded, contains unknown fields or an invalid password
 - **THEN** the request fails with `INVALID_ARGUMENT` without reflecting submitted values and without hashing
-
-### Requirement: Read-only administrator user list in the browser
-
-The protected administrator page SHALL render the bounded user list with username, role, status and creation time using escaped text, and SHALL show a truncation notice when applicable. The page SHALL NOT offer browser forms that create, block, reset or change roles in this change. If the list cannot be loaded, the page SHALL fail closed with safe unavailability rather than rendering stale or partial data as current.
-
-#### Scenario: Administrator opens the page
-- **WHEN** a signed-in administrator requests the administration page
-- **THEN** the page lists all users with their role and enabled or blocked state
-
-#### Scenario: Username contains markup-like characters
-- **WHEN** a listed username is rendered
-- **THEN** it appears as escaped text within the documented username character set

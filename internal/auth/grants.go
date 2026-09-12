@@ -48,7 +48,7 @@ type GrantFilter struct {
 }
 
 // GrantMutation reports the grant after create; Created is false when the
-// grant already existed, in which case no event was recorded.
+// grant already existed, in which case the stored row was left untouched.
 type GrantMutation struct {
 	Grant   Grant `json:"grant"`
 	Created bool  `json:"created"`
@@ -56,7 +56,7 @@ type GrantMutation struct {
 }
 
 // GrantRevocation reports whether a grant was removed; Revoked false means
-// there was nothing to remove and no event was recorded.
+// there was nothing to remove.
 type GrantRevocation struct {
 	User       GrantParty `json:"user"`
 	Connection GrantParty `json:"connection"`
@@ -67,7 +67,7 @@ type GrantRevocation struct {
 // Grants is the grant lifecycle plus the single authorization answer every
 // later operation asks before forwarding anything to an external source.
 // AuthorizeConnection returns the connection only when it is enabled and the
-// caller is an administrator or holds a grant; it records no event of its own.
+// caller is an administrator or holds a grant; it changes no state of its own.
 type Grants interface {
 	ListGrants(context.Context, Session, GrantFilter) (GrantList, error)
 	CreateGrant(context.Context, Session, GrantRequest, bool) (GrantMutation, error)

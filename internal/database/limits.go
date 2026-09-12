@@ -59,11 +59,12 @@ func (s *LocalAuth) reserve(ctx context.Context, input auth.LoginInput) (limitRe
 		}
 	}
 	if limited {
-		err := deny(ctx, tx, "", "", "", "login", auth.RateLimited)
-		if e, ok := err.(*auth.Error); ok && e.Code == auth.RateLimited {
-			e.RetryAfter = 5 * time.Minute
+		// The bounded cleanup above is committed even when the attempt is
+		// refused, so a refused window still retires its expired rows.
+		if err := tx.Commit(ctx); err != nil {
+			return r, unavailable()
 		}
-		return r, err
+		return r, &auth.Error{Code: auth.RateLimited, RetryAfter: 5 * time.Minute}
 	}
 	for index, key := range r.keys {
 		r.expires[index], err = queries.ReserveLoginLimit(ctx, key[:])

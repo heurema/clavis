@@ -35,9 +35,6 @@ func TestGeneratedQueriesStayOnNativeTransaction(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.WithinDuration(t, time.Now().Add(time.Hour), expires, 2*time.Second)
-	require.NoError(t, qtx.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{
-		ID: randomTestID(t), Action: "login", Outcome: "invalid_credentials",
-	}))
 	require.NoError(t, qtx.MarkInstallationInitialized(t.Context()))
 	require.NoError(t, qtx.LockMutationUsers(t.Context(), sqlc.LockMutationUsersParams{ActorID: id}))
 	current, err := qtx.RecheckSession(t.Context(), sqlc.RecheckSessionParams{
@@ -46,7 +43,7 @@ func TestGeneratedQueriesStayOnNativeTransaction(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, expires, current.ExpiresAt)
 	// Independent fixture assertions prove writes cannot escape WithTx into pool.
-	for _, table := range []string{"users", "sessions", "auth_events", "installation"} {
+	for _, table := range []string{"users", "sessions", "installation"} {
 		require.Zero(t, countRows(t, pool, table))
 	}
 	require.NoError(t, tx.Rollback(t.Context()))
@@ -56,7 +53,7 @@ func TestGeneratedQueriesStayOnNativeTransaction(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, state.Initialized)
 	require.False(t, state.HasUsers)
-	for _, table := range []string{"sessions", "auth_events", "installation"} {
+	for _, table := range []string{"sessions", "installation"} {
 		require.Zero(t, countRows(t, pool, table))
 	}
 }
@@ -87,7 +84,6 @@ func TestGeneratedReadinessChecksEveryApplicationColumn(t *testing.T) {
 	for table, columns := range map[string][]string{
 		"users":        {"id", "username", "password_hash", "role", "disabled", "created_at", "updated_at"},
 		"sessions":     {"id", "token_digest", "user_id", "kind", "created_at", "expires_at", "revoked_at"},
-		"auth_events":  {"id", "actor_id", "target_id", "session_id", "connection_id", "action", "outcome", "created_at"},
 		"grants":       {"user_id", "connection_id", "created_at", "created_by"},
 		"login_limits": {"key", "failures", "expires_at"},
 		"installation": {"singleton", "initialized_at"},
@@ -132,7 +128,7 @@ func TestGeneratedLimitReleasePreservesNewWindow(t *testing.T) {
 	require.Zero(t, limit.Failures)
 }
 
-func TestGeneratedUserAdministrationQueriesAndEventAllowlist(t *testing.T) {
+func TestGeneratedUserAdministrationQueries(t *testing.T) {
 	pool := testPool(t)
 	require.NoError(t, Migrate(t.Context(), pool))
 	queries := sqlc.New(pool)
@@ -215,57 +211,11 @@ func TestGeneratedUserAdministrationQueriesAndEventAllowlist(t *testing.T) {
 	var updated time.Time
 	require.NoError(t, tx.QueryRow(t.Context(), `SELECT updated_at FROM users WHERE id=$1`, memberID).Scan(&updated))
 	require.True(t, updated.After(created.CreatedAt))
-
-	for _, action := range []string{
-		"bootstrap", "login", "logout", "revoke", "user.create", "user.block", "user.unblock",
-		"user.reset_password", "user.promote", "user.demote", "users.list",
-	} {
-		for _, outcome := range []string{"success", "forbidden", "username_taken", "last_administrator", "self_target", "user_not_found"} {
-			require.NoError(t, qtx.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{
-				ID: randomTestID(t), ActorID: adminID, TargetID: memberID, Action: action, Outcome: outcome,
-			}), action+"/"+outcome)
-		}
-	}
 	require.NoError(t, tx.Rollback(t.Context()))
-	for _, event := range []sqlc.InsertAuthEventParams{
-		{Action: "user.delete", Outcome: "success"},
-		{Action: "user.create", Outcome: "duplicate"},
-	} {
-		err := queries.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{ID: randomTestID(t), Action: event.Action, Outcome: event.Outcome})
-		require.ErrorAs(t, err, &pgErr)
-		require.Equal(t, "23514", pgErr.Code, event.Action+"/"+event.Outcome)
-	}
-	require.Zero(t, countRows(t, pool, "auth_events"))
+	require.Zero(t, countRows(t, pool, "users"), "nothing escaped the rolled back transaction")
 }
 
-func TestEventAllowlistMigrationAppliesToInitializedInstallation(t *testing.T) {
-	pool := testPool(t)
-	// A previous release migrated only 001 and recorded old-style events.
-	previous := embeddedMapFS(t)
-	delete(previous, "002_user_administration.sql")
-	delete(previous, "003_connections.sql")
-	delete(previous, "004_grants.sql")
-	require.NoError(t, migrateFS(t.Context(), pool, previous))
-	queries := sqlc.New(pool)
-	// The previous release's events lack the connection column, so the
-	// generated insert cannot represent them; raw SQL is the test seam.
-	execSQL(t, pool, `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'login', 'success')`, randomTestID(t))
-	_, err := pool.Exec(t.Context(), `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'user.create', 'success')`, randomTestID(t))
-	var pgErr *pgconn.PgError
-	require.ErrorAs(t, err, &pgErr)
-	require.Equal(t, "23514", pgErr.Code)
-
-	require.NoError(t, Migrate(t.Context(), pool))
-	require.NoError(t, Migrate(t.Context(), pool))
-	require.Equal(t, 1, countRows(t, pool, "auth_events"))
-	require.NoError(t, queries.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{ID: randomTestID(t), Action: "user.create", Outcome: "username_taken"}))
-	require.Equal(t, 2, countRows(t, pool, "auth_events"))
-	var name string
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT conname FROM pg_constraint WHERE conname='auth_events_action_check'`).Scan(&name))
-	require.Equal(t, "auth_events_action_check", name)
-}
-
-func TestGeneratedConnectionQueriesAndEventAllowlist(t *testing.T) {
+func TestGeneratedConnectionQueries(t *testing.T) {
 	pool := testPool(t)
 	require.NoError(t, Migrate(t.Context(), pool))
 	queries := sqlc.New(pool)
@@ -369,16 +319,6 @@ func TestGeneratedConnectionQueriesAndEventAllowlist(t *testing.T) {
 	_, err = qtx.FindConnectionByID(t.Context(), id)
 	require.ErrorIs(t, err, pgx.ErrNoRows)
 
-	for _, action := range []string{
-		"connection.create", "connection.update", "connection.set_credentials", "connection.enable",
-		"connection.disable", "connection.delete", "connection.check", "connection.get", "connections.list",
-	} {
-		for _, outcome := range []string{"success", "forbidden", "connection_exists", "connection_not_found", "connection_in_use", "credentials_unavailable", "check_failed"} {
-			require.NoError(t, qtx.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{
-				ID: randomTestID(t), Action: action, Outcome: outcome,
-			}), action+"/"+outcome)
-		}
-	}
 	require.NoError(t, tx.Rollback(t.Context()))
 
 	var pgErr *pgconn.PgError
@@ -396,11 +336,7 @@ func TestGeneratedConnectionQueriesAndEventAllowlist(t *testing.T) {
 		require.ErrorAs(t, err, &pgErr, name)
 		require.Equal(t, "23514", pgErr.Code, name)
 	}
-	err = queries.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{ID: randomTestID(t), Action: "connection.rotate", Outcome: "success"})
-	require.ErrorAs(t, err, &pgErr)
-	require.Equal(t, "23514", pgErr.Code)
 	require.Zero(t, countRows(t, pool, "connections"))
-	require.Zero(t, countRows(t, pool, "auth_events"))
 }
 
 func TestConnectionMigrationAppliesToInitializedInstallation(t *testing.T) {
@@ -408,8 +344,9 @@ func TestConnectionMigrationAppliesToInitializedInstallation(t *testing.T) {
 	previous := embeddedMapFS(t)
 	delete(previous, "003_connections.sql")
 	delete(previous, "004_grants.sql")
+	delete(previous, "005_drop_audit_events.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
-	queries := sqlc.New(pool)
+	// The previous release still had the journal and stored rows in it.
 	execSQL(t, pool, `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'user.create', 'success')`, randomTestID(t))
 	var present bool
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('connections') IS NOT NULL`).Scan(&present))
@@ -420,10 +357,10 @@ func TestConnectionMigrationAppliesToInitializedInstallation(t *testing.T) {
 
 	require.NoError(t, Migrate(t.Context(), pool))
 	require.NoError(t, Migrate(t.Context(), pool))
-	require.Equal(t, 1, countRows(t, pool, "auth_events"))
-	require.NoError(t, queries.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{ID: randomTestID(t), Action: "connection.check", Outcome: "check_failed"}))
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('connections') IS NOT NULL`).Scan(&present))
 	require.True(t, present)
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('auth_events') IS NOT NULL`).Scan(&present))
+	require.False(t, present, "the populated journal is dropped with its rows")
 	// Attempt applies nothing further and observes the fresh, uninitialized schema.
 	require.Equal(t, platform.SetupRequired, NewInitializer(pool, "", "").Attempt(t.Context()).State)
 }

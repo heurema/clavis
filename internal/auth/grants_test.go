@@ -19,20 +19,6 @@ func TestGrantContracts(t *testing.T) {
 	require.Equal(t, "The connection is disabled", response.Error.Message)
 	require.Equal(t, "run clavis connections enable", response.Error.Hint)
 
-	for _, action := range []auth.EventAction{auth.EventGrantCreate, auth.EventGrantRevoke, auth.EventGrantsList} {
-		require.True(t, auth.ValidEventAction(action), string(action))
-		require.True(t, auth.Event{Action: action, Outcome: auth.OutcomeForbidden}.Valid(), string(action))
-	}
-	require.Equal(t, auth.EventAction("grant.create"), auth.EventGrantCreate)
-	require.Equal(t, auth.EventAction("grant.revoke"), auth.EventGrantRevoke)
-	require.Equal(t, auth.EventAction("grants.list"), auth.EventGrantsList)
-	require.False(t, auth.ValidEventAction("grant.delete"))
-	// The connection column is an identifier like the others: a UUID or empty.
-	valid := auth.Event{Action: auth.EventGrantCreate, Outcome: auth.OutcomeForbidden, ConnectionID: "7fde7ce1-cc8d-4de8-a9c0-df22ce8d92ba"}
-	require.True(t, valid.Valid())
-	valid.ConnectionID = "payments-prod"
-	require.False(t, valid.Valid())
-
 	grant := auth.Grant{
 		User:       auth.GrantParty{ID: "u", Name: "alice"},
 		Connection: auth.GrantParty{ID: "c", Name: "payments-prod-reporting"},

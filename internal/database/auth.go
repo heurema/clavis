@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/heurema/clavis/internal/auth"
@@ -48,40 +47,6 @@ func (s *LocalAuth) ready(ctx context.Context) error {
 	return nil
 }
 
-func audit(ctx context.Context, tx pgx.Tx, actor, target, session, action, outcome string) error {
-	return auditWith(ctx, tx, actor, target, session, "", action, outcome)
-}
-
-// auditWith records an event that references a connection besides its user
-// target; grant events use it. All identifiers are UUIDs or empty.
-func auditWith(ctx context.Context, tx pgx.Tx, actor, target, session, connection, action, outcome string) error {
-	id, err := bootstrapID()
-	if err != nil {
-		return err
-	}
-	return sqlc.New(tx).InsertAuthEvent(ctx, sqlc.InsertAuthEventParams{
-		ID: id, ActorID: actor, TargetID: target, SessionID: session, ConnectionID: connection,
-		Action: action, Outcome: outcome,
-	})
-}
-
-func deny(ctx context.Context, tx pgx.Tx, actor, target, session, action, code string) error {
-	return denyWith(ctx, tx, actor, target, session, "", action, code)
-}
-
-// denyWith commits one denial event that may name a connection besides its
-// user target, which grant denials do. The returned error carries the code
-// alone; callers that own a hint re-attach it.
-func denyWith(ctx context.Context, tx pgx.Tx, actor, target, session, connection, action, code string) error {
-	if err := auditWith(ctx, tx, actor, target, session, connection, action, strings.ToLower(code)); err != nil {
-		return unavailable()
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return unavailable()
-	}
-	return &auth.Error{Code: code}
-}
-
 func (s *LocalAuth) Login(ctx context.Context, input auth.LoginInput) (auth.LoginResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
 	defer cancel()
@@ -121,25 +86,26 @@ func (s *LocalAuth) Login(ctx context.Context, input auth.LoginInput) (auth.Logi
 	if verifyErr != nil {
 		var failure *auth.Error
 		if errors.As(verifyErr, &failure) && failure.Code == auth.RateLimited {
+			// The reservation is released because the attempt never reached a
+			// password comparison; the release is committed like any other.
 			if err := reservation.release(ctx, tx); err != nil {
 				return response, unavailable()
 			}
-			err := deny(ctx, tx, user.ID, user.ID, "", "login", auth.RateLimited)
-			if e, ok := err.(*auth.Error); ok && e.Code == auth.RateLimited {
-				e.RetryAfter = time.Second
+			if err := tx.Commit(ctx); err != nil {
+				return response, unavailable()
 			}
-			return response, err
+			return response, &auth.Error{Code: auth.RateLimited, RetryAfter: time.Second}
 		}
 		return response, unavailable()
 	}
 	if unknown || found.Disabled || !valid {
-		return response, deny(ctx, tx, user.ID, user.ID, "", "login", auth.InvalidCredentials)
+		return response, &auth.Error{Code: auth.InvalidCredentials}
 	}
 	// Re-read and lock the current account after hashing. Role/disabled/hash
 	// changes cannot race issuance; revoke-all takes this same row lock.
 	current, err := qtx.LockLoginUser(ctx, user.ID)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (current.Disabled || current.PasswordHash != hash)) {
-		return response, deny(ctx, tx, user.ID, user.ID, "", "login", auth.InvalidCredentials)
+		return response, &auth.Error{Code: auth.InvalidCredentials}
 	}
 	if err != nil {
 		return response, unavailable()
@@ -163,9 +129,6 @@ func (s *LocalAuth) Login(ctx context.Context, input auth.LoginInput) (auth.Logi
 		return response, unavailable()
 	}
 	if err := reservation.release(ctx, tx); err != nil {
-		return response, unavailable()
-	}
-	if err := audit(ctx, tx, user.ID, user.ID, id, "login", "success"); err != nil {
 		return response, unavailable()
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -225,7 +188,7 @@ func (s *LocalAuth) Logout(ctx context.Context, session auth.Session) error {
 
 // RevokeUserSessions addresses its target by UUID or username; the reference
 // is resolved inside the transaction, under the same lock, so both forms have
-// the same outcome and the same event.
+// the same outcome.
 func (s *LocalAuth) RevokeUserSessions(ctx context.Context, session auth.Session, userRef string) error {
 	if !auth.ValidUserRef(userRef) {
 		return &auth.Error{Code: auth.InvalidArgument}
@@ -251,10 +214,6 @@ func (s *LocalAuth) mutate(ctx context.Context, previous auth.Session, ref strin
 	}
 	defer rollback(ctx, tx)
 	queries := sqlc.New(tx)
-	action := "logout"
-	if revoke {
-		action = "revoke"
-	}
 	// Consistent ordering prevents opposing admin revocations from deadlocking.
 	if err := lockMutationUsers(ctx, queries, previous.User.ID, ref); err != nil {
 		return unavailable()
@@ -263,31 +222,26 @@ func (s *LocalAuth) mutate(ctx context.Context, previous auth.Session, ref strin
 	if err != nil {
 		var failure *auth.Error
 		if errors.As(err, &failure) && failure.Code == auth.Unauthenticated {
-			return deny(ctx, tx, previous.User.ID, "", previous.ID, action, auth.Unauthenticated)
+			return &auth.Error{Code: auth.Unauthenticated}
 		}
 		return unavailable()
 	}
 	if revoke && current.User.Role != auth.Admin {
-		return deny(ctx, tx, current.User.ID, "", current.ID, action, auth.Forbidden)
+		return &auth.Error{Code: auth.Forbidden}
 	}
-	target := current.User.ID
 	if revoke {
 		found, err := lockUser(ctx, queries, ref)
 		if err != nil {
 			var failure *auth.Error
 			if errors.As(err, &failure) && failure.Code == auth.UserNotFound {
-				return deny(ctx, tx, current.User.ID, "", current.ID, action, auth.UserNotFound)
+				return &auth.Error{Code: auth.UserNotFound}
 			}
 			return unavailable()
 		}
-		target = found.ID
-		if err := queries.RevokeUserSessions(ctx, target); err != nil {
+		if err := queries.RevokeUserSessions(ctx, found.ID); err != nil {
 			return unavailable()
 		}
 	} else if err := queries.RevokeSession(ctx, current.ID); err != nil {
-		return unavailable()
-	}
-	if err := audit(ctx, tx, current.User.ID, target, current.ID, action, "success"); err != nil {
 		return unavailable()
 	}
 	if err := tx.Commit(ctx); err != nil {

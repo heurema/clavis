@@ -44,11 +44,11 @@ func session(t *testing.T, s *LocalAuth, response auth.LoginResponse, kind auth.
 	return result
 }
 
-func code(t *testing.T, err error, want string) {
+func code(t *testing.T, err error, want string, msg ...any) {
 	t.Helper()
-	require.Error(t, err)
+	require.Error(t, err, msg...)
 	_, result := auth.FailureFor(err)
-	require.Equal(t, want, result.Error.Code)
+	require.Equal(t, want, result.Error.Code, msg...)
 }
 
 func TestSessionKindsExpiryCurrentAccountAndRevocation(t *testing.T) {
@@ -101,38 +101,21 @@ func TestSessionKindsExpiryCurrentAccountAndRevocation(t *testing.T) {
 	code(t, err, auth.Unauthenticated)
 }
 
-func TestAuthenticationAuditAtomicityAndRedaction(t *testing.T) {
+// An unknown account is answered exactly like a wrong password, and neither
+// the submitted name nor the submitted secret reaches any stored row.
+func TestUnknownAccountIsIndistinguishableAndStoresNothing(t *testing.T) {
 	pool, s, input := authFixture(t)
 	issued := login(t, s, input)
-	actor := session(t, s, issued, auth.CLI)
 	beforeSessions := countRows(t, pool, "sessions")
-	beforeEvents := countRows(t, pool, "auth_events")
-	execSQL(t, pool, `CREATE FUNCTION reject_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SENTINEL_PRIVATE_DRIVER'; END $$;
-		CREATE TRIGGER reject_event BEFORE INSERT ON auth_events FOR EACH ROW EXECUTE FUNCTION reject_event()`)
-	_, err := s.Login(t.Context(), input)
-	code(t, err, auth.ServiceUnavailable)
-	require.NotContains(t, err.Error(), "SENTINEL")
-	code(t, s.Logout(t.Context(), actor), auth.ServiceUnavailable)
-	code(t, s.RevokeUserSessions(t.Context(), actor, actor.User.ID), auth.ServiceUnavailable)
-	require.Equal(t, beforeSessions, countRows(t, pool, "sessions"))
-	require.Equal(t, beforeEvents, countRows(t, pool, "auth_events"))
-	session(t, s, issued, auth.CLI)
-	execSQL(t, pool, `DROP TRIGGER reject_event ON auth_events`)
+	beforeUsers := countRows(t, pool, "users")
 	input.Username = "unknown-user"
 	input.Password = "SENTINEL_PRIVATE_PASSWORD"
-	_, err = s.Login(t.Context(), input)
+	_, err := s.Login(t.Context(), input)
 	code(t, err, auth.InvalidCredentials)
-	require.NoError(t, s.RecordEvent(t.Context(), auth.Event{Action: auth.EventLogin, Outcome: auth.OutcomeInvalidArgument}))
-	var events string
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT json_agg(auth_events)::text FROM auth_events`).Scan(&events))
-	require.NotContains(t, events, "SENTINEL")
-	require.NotContains(t, events, "unknown-user")
-	require.NotContains(t, events, string(input.Password))
-	require.NotContains(t, events, string(issued.Token))
-	var anonymous int
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events WHERE actor_id IS NULL AND target_id IS NULL AND session_id IS NULL AND action='login'`).Scan(&anonymous))
-	require.Equal(t, 2, anonymous)
-	code(t, s.RecordEvent(t.Context(), auth.Event{Action: "PRIVATE", Outcome: auth.OutcomeForbidden}), auth.InvalidArgument)
+	require.NotContains(t, err.Error(), "SENTINEL")
+	require.Equal(t, beforeSessions, countRows(t, pool, "sessions"))
+	require.Equal(t, beforeUsers, countRows(t, pool, "users"))
+	session(t, s, issued, auth.CLI)
 }
 
 func TestSharedThrottleExpiresAndBoundsState(t *testing.T) {
@@ -180,15 +163,13 @@ func TestAuthLockDeadlinesRollbackAndRecovery(t *testing.T) {
 	pool, s, input := authFixture(t)
 	issued := login(t, s, input)
 	actor := session(t, s, issued, auth.CLI)
-	for _, operation := range []string{"login", "logout", "revoke", "authenticate", "audit", "pool"} {
+	for _, operation := range []string{"login", "logout", "revoke", "authenticate", "pool"} {
 		t.Run(operation, func(t *testing.T) {
 			lock, err := pool.Begin(t.Context())
 			require.NoError(t, err)
 			switch operation {
 			case "authenticate":
 				_, err = lock.Exec(t.Context(), `LOCK TABLE sessions IN ACCESS EXCLUSIVE MODE`)
-			case "audit":
-				_, err = lock.Exec(t.Context(), `LOCK TABLE auth_events IN ACCESS EXCLUSIVE MODE`)
 			default:
 				_, err = lock.Exec(t.Context(), `SELECT id FROM users WHERE id=$1 FOR UPDATE`, actor.User.ID)
 			}
@@ -212,8 +193,6 @@ func TestAuthLockDeadlinesRollbackAndRecovery(t *testing.T) {
 				err = s.RevokeUserSessions(ctx, actor, actor.User.ID)
 			case "authenticate":
 				_, err = s.Authenticate(ctx, issued.Token, auth.CLI)
-			case "audit":
-				err = s.RecordEvent(ctx, auth.Event{Action: auth.EventLogin, Outcome: auth.OutcomeForbidden})
 			}
 			cancel()
 			code(t, err, auth.ServiceUnavailable)
@@ -254,7 +233,6 @@ func TestIssuanceSerializesWithRevocation(t *testing.T) {
 	// earlier sessions are revoked; the waiting login commits a distinct session.
 	_, err = lock.Exec(t.Context(), `UPDATE sessions SET revoked_at=clock_timestamp() WHERE user_id=$1`, actor.User.ID)
 	require.NoError(t, err)
-	require.NoError(t, audit(t.Context(), lock, actor.User.ID, actor.User.ID, actor.ID, "revoke", "success"))
 	require.NoError(t, lock.Commit(t.Context()))
 	later := <-done
 	require.NoError(t, later.err)

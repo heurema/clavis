@@ -7,9 +7,9 @@ import (
 	"github.com/heurema/clavis/internal/auth"
 )
 
-// The administration service owns readiness, authority rechecks and its own
-// events exactly like the authentication service; a composition without one
-// must reject protected requests instead of invoking anything.
+// The administration service owns readiness and authority rechecks exactly
+// like the authentication service; a composition without one must reject
+// protected requests instead of invoking anything.
 func (a *authHTTP) requireAdministration() error {
 	if a.admin == nil {
 		return &auth.Error{Code: auth.ServiceUnavailable}
@@ -19,11 +19,10 @@ func (a *authHTTP) requireAdministration() error {
 
 // administration is the shared shape of every JSON administration route:
 // bounded body handling first, then a bearer-only session, then the path
-// target, then the service call that owns its own success and denial events.
+// target, then the service call.
 // Nothing submitted is hashed, looked up or reflected before the body and the
 // target are accepted. Routes with a {userID} segment pass targeted=true so an
-// empty segment (a doubled slash) is rejected here, not by the service, and
-// the rejection is recorded like any other adapter rejection.
+// empty segment (a doubled slash) is rejected here, not by the service.
 func (a *authHTTP) administration(w http.ResponseWriter, r *http.Request, targeted bool, body func() error,
 	call func(auth.Session, string) (any, int, error)) {
 	var err error
@@ -45,7 +44,6 @@ func (a *authHTTP) administration(w http.ResponseWriter, r *http.Request, target
 		jsonFailure(w, err)
 		return
 	}
-	serviceOwnsEvent(r)
 	result, status, err := call(session, target)
 	if err != nil {
 		jsonFailure(w, err)

@@ -84,9 +84,9 @@ func connectionExists() error {
 
 func connectionContext(id string) string { return "connection:" + id }
 
-// hinted restores the guidance a committed denial drops: the recorded event
-// carries the code alone, so the error the deny path returns is rebuilt from
-// it. The text is fixed per code and never echoes input.
+// hinted restores the guidance a denial drops: administer answers with the
+// code alone, so the error the caller returns is rebuilt from it. The text is
+// fixed per code and never echoes input.
 func hinted(err error) error {
 	var failure *auth.Error
 	if !errors.As(err, &failure) || failure.Hint != "" {
@@ -99,8 +99,6 @@ func hinted(err error) error {
 		failure.Hint = hintConnectionNotFound
 	case auth.ConnectionInUse:
 		failure.Hint = hintConnectionInUse
-	case auth.CredentialsUnavailable:
-		failure.Hint = hintCredentials
 	case auth.UserNotFound:
 		failure.Hint = hintUserNotFound
 	}
@@ -282,7 +280,7 @@ func lockConnection(ctx context.Context, queries *sqlc.Queries, ref string) (sql
 
 // nameGuarded runs one statement that can still lose the unique index race to
 // a row committed outside the advisory lock, inside a savepoint that keeps the
-// transaction usable for the deny event.
+// transaction usable after the constraint fires.
 func nameGuarded(ctx context.Context, tx pgx.Tx, run func(*sqlc.Queries) (sqlc.Connection, error)) (sqlc.Connection, error) {
 	var row sqlc.Connection
 	savepoint, err := tx.Begin(ctx)
@@ -439,28 +437,28 @@ func (s *LocalAuth) CreateConnection(ctx context.Context, session auth.Session,
 	if params.SecretEnvelope, err = s.seal(request.Secret, id); err != nil {
 		return result, err
 	}
-	err = s.administer(ctx, session, connectionMutationLock, "", string(auth.EventConnectionCreate), dryRun, nil,
-		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (mutation, error) {
+	err = s.administer(ctx, session, connectionMutationLock, "", dryRun, nil,
+		func(ctx context.Context, tx pgx.Tx, _ auth.Session) error {
 			queries := sqlc.New(tx)
 			exists, err := queries.ConnectionNameExists(ctx, params.Name)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			if exists {
-				return mutation{}, connectionExists()
+				return connectionExists()
 			}
 			row, err := nameGuarded(ctx, tx, func(q *sqlc.Queries) (sqlc.Connection, error) {
 				return q.InsertConnection(ctx, params)
 			})
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			record, err := connectionRecord(row)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			result = auth.ConnectionMutation{Connection: record, DryRun: dryRun}
-			return mutation{target: row.ID}, nil
+			return nil
 		})
 	if err != nil {
 		return auth.ConnectionMutation{}, hinted(err)
@@ -475,12 +473,12 @@ func (s *LocalAuth) UpdateConnection(ctx context.Context, session auth.Session, 
 	if err != nil {
 		return result, err
 	}
-	err = s.administer(ctx, session, connectionMutationLock, "", string(auth.EventConnectionUpdate), dryRun, nil,
-		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (mutation, error) {
+	err = s.administer(ctx, session, connectionMutationLock, "", dryRun, nil,
+		func(ctx context.Context, tx pgx.Tx, _ auth.Session) error {
 			queries := sqlc.New(tx)
 			row, err := lockConnection(ctx, queries, ref)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			params.ID = row.ID
 			if resetTitle {
@@ -493,37 +491,37 @@ func (s *LocalAuth) UpdateConnection(ctx context.Context, session auth.Session, 
 			if params.Name != nil && *params.Name != row.Name {
 				exists, err := queries.ConnectionNameExists(ctx, *params.Name)
 				if err != nil {
-					return mutation{}, err
+					return err
 				}
 				if exists {
-					return mutation{target: row.ID}, connectionExists()
+					return connectionExists()
 				}
 			}
 			if request.Target != nil {
 				implementation, _, err := connectionProvider(row)
 				if err != nil {
-					return mutation{}, err
+					return err
 				}
 				target, err := implementation.ParseTarget(*request.Target)
 				if err != nil {
-					return mutation{target: row.ID}, err
+					return err
 				}
 				if params.Target, err = encodeStrings(target); err != nil {
-					return mutation{}, err
+					return err
 				}
 			}
 			updated, err := nameGuarded(ctx, tx, func(q *sqlc.Queries) (sqlc.Connection, error) {
 				return q.UpdateConnection(ctx, params)
 			})
 			if err != nil {
-				return mutation{target: row.ID}, err
+				return err
 			}
 			record, err := connectionRecord(updated)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			result = auth.ConnectionMutation{Connection: record, DryRun: dryRun}
-			return mutation{target: row.ID}, nil
+			return nil
 		})
 	if err != nil {
 		return auth.ConnectionMutation{}, hinted(err)
@@ -537,36 +535,36 @@ func (s *LocalAuth) SetConnectionCredentials(ctx context.Context, session auth.S
 	if s.keys == nil {
 		return result, unavailable()
 	}
-	err := s.administer(ctx, session, connectionMutationLock, "", string(auth.EventConnectionSecrets), dryRun, nil,
-		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (mutation, error) {
+	err := s.administer(ctx, session, connectionMutationLock, "", dryRun, nil,
+		func(ctx context.Context, tx pgx.Tx, _ auth.Session) error {
 			queries := sqlc.New(tx)
 			row, err := lockConnection(ctx, queries, ref)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			implementation, target, err := connectionProvider(row)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			if err := implementation.ValidateSecret(target, secret); err != nil {
-				return mutation{target: row.ID}, err
+				return err
 			}
 			envelope, err := s.seal(secret, row.ID)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			updated, err := queries.SetConnectionSecret(ctx, sqlc.SetConnectionSecretParams{
 				SecretEnvelope: envelope, ID: row.ID,
 			})
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			record, err := connectionRecord(updated)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			result = auth.ConnectionMutation{Connection: record, DryRun: dryRun}
-			return mutation{target: row.ID}, nil
+			return nil
 		})
 	if err != nil {
 		return auth.ConnectionMutation{}, hinted(err)
@@ -575,33 +573,29 @@ func (s *LocalAuth) SetConnectionCredentials(ctx context.Context, session auth.S
 }
 
 // SetConnectionEnabled is idempotent: setting the state a connection already
-// has succeeds and is audited like any other attempt.
+// has succeeds like any other attempt.
 func (s *LocalAuth) SetConnectionEnabled(ctx context.Context, session auth.Session, ref string,
 	enabled, dryRun bool) (auth.ConnectionMutation, error) {
 	var result auth.ConnectionMutation
-	action := auth.EventConnectionDisable
-	if enabled {
-		action = auth.EventConnectionEnable
-	}
-	err := s.administer(ctx, session, connectionMutationLock, "", string(action), dryRun, nil,
-		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (mutation, error) {
+	err := s.administer(ctx, session, connectionMutationLock, "", dryRun, nil,
+		func(ctx context.Context, tx pgx.Tx, _ auth.Session) error {
 			queries := sqlc.New(tx)
 			row, err := lockConnection(ctx, queries, ref)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			updated, err := queries.SetConnectionEnabled(ctx, sqlc.SetConnectionEnabledParams{
 				Enabled: enabled, ID: row.ID,
 			})
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			record, err := connectionRecord(updated)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			result = auth.ConnectionMutation{Connection: record, DryRun: dryRun}
-			return mutation{target: row.ID}, nil
+			return nil
 		})
 	if err != nil {
 		return auth.ConnectionMutation{}, hinted(err)
@@ -612,36 +606,35 @@ func (s *LocalAuth) SetConnectionEnabled(ctx context.Context, session auth.Sessi
 func (s *LocalAuth) DeleteConnection(ctx context.Context, session auth.Session, ref string,
 	dryRun bool) (auth.ConnectionDeletion, error) {
 	var result auth.ConnectionDeletion
-	// The committed denial carries the code alone, so the counted hint is kept
-	// here and re-attached to the error the deny path returns.
+	// The denial carries the code alone, so the counted hint is kept here and
+	// re-attached to the error administer returns.
 	var guard string
-	err := s.administer(ctx, session, connectionMutationLock, "", string(auth.EventConnectionDelete), dryRun, nil,
-		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (mutation, error) {
+	err := s.administer(ctx, session, connectionMutationLock, "", dryRun, nil,
+		func(ctx context.Context, tx pgx.Tx, _ auth.Session) error {
 			queries := sqlc.New(tx)
 			row, err := lockConnection(ctx, queries, ref)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
-			// The identifier is verified here, so the guard's denial event
-			// can name it. Both guards are evaluated together so the hint
-			// tells the caller everything that still stands in the way.
+			// Both guards are evaluated together so the hint tells the caller
+			// everything that still stands in the way.
 			grants, err := queries.CountConnectionGrants(ctx, row.ID)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			if row.Enabled || grants > 0 {
 				guard = hintConnectionGuard(row.Enabled, grants)
-				return mutation{target: row.ID}, &auth.Error{Code: auth.ConnectionInUse, Hint: guard}
+				return &auth.Error{Code: auth.ConnectionInUse, Hint: guard}
 			}
 			removed, err := queries.DeleteConnection(ctx, row.ID)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			if removed != 1 {
-				return mutation{}, unavailable()
+				return unavailable()
 			}
 			result = auth.ConnectionDeletion{ID: row.ID, Name: row.Name, Deleted: true, DryRun: dryRun}
-			return mutation{target: row.ID}, nil
+			return nil
 		})
 	if err != nil {
 		var failure *auth.Error
@@ -670,19 +663,22 @@ func (s *LocalAuth) probe(ctx context.Context, implementation provider.Provider,
 }
 
 // CheckConnection contacts the source on request only. The stored outcome is
-// a safe category; no driver text reaches the result, the event or a log.
+// a safe category; no driver text reaches the result or a log.
 func (s *LocalAuth) CheckConnection(ctx context.Context, session auth.Session, ref string) (auth.ConnectionCheck, error) {
 	var result auth.ConnectionCheck
-	err := s.administer(ctx, session, connectionMutationLock, "", string(auth.EventConnectionCheck), false, nil,
-		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (mutation, error) {
+	// An unreadable envelope is stored as an outcome like every other, so the
+	// body commits and the failure is reported once administer has returned.
+	var sealed bool
+	err := s.administer(ctx, session, connectionMutationLock, "", false, nil,
+		func(ctx context.Context, tx pgx.Tx, _ auth.Session) error {
 			queries := sqlc.New(tx)
 			row, err := lockConnection(ctx, queries, ref)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			implementation, target, err := connectionProvider(row)
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			outcome, opened := s.probe(ctx, implementation, row, target)
 			if !opened {
@@ -692,24 +688,24 @@ func (s *LocalAuth) CheckConnection(ctx context.Context, session auth.Session, r
 				Outcome: string(outcome), ID: row.ID,
 			})
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
-			// The denial commits the stored outcome together with its event.
 			if !opened {
-				return mutation{target: row.ID}, &auth.Error{Code: auth.CredentialsUnavailable, Hint: hintCredentials}
+				sealed = true
+				return nil
 			}
 			record, err := connectionRecord(updated)
 			if err != nil || record.LastCheck == nil {
-				return mutation{}, unavailable()
+				return unavailable()
 			}
 			result = auth.ConnectionCheck{Connection: record, Check: *record.LastCheck}
-			if outcome != auth.CheckReachable {
-				return mutation{target: row.ID, outcome: "check_failed"}, nil
-			}
-			return mutation{target: row.ID}, nil
+			return nil
 		})
 	if err != nil {
 		return auth.ConnectionCheck{}, hinted(err)
+	}
+	if sealed {
+		return auth.ConnectionCheck{}, &auth.Error{Code: auth.CredentialsUnavailable, Hint: hintCredentials}
 	}
 	return result, nil
 }
@@ -757,8 +753,7 @@ func compileSelector(terms []auth.SelectorTerm) (sqlc.ListConnectionsParams, boo
 	return params, true, nil
 }
 
-// ListConnections is a read: it takes no advisory key and records no event on
-// success. A denied attempt is recorded as connections.list.
+// ListConnections is a read: it takes no advisory key and mutates nothing.
 func (s *LocalAuth) ListConnections(ctx context.Context, previous auth.Session,
 	terms []auth.SelectorTerm, limit int) (auth.ConnectionList, error) {
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
@@ -784,7 +779,7 @@ func (s *LocalAuth) ListConnections(ctx context.Context, previous auth.Session,
 		return list, unavailable()
 	}
 	defer rollback(ctx, tx)
-	if _, err := authorize(ctx, tx, previous, string(auth.EventConnectionsList)); err != nil {
+	if _, err := authorize(ctx, tx, previous); err != nil {
 		return list, err
 	}
 	var rows []sqlc.Connection
@@ -810,8 +805,8 @@ func (s *LocalAuth) ListConnections(ctx context.Context, previous auth.Session,
 	return list, nil
 }
 
-// GetConnection is a read: no advisory key, no success event, and an unknown
-// reference fails without one. A denied attempt is recorded as connection.get.
+// GetConnection is a read: no advisory key, and an unknown reference fails
+// without touching a row.
 func (s *LocalAuth) GetConnection(ctx context.Context, previous auth.Session, ref string) (auth.Connection, error) {
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
 	defer cancel()
@@ -827,7 +822,7 @@ func (s *LocalAuth) GetConnection(ctx context.Context, previous auth.Session, re
 		return record, unavailable()
 	}
 	defer rollback(ctx, tx)
-	if _, err := authorize(ctx, tx, previous, string(auth.EventConnectionGet)); err != nil {
+	if _, err := authorize(ctx, tx, previous); err != nil {
 		return record, err
 	}
 	row, err := findConnection(ctx, sqlc.New(tx), ref, false)

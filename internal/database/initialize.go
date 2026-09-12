@@ -65,7 +65,6 @@ func (i *Initializer) check(ctx context.Context) platform.State {
 	for _, check := range []func(context.Context) error{
 		queries.CheckUsersColumns,
 		queries.CheckSessionsColumns,
-		queries.CheckAuthEventsColumns,
 		queries.CheckLoginLimitsColumns,
 		queries.CheckConnectionsColumns,
 		queries.CheckGrantsColumns,
@@ -173,17 +172,17 @@ func (i *Initializer) bootstrap(ctx context.Context) platform.State {
 		return platform.Ready
 	}
 	if state.HasUsers {
-		return bootstrapValidationFailure(ctx, tx)
+		return bootstrapValidationFailure()
 	}
 	if i.username == "" || i.passwordFile == "" {
 		return platform.SetupRequired
 	}
 	if !auth.ValidUsername(i.username) {
-		return bootstrapValidationFailure(ctx, tx)
+		return bootstrapValidationFailure()
 	}
 	password, err := ReadBootstrapPassword(i.passwordFile)
 	if err != nil {
-		return bootstrapValidationFailure(ctx, tx)
+		return bootstrapValidationFailure()
 	}
 	hash, err := auth.HashPassword(ctx, password)
 	if err != nil {
@@ -198,9 +197,6 @@ func (i *Initializer) bootstrap(ctx context.Context) platform.State {
 	}); err != nil {
 		return platform.DependencyUnavailable
 	}
-	if err = audit(ctx, tx, userID, userID, "", "bootstrap", "success"); err != nil {
-		return platform.DependencyUnavailable
-	}
 	if err = queries.MarkInstallationInitialized(ctx); err != nil {
 		return platform.DependencyUnavailable
 	}
@@ -210,15 +206,10 @@ func (i *Initializer) bootstrap(ctx context.Context) platform.State {
 	return platform.Ready
 }
 
-// Called only during validation, before any account or marker mutation. Commit
-// one anonymous event for this attempt; no supplied input is an audited identity.
-func bootstrapValidationFailure(ctx context.Context, tx pgx.Tx) platform.State {
-	if err := audit(ctx, tx, "", "", "", "bootstrap", "invalid_argument"); err != nil {
-		return platform.DependencyUnavailable
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return platform.DependencyUnavailable
-	}
+// Reached only during validation, before any account or marker mutation. The
+// attempt writes nothing: the caller's deferred rollback closes the
+// transaction and the installation keeps no marker and no user.
+func bootstrapValidationFailure() platform.State {
 	return platform.BootstrapFailed
 }
 

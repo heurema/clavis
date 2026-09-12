@@ -21,7 +21,7 @@ import (
 // fakeGrants records exactly what each route handed the grant service and the
 // member half of the connection reads, so a rejected request can be proven
 // never to have reached either. It is embedded in backendFixture, which
-// supplies the session and the event recorder.
+// supplies the session.
 type fakeGrants struct {
 	grantList       auth.GrantList
 	grantMutation   auth.GrantMutation
@@ -122,16 +122,15 @@ var (
 type grantRoute struct {
 	name, method, path, body, operation string
 	success                             int
-	action                              auth.EventAction
 	expected                            any
 	dryRunnable                         bool
 }
 
 func grantRoutes() []grantRoute {
 	return []grantRoute{
-		{"list", "GET", auth.GrantsPath, "", "list", 200, auth.EventGrantsList, grantListing, false},
-		{"create", "POST", auth.GrantsPath, validGrantBody, "create", 201, auth.EventGrantCreate, grantCreated, true},
-		{"revoke", "POST", auth.GrantRevokePath, validGrantBody, "revoke", 200, auth.EventGrantRevoke, grantRevoked, true},
+		{"list", "GET", auth.GrantsPath, "", "list", 200, grantListing, false},
+		{"create", "POST", auth.GrantsPath, validGrantBody, "create", 201, grantCreated, true},
+		{"revoke", "POST", auth.GrantRevokePath, validGrantBody, "revoke", 200, grantRevoked, true},
 	}
 }
 
@@ -173,7 +172,6 @@ func TestGrantRoutesReturnDocumentedSuccessBodies(t *testing.T) {
 			require.Len(t, f.grantCalls, 1)
 			require.Equal(t, route.operation, f.grantCalls[0].operation)
 			require.False(t, f.grantCalls[0].dryRun)
-			require.Empty(t, f.events, "a service-owned outcome must not be recorded again by the adapter")
 		})
 	}
 }
@@ -187,7 +185,6 @@ func TestGrantCreationAnswers200WhenTheGrantAlreadyExisted(t *testing.T) {
 		bearerHeaders("Content-Type", "application/json"))
 	require.Equal(t, 200, response.Code)
 	require.Contains(t, response.Body.String(), `"created":false`)
-	require.Empty(t, f.events)
 }
 
 func TestGrantRoutesHandTheServiceExactlyWhatWasAsked(t *testing.T) {
@@ -230,7 +227,6 @@ func TestGrantDryRunIsRequestedExplicitlyAndMarksTheResult(t *testing.T) {
 			require.Len(t, f.grantCalls, 1)
 			require.True(t, f.grantCalls[0].dryRun)
 			require.Contains(t, response.Body.String(), `"dryRun":true`)
-			require.Empty(t, f.events)
 		})
 	}
 }
@@ -270,7 +266,6 @@ func TestGrantServiceFailuresUseDocumentedStatusesAndHints(t *testing.T) {
 				require.Equal(t, tc.code, failure.Error.Code)
 				require.Equal(t, tc.hint, failure.Error.Hint)
 				require.NotContains(t, response.Body.String(), "SENTINEL")
-				require.Empty(t, f.events, "the service owns its own denial events")
 			})
 		}
 	}
@@ -279,38 +274,37 @@ func TestGrantServiceFailuresUseDocumentedStatusesAndHints(t *testing.T) {
 func TestGrantBodiesAndQueriesAreStrict(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, path, body, contentType string
-		action                                auth.EventAction
 	}{
-		{"unknown field", "POST", auth.GrantsPath, `{"user":"alice","connection":"c-name","role":"admin"}`, "application/json", auth.EventGrantCreate},
-		{"duplicate field", "POST", auth.GrantsPath, `{"user":"alice","user":"bob","connection":"c-name"}`, "application/json", auth.EventGrantCreate},
-		{"case alias", "POST", auth.GrantsPath, `{"User":"alice","connection":"c-name"}`, "application/json", auth.EventGrantCreate},
-		{"null user", "POST", auth.GrantsPath, `{"user":null,"connection":"c-name"}`, "application/json", auth.EventGrantCreate},
-		{"numeric user", "POST", auth.GrantsPath, `{"user":7,"connection":"c-name"}`, "application/json", auth.EventGrantCreate},
-		{"trailing document", "POST", auth.GrantsPath, validGrantBody + `{}`, "application/json", auth.EventGrantCreate},
-		{"empty body", "POST", auth.GrantsPath, `{}`, "application/json", auth.EventGrantCreate},
-		{"missing connection", "POST", auth.GrantsPath, `{"user":"alice"}`, "application/json", auth.EventGrantCreate},
-		{"uppercase user", "POST", auth.GrantsPath, `{"user":"ALICE","connection":"c-name"}`, "application/json", auth.EventGrantCreate},
-		{"short user", "POST", auth.GrantsPath, `{"user":"ab","connection":"c-name"}`, "application/json", auth.EventGrantCreate},
-		{"bad connection", "POST", auth.GrantsPath, `{"user":"alice","connection":"C NAME"}`, "application/json", auth.EventGrantCreate},
-		{"form create", "POST", auth.GrantsPath, "user=alice&connection=c-name", "application/x-www-form-urlencoded", auth.EventGrantCreate},
-		{"typeless create", "POST", auth.GrantsPath, validGrantBody, "", auth.EventGrantCreate},
+		{"unknown field", "POST", auth.GrantsPath, `{"user":"alice","connection":"c-name","role":"admin"}`, "application/json"},
+		{"duplicate field", "POST", auth.GrantsPath, `{"user":"alice","user":"bob","connection":"c-name"}`, "application/json"},
+		{"case alias", "POST", auth.GrantsPath, `{"User":"alice","connection":"c-name"}`, "application/json"},
+		{"null user", "POST", auth.GrantsPath, `{"user":null,"connection":"c-name"}`, "application/json"},
+		{"numeric user", "POST", auth.GrantsPath, `{"user":7,"connection":"c-name"}`, "application/json"},
+		{"trailing document", "POST", auth.GrantsPath, validGrantBody + `{}`, "application/json"},
+		{"empty body", "POST", auth.GrantsPath, `{}`, "application/json"},
+		{"missing connection", "POST", auth.GrantsPath, `{"user":"alice"}`, "application/json"},
+		{"uppercase user", "POST", auth.GrantsPath, `{"user":"ALICE","connection":"c-name"}`, "application/json"},
+		{"short user", "POST", auth.GrantsPath, `{"user":"ab","connection":"c-name"}`, "application/json"},
+		{"bad connection", "POST", auth.GrantsPath, `{"user":"alice","connection":"C NAME"}`, "application/json"},
+		{"form create", "POST", auth.GrantsPath, "user=alice&connection=c-name", "application/x-www-form-urlencoded"},
+		{"typeless create", "POST", auth.GrantsPath, validGrantBody, ""},
 		{"oversized", "POST", auth.GrantsPath, `{"user":"alice","connection":"` + strings.Repeat("c", auth.MaxCredentialBody) + `"}`,
-			"application/json", auth.EventGrantCreate},
-		{"revoke unknown field", "POST", auth.GrantRevokePath, `{"user":"alice","connection":"c-name","x":1}`, "application/json", auth.EventGrantRevoke},
-		{"revoke bad user", "POST", auth.GrantRevokePath, `{"user":"1alice","connection":"c-name"}`, "application/json", auth.EventGrantRevoke},
-		{"listing body", "GET", auth.GrantsPath, `{"grants":[]}`, "application/json", auth.EventGrantsList},
-		{"listing user", "GET", auth.GrantsPath + "?user=ALICE", "", "", auth.EventGrantsList},
-		{"listing connection", "GET", auth.GrantsPath + "?connection=C%20NAME", "", "", auth.EventGrantsList},
-		{"listing limit zero", "GET", auth.GrantsPath + "?limit=0", "", "", auth.EventGrantsList},
-		{"listing limit above bound", "GET", auth.GrantsPath + "?limit=1001", "", "", auth.EventGrantsList},
-		{"listing limit text", "GET", auth.GrantsPath + "?limit=abc", "", "", auth.EventGrantsList},
-		{"listing limit repeated", "GET", auth.GrantsPath + "?limit=1&limit=2", "", "", auth.EventGrantsList},
-		{"listing unknown parameter", "GET", auth.GrantsPath + "?dryRun=true", "", "", auth.EventGrantsList},
-		{"listing malformed", "GET", auth.GrantsPath + "?limit=%zz", "", "", auth.EventGrantsList},
-		{"create dry run value", "POST", auth.GrantsPath + "?dryRun=yes", validGrantBody, "application/json", auth.EventGrantCreate},
-		{"create dry run case", "POST", auth.GrantsPath + "?dryRun=TRUE", validGrantBody, "application/json", auth.EventGrantCreate},
-		{"create unknown parameter", "POST", auth.GrantsPath + "?limit=1", validGrantBody, "application/json", auth.EventGrantCreate},
-		{"revoke dry run bare", "POST", auth.GrantRevokePath + "?dryRun", validGrantBody, "application/json", auth.EventGrantRevoke},
+			"application/json"},
+		{"revoke unknown field", "POST", auth.GrantRevokePath, `{"user":"alice","connection":"c-name","x":1}`, "application/json"},
+		{"revoke bad user", "POST", auth.GrantRevokePath, `{"user":"1alice","connection":"c-name"}`, "application/json"},
+		{"listing body", "GET", auth.GrantsPath, `{"grants":[]}`, "application/json"},
+		{"listing user", "GET", auth.GrantsPath + "?user=ALICE", "", ""},
+		{"listing connection", "GET", auth.GrantsPath + "?connection=C%20NAME", "", ""},
+		{"listing limit zero", "GET", auth.GrantsPath + "?limit=0", "", ""},
+		{"listing limit above bound", "GET", auth.GrantsPath + "?limit=1001", "", ""},
+		{"listing limit text", "GET", auth.GrantsPath + "?limit=abc", "", ""},
+		{"listing limit repeated", "GET", auth.GrantsPath + "?limit=1&limit=2", "", ""},
+		{"listing unknown parameter", "GET", auth.GrantsPath + "?dryRun=true", "", ""},
+		{"listing malformed", "GET", auth.GrantsPath + "?limit=%zz", "", ""},
+		{"create dry run value", "POST", auth.GrantsPath + "?dryRun=yes", validGrantBody, "application/json"},
+		{"create dry run case", "POST", auth.GrantsPath + "?dryRun=TRUE", validGrantBody, "application/json"},
+		{"create unknown parameter", "POST", auth.GrantsPath + "?limit=1", validGrantBody, "application/json"},
+		{"revoke dry run bare", "POST", auth.GrantRevokePath + "?dryRun", validGrantBody, "application/json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, handler := grantFixture(t)
@@ -323,9 +317,6 @@ func TestGrantBodiesAndQueriesAreStrict(t *testing.T) {
 			require.Contains(t, response.Body.String(), auth.InvalidArgument)
 			require.NotContains(t, response.Body.String(), "alice")
 			require.Empty(t, f.grantCalls, "an invalid request must never reach the service")
-			// The body and the query are read before the credential, so the
-			// rejection names the route's action and no unverified actor.
-			require.Equal(t, []auth.Event{{Action: tc.action, Outcome: auth.OutcomeInvalidArgument}}, f.events)
 		})
 	}
 }
@@ -338,15 +329,14 @@ func TestGrantRoutesAreBearerOnly(t *testing.T) {
 			name    string
 			headers http.Header
 			status  int
-			outcome auth.EventOutcome
 		}{
-			{"cookie only", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 401, auth.OutcomeUnauthenticated},
-			{"no credential", http.Header{}, 401, auth.OutcomeUnauthenticated},
+			{"cookie only", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 401},
+			{"no credential", http.Header{}, 401},
 			{"bearer and cookie", http.Header{
 				"Authorization": {"Bearer " + string(fixtureToken)},
 				"Cookie":        {developmentCookie + "=" + string(fixtureToken)},
-			}, 400, auth.OutcomeInvalidArgument},
-			{"cross origin", bearerHeaders("Origin", "http://evil.invalid"), 403, auth.OutcomeForbidden},
+			}, 400},
+			{"cross origin", bearerHeaders("Origin", "http://evil.invalid"), 403},
 		} {
 			t.Run(route.name+"/"+tc.name, func(t *testing.T) {
 				f, handler := grantFixture(t)
@@ -358,17 +348,14 @@ func TestGrantRoutesAreBearerOnly(t *testing.T) {
 				require.Equal(t, tc.status, response.Code)
 				require.Empty(t, response.Header().Get("Set-Cookie"))
 				require.Empty(t, f.grantCalls)
-				require.Len(t, f.events, 1)
-				require.Equal(t, route.action, f.events[0].Action)
-				require.Equal(t, tc.outcome, f.events[0].Outcome)
 			})
 		}
 	}
 }
 
 // Members are not refused here: the service scopes a listing to the caller's
-// own grants and denies the mutations with its own event, so the adapter must
-// hand it the session rather than deciding on the role itself.
+// own grants and denies the mutations itself, so the adapter must hand it the
+// session rather than deciding on the role itself.
 func TestGrantRoutesPassMemberSessionsToTheService(t *testing.T) {
 	for _, route := range grantRoutes() {
 		t.Run(route.name, func(t *testing.T) {
@@ -378,7 +365,6 @@ func TestGrantRoutesPassMemberSessionsToTheService(t *testing.T) {
 			require.Equal(t, route.success, response.Code)
 			require.Len(t, f.grantCalls, 1)
 			require.Equal(t, auth.Member, f.grantCalls[0].role)
-			require.Empty(t, f.events)
 		})
 	}
 }
@@ -388,24 +374,12 @@ func TestGrantRoutesFailClosedWithoutAService(t *testing.T) {
 		f := &backendFixture{}
 		adapter, err := newAuthHTTP("http://127.0.0.1", f, fixtureViews())
 		require.NoError(t, err)
-		adapter.recorder, adapter.admin, adapter.connections = f, f, f
+		adapter.admin, adapter.connections = f, f
 		ready := platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
 		handler := handler(time.Second, ready, slog.New(slog.NewJSONHandler(io.Discard, nil)), adapter)
 		response := requestAuth(handler, route.method, route.path, route.body, route.headers())
 		require.Equal(t, 503, response.Code, route.name)
 		require.Contains(t, response.Body.String(), auth.ServiceUnavailable)
-		require.Empty(t, f.grantCalls)
-	}
-}
-
-func TestGrantRejectionAuditFailureReturnsUnavailability(t *testing.T) {
-	for _, route := range grantRoutes() {
-		f, handler := grantFixture(t)
-		f.recordErr = errors.New("SENTINEL_PRIVATE_DRIVER")
-		response := requestAuth(handler, route.method, route.path, route.body, http.Header{"Content-Type": {"application/json"}})
-		require.Equal(t, 503, response.Code, route.name)
-		require.Contains(t, response.Body.String(), auth.ServiceUnavailable)
-		require.NotContains(t, response.Body.String(), "SENTINEL")
 		require.Empty(t, f.grantCalls)
 	}
 }
@@ -485,7 +459,6 @@ func TestConnectionReadsUseTheMemberProjectionForMembers(t *testing.T) {
 			require.Empty(t, f.connectionCalls, "a member read never reaches the administrator projection")
 			require.Len(t, f.grantCalls, 1)
 			require.Equal(t, tc.operation, f.grantCalls[0].operation)
-			require.Empty(t, f.events)
 		})
 	}
 	// Selectors and bounds behave for a member exactly as for an administrator.
@@ -503,9 +476,9 @@ func TestConnectionReadsUseTheMemberProjectionForMembers(t *testing.T) {
 	require.Empty(t, f.grantCalls)
 }
 
-// A member's denied get is the service's answer, passed through with its hint
-// and without an adapter event, so an ungranted connection is indistinguishable
-// from one that does not exist.
+// A member's denied get is the service's answer, passed through with its hint,
+// so an ungranted connection is indistinguishable from one that does not
+// exist.
 func TestMemberConnectionDenialsPassThroughUnchanged(t *testing.T) {
 	f, handler := grantFixture(t)
 	f.role = auth.Member
@@ -516,7 +489,6 @@ func TestMemberConnectionDenialsPassThroughUnchanged(t *testing.T) {
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failure))
 	require.Equal(t, auth.ConnectionNotFound, failure.Error.Code)
 	require.Equal(t, "List connections to see what you may use.", failure.Error.Hint)
-	require.Empty(t, f.events)
 }
 
 // whoami answers what the caller may use, so the first call an agent makes
@@ -535,7 +507,6 @@ func TestIdentityReportsGrantedConnectionNamesForMembersOnly(t *testing.T) {
 	require.Len(t, f.grantCalls, 1)
 	require.Equal(t, "member-names", f.grantCalls[0].operation)
 	require.Equal(t, auth.MaxConnectionListing, f.grantCalls[0].limit)
-	require.Empty(t, f.events)
 
 	f, handler = grantFixture(t)
 	f.grantedNames, f.namesTruncated = []string{"payments-prod-reporting"}, true
@@ -560,18 +531,15 @@ func TestIdentityReportsGrantedConnectionNamesForMembersOnly(t *testing.T) {
 // Every user route takes a reference: a UUID or a username, sent unchanged for
 // the service to resolve. Only a shape that can be neither is refused here.
 func TestUserRoutesAcceptReferencesAndRefuseUnusableOnes(t *testing.T) {
-	patterns := map[string]auth.EventAction{
-		auth.UserBlockPath:    auth.EventUserBlock,
-		auth.UserUnblockPath:  auth.EventUserUnblock,
-		auth.UserPasswordPath: auth.EventUserResetPassword,
-		auth.UserRolePath:     auth.EventUserDemote,
-		auth.RevokePath:       auth.EventRevoke,
+	patterns := []string{
+		auth.UserBlockPath, auth.UserUnblockPath, auth.UserPasswordPath,
+		auth.UserRolePath, auth.RevokePath,
 	}
 	bodies := map[string]string{
 		auth.UserPasswordPath: validPasswordBody,
 		auth.UserRolePath:     validRoleBody,
 	}
-	for pattern, action := range patterns {
+	for _, pattern := range patterns {
 		for _, reference := range []string{grantUsername, adminTargetID} {
 			f, handler := adminFixture(t)
 			headers := bearerHeaders()
@@ -581,7 +549,6 @@ func TestUserRoutesAcceptReferencesAndRefuseUnusableOnes(t *testing.T) {
 			path := strings.Replace(pattern, "{userID}", reference, 1)
 			response := requestAuth(handler, "POST", path, bodies[pattern], headers)
 			require.Equal(t, 200, response.Code, path)
-			require.Empty(t, f.events)
 			if pattern == auth.RevokePath {
 				require.Equal(t, 1, f.revokeCalls, path)
 				continue
@@ -601,9 +568,6 @@ func TestUserRoutesAcceptReferencesAndRefuseUnusableOnes(t *testing.T) {
 			require.Equal(t, 400, response.Code, path)
 			require.Empty(t, f.adminCalls, path)
 			require.Zero(t, f.revokeCalls, path)
-			require.Len(t, f.events, 1)
-			require.Equal(t, action, f.events[0].Action)
-			require.Equal(t, auth.OutcomeInvalidArgument, f.events[0].Outcome)
 		}
 	}
 }
@@ -627,7 +591,6 @@ func TestUserCreationRefusesUUIDShapedUsernamesWithAHint(t *testing.T) {
 			require.Equal(t, auth.InvalidArgument, failure.Error.Code)
 			require.Equal(t, tc.hint, failure.Error.Hint)
 			require.Empty(t, f.adminCalls, "an invalid body must never reach the service")
-			require.Equal(t, []auth.Event{{Action: auth.EventUserCreate, Outcome: auth.OutcomeInvalidArgument}}, f.events)
 		})
 	}
 }

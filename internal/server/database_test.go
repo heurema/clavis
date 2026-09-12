@@ -71,7 +71,7 @@ func TestRealHTTPLoginFailsClosedBeforeInitializationAndAfterPoolClose(t *testin
 		checks++
 		return checker.Check(ctx)
 	})
-	handler, err := HandlerWithAuth(time.Second, health, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, health, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	reject := func(t *testing.T) {
 		t.Helper()
@@ -99,7 +99,7 @@ func TestRealHTTPLoginFailsClosedBeforeInitializationAndAfterPoolClose(t *testin
 	t.Run("unavailable", reject)
 }
 
-func TestRealHTTPAuthenticationEventsAndLockDeadlines(t *testing.T) {
+func TestRealHTTPAuthenticationAndLockDeadlines(t *testing.T) {
 	pool, path, password := serverDatabase(t)
 	checker := store.NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
@@ -110,7 +110,7 @@ func TestRealHTTPAuthenticationEventsAndLockDeadlines(t *testing.T) {
 	})
 	service, err := store.NewLocalAuth(pool, readiness, auth.DefaultSessionTTL)
 	require.NoError(t, err)
-	handler, err := HandlerWithAuth(time.Second, readiness, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, readiness, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
 	require.NoError(t, err)
@@ -128,28 +128,15 @@ func TestRealHTTPAuthenticationEventsAndLockDeadlines(t *testing.T) {
 	response := requestAuth(handler, "GET", auth.WhoAmIPath, "", headers)
 	require.Equal(t, 200, response.Code)
 	require.NotContains(t, response.Body.String(), string(issued.Token))
-	before := 0
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events`).Scan(&before))
 	response = requestAuth(handler, "POST", auth.LoginPath, `{"SENTINEL_PRIVATE_BODY":"x"}`, http.Header{"Content-Type": {"application/json"}})
 	require.Equal(t, 400, response.Code)
+	require.NotContains(t, response.Body.String(), "SENTINEL")
 	var count int
-	var event string
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events`).Scan(&count))
-	require.Equal(t, before+1, count)
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT row_to_json(auth_events)::text FROM auth_events WHERE outcome='invalid_argument'`).Scan(&event))
-	require.NotContains(t, event, "SENTINEL")
-	require.Contains(t, event, `"actor_id":null`)
-	require.Contains(t, event, `"target_id":null`)
-	require.Contains(t, event, `"session_id":null`)
-	for _, operation := range []string{"login", "logout", "revoke", "audit"} {
+	for _, operation := range []string{"login", "logout", "revoke"} {
 		t.Run(operation, func(t *testing.T) {
 			tx, err := pool.Begin(t.Context())
 			require.NoError(t, err)
-			if operation == "audit" {
-				_, err = tx.Exec(t.Context(), `LOCK TABLE auth_events IN ACCESS EXCLUSIVE MODE`)
-			} else {
-				_, err = tx.Exec(t.Context(), `SELECT id FROM users WHERE id=$1 FOR UPDATE`, issued.User.ID)
-			}
+			_, err = tx.Exec(t.Context(), `SELECT id FROM users WHERE id=$1 FOR UPDATE`, issued.User.ID)
 			require.NoError(t, err)
 			start := time.Now()
 			switch operation {
@@ -159,8 +146,6 @@ func TestRealHTTPAuthenticationEventsAndLockDeadlines(t *testing.T) {
 				response = requestAuth(handler, "POST", auth.LogoutPath, "", headers)
 			case "revoke":
 				response = requestAuth(handler, "POST", "/api/admin/users/"+issued.User.ID+"/sessions/revoke", "", headers)
-			case "audit":
-				response = requestAuth(handler, "POST", auth.LogoutPath, "", http.Header{})
 			}
 			require.Equal(t, 503, response.Code)
 			require.Contains(t, response.Body.String(), auth.ServiceUnavailable)
@@ -227,7 +212,7 @@ func TestBrowserLoginNeverRetargetsAnExistingSession(t *testing.T) {
 	_, err = pool.Exec(t.Context(), `INSERT INTO users(id,username,password_hash,role)
 		SELECT $1,'member-user',password_hash,'member' FROM users WHERE username='personal-admin'`, fixtureIdentity.User.ID)
 	require.NoError(t, err)
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	headers := http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}
 	form := func(username string, password auth.Secret) string {

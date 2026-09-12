@@ -168,7 +168,7 @@ func TestConcurrentProcessesInitializeExactlyOnce(t *testing.T) {
 		require.NoError(t, cmd.Wait())
 	}
 	require.Equal(t, appliedLedgerRows(), countRows(t, pool, "goose_db_version"))
-	for _, table := range []string{"users", "auth_events", "installation"} {
+	for _, table := range []string{"users", "installation"} {
 		require.Equal(t, 1, countRows(t, pool, table))
 	}
 	// Obsolete values include a special file: an initialized restart must not
@@ -204,23 +204,17 @@ func TestMigrationFailureAndFreshReadiness(t *testing.T) {
 	require.Equal(t, platform.SchemaError, i.Check(t.Context()).State)
 }
 
-func TestBootstrapRepairAtomicAuditAndInterruption(t *testing.T) {
+func TestBootstrapRepairAndInterruption(t *testing.T) {
 	pool := testPool(t)
 	path, _ := testSecret(t)
 	require.NoError(t, os.Chmod(path, 0644))
 	i := NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.BootstrapFailed, i.Attempt(t.Context()).State)
-	require.Zero(t, countRows(t, pool, "users"))
-	require.Equal(t, 1, countRows(t, pool, "auth_events"))
-	require.NoError(t, os.Chmod(path, 0600))
-	execSQL(t, pool, `CREATE FUNCTION reject_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'private failure'; END $$;
-		CREATE TRIGGER reject_event BEFORE INSERT ON auth_events FOR EACH ROW EXECUTE FUNCTION reject_event()`)
-	require.Equal(t, platform.DependencyUnavailable, i.Attempt(t.Context()).State)
+	// A validation failure leaves neither an account nor the marker.
 	for _, table := range []string{"users", "installation"} {
 		require.Zero(t, countRows(t, pool, table))
 	}
-	require.Equal(t, 1, countRows(t, pool, "auth_events"))
-	execSQL(t, pool, `DROP TRIGGER reject_event ON auth_events`)
+	require.NoError(t, os.Chmod(path, 0600))
 	lock, err := pool.Begin(t.Context())
 	require.NoError(t, err)
 	_, err = lock.Exec(t.Context(), `SELECT pg_advisory_xact_lock($1)`, MigrationLock)
@@ -262,13 +256,15 @@ func TestWorkerNoticesRepairedSecretWithoutRestart(t *testing.T) {
 	go func() { defer close(done); i.Run(ctx) }()
 	t.Cleanup(func() { cancel(); <-done })
 	require.Eventually(t, func() bool { return i.Check(t.Context()).State == platform.BootstrapFailed }, 5*time.Second, 10*time.Millisecond)
-	assertBootstrapFailureEvents(t, pool, 1, path, "personal-admin")
+	for _, table := range []string{"users", "installation"} {
+		require.Zero(t, countRows(t, pool, table))
+	}
 	require.NoError(t, os.Chmod(path, 0600))
 	start := time.Now()
 	require.Eventually(t, func() bool { return i.Check(t.Context()).Ready() }, 35*time.Second, 100*time.Millisecond)
 	require.GreaterOrEqual(t, time.Since(start), 29*time.Second)
 	require.Equal(t, 1, countRows(t, pool, "users"))
-	require.Equal(t, 2, countRows(t, pool, "auth_events"))
+	require.Equal(t, 1, countRows(t, pool, "installation"))
 }
 
 func TestWorkerCancellationWhileInitializationLockIsHeld(t *testing.T) {
@@ -303,8 +299,8 @@ func TestInterruptedBootstrapConnectionRollsBackAndRetries(t *testing.T) {
 	pool := testPool(t)
 	path, _ := testSecret(t)
 	require.NoError(t, Migrate(t.Context(), pool))
-	execSQL(t, pool, `CREATE FUNCTION delay_bootstrap_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$;
-		CREATE TRIGGER delay_bootstrap_event BEFORE INSERT ON auth_events FOR EACH ROW EXECUTE FUNCTION delay_bootstrap_event()`)
+	execSQL(t, pool, `CREATE FUNCTION delay_bootstrap_user() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(10); RETURN NEW; END $$;
+		CREATE TRIGGER delay_bootstrap_user BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION delay_bootstrap_user()`)
 	i := NewInitializer(pool, "personal-admin", path)
 	done := make(chan platform.Readiness, 1)
 	go func() { done <- i.Attempt(t.Context()) }()
@@ -324,14 +320,51 @@ func TestInterruptedBootstrapConnectionRollsBackAndRetries(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("interrupted transaction did not return")
 	}
-	for _, table := range []string{"users", "auth_events", "installation"} {
+	for _, table := range []string{"users", "installation"} {
 		require.Zero(t, countRows(t, pool, table))
 	}
-	execSQL(t, pool, `DROP TRIGGER delay_bootstrap_event ON auth_events`)
+	execSQL(t, pool, `DROP TRIGGER delay_bootstrap_user ON users`)
 	require.Equal(t, platform.Ready, i.Attempt(t.Context()).State)
-	for _, table := range []string{"users", "auth_events", "installation"} {
+	for _, table := range []string{"users", "installation"} {
 		require.Equal(t, 1, countRows(t, pool, table))
 	}
+}
+
+// The audit journal leaves the MVP: 005 drops the populated table exactly once
+// on an installation that a previous release had already initialized, and
+// readiness succeeds afterwards without ever looking for it.
+func TestAuditJournalDropAppliesOnceToInitializedInstallation(t *testing.T) {
+	pool := testPool(t)
+	previous := embeddedMapFS(t)
+	delete(previous, "005_drop_audit_events.sql")
+	require.NoError(t, migrateFS(t.Context(), pool, previous))
+	path, _ := testSecret(t)
+	// The previous release bootstrapped and stored events in its journal.
+	execSQL(t, pool, `INSERT INTO users(id,username,password_hash,role) VALUES ($1,'personal-admin',$2,'admin')`,
+		randomTestID(t), auth.DummyPasswordHash())
+	execSQL(t, pool, `INSERT INTO installation(singleton,initialized_at) VALUES (true, clock_timestamp())`)
+	execSQL(t, pool, `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'login', 'success')`, randomTestID(t))
+	i := NewInitializer(pool, "personal-admin", path)
+	// A ledger behind the embedded manifest is a pending migration.
+	require.Equal(t, platform.Initializing, i.Check(t.Context()).State)
+
+	require.Equal(t, platform.Ready, i.Attempt(t.Context()).State)
+	require.Equal(t, platform.Ready, i.Attempt(t.Context()).State)
+	require.Equal(t, appliedLedgerRows(), countRows(t, pool, "goose_db_version"))
+	var present bool
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('auth_events') IS NOT NULL`).Scan(&present))
+	require.False(t, present, "the populated journal is dropped with its rows")
+	require.Equal(t, platform.Ready, i.Check(t.Context()).State)
+	require.Equal(t, 1, countRows(t, pool, "users"))
+	require.Equal(t, 1, countRows(t, pool, "installation"))
+
+	// A fresh database reaches the same schema and the same readiness.
+	fresh := testPool(t)
+	freshPath, _ := testSecret(t)
+	require.Equal(t, platform.Ready, NewInitializer(fresh, "personal-admin", freshPath).Attempt(t.Context()).State)
+	require.Equal(t, appliedLedgerRows(), countRows(t, fresh, "goose_db_version"))
+	require.NoError(t, fresh.QueryRow(t.Context(), `SELECT to_regclass('auth_events') IS NOT NULL`).Scan(&present))
+	require.False(t, present)
 }
 
 func TestInitializationWorkerRecoversFromDatabaseOutage(t *testing.T) {
