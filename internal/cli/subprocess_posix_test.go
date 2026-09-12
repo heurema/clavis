@@ -64,7 +64,7 @@ func processCLI(t *testing.T, binary, input string, args ...string) (int, string
 func TestCLIProcesses(t *testing.T) {
 	binary := buildCLI(t)
 	t.Run("workflow-and-offline", func(t *testing.T) {
-		cliHome(t)
+		home := cliHome(t)
 		password := testToken()
 		fixture, server := newCLIFixture(t, password)
 		t.Setenv("CLAVIS_SERVER_URL", server.URL)
@@ -99,6 +99,32 @@ func TestCLIProcesses(t *testing.T) {
 		require.Equal(t, 0, exit)
 		require.Contains(t, output, "User: alice ("+alice+")\nRole: member\nStatus: blocked\nCreated: ")
 		require.True(t, strings.HasSuffix(output, "Z\nSessions revoked: true\n"))
+		// A connection created by an agent reads its credential from a file:
+		// the secret is never an argument and never reaches the output.
+		connectionSecret := testToken()
+		secretPath := filepath.Join(home, "connection-secret")
+		require.NoError(t, os.WriteFile(secretPath, []byte(string(connectionSecret)+"\n"), 0o600))
+		exit, output, prompt = processCLI(t, binary, "", "connections", "create",
+			"--name", "payments-prod-reporting", "--provider", "postgresql",
+			"--url", "postgres://reporting@db:5432/payments?sslmode=require",
+			"--label", "env=prod", "--password-file", secretPath)
+		require.Equal(t, 0, exit, output)
+		require.Empty(t, prompt)
+		require.False(t, strings.Contains(output, string(connectionSecret)))
+		require.NotContains(t, output, "password")
+		connection, _ := decode(t, output).Data.(map[string]any)["id"].(string)
+		require.True(t, auth.ValidUserID(connection))
+		exit, output, _ = processCLI(t, binary, "", "connections", "list", "--selector", "env=prod", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Equal(t, connection+" payments-prod-reporting postgresql enabled unchecked\n", output)
+		exit, output, _ = processCLI(t, binary, "", "connections", "check", "--connection", "payments-prod-reporting", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Contains(t, output, "Check: reachable at ")
+		exit, output, _ = processCLI(t, binary, "", "connections", "delete", "--connection", "payments-prod-reporting", "--dry-run", "--output=text")
+		require.Equal(t, 1, exit)
+		require.Equal(t, "CONNECTION_IN_USE: The connection must be disabled and have no grants before deletion\n"+
+			"Hint: "+inUseHint+"\n", output)
+
 		exit, output, _ = processCLI(t, binary, "", "sessions", "revoke", "--user", testIdentity().User.ID, "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, "Revoked: true\n", output)
@@ -117,6 +143,10 @@ func TestCLIProcesses(t *testing.T) {
 			{"--help"}, {"login", "--help"}, {"sessions", "revoke", "--help"}, {"users", "--help"}, {"users"},
 			{"users", "list", "--help"}, {"users", "create", "--help"}, {"users", "block", "--help"}, {"users", "unblock", "--help"},
 			{"users", "reset-password", "--help"}, {"users", "set-role", "--help"}, {"version"}, {"version", "--output=text"},
+			{"connections", "--help"}, {"connections"}, {"connections", "list", "--help"}, {"connections", "get", "--help"},
+			{"connections", "create", "--help"}, {"connections", "update", "--help"}, {"connections", "set-credentials", "--help"},
+			{"connections", "enable", "--help"}, {"connections", "disable", "--help"}, {"connections", "delete", "--help"},
+			{"connections", "check", "--help"},
 		} {
 			exit, output, prompt = processCLI(t, binary, "", args...)
 			require.Equal(t, 0, exit, "%v: %s", args, output)
@@ -126,12 +156,77 @@ func TestCLIProcesses(t *testing.T) {
 			{"login", "--username=cli-test", "--output=text"},
 			{"users", "create", "--username=alice", "--output=text"},
 			{"users", "reset-password", "--user", alice, "--output=text"},
+			// A noninteractive create with no secret channel must not prompt.
+			{"connections", "create", "--name", "metrics-prod", "--provider", "victoriametrics",
+				"--url", "https://metrics.example:8428", "--auth", "bearer", "--output=text"},
+			{"connections", "set-credentials", "--connection", "payments-prod-reporting", "--output=text"},
+			{"connections", "create", "--name", "metrics-prod", "--provider", "victoriametrics",
+				"--url", "https://metrics.example:8428", "--password-file", "relative", "--output=text"},
 		} {
 			exit, output, prompt = processCLI(t, binary, string(password), args...)
 			require.Equal(t, 2, exit, "%v", args)
 			require.Equal(t, "INVALID_ARGUMENT", decode(t, output).Error.Code)
 			require.Empty(t, prompt, "noninteractive input must not prompt")
 		}
+	})
+	t.Run("terminal-connections-credentials", func(t *testing.T) {
+		home := cliHome(t)
+		password := testToken()
+		fixture, server := newCLIFixture(t, password)
+		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		exit, _, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin")
+		require.Equal(t, 0, exit)
+		secretPath := filepath.Join(home, "connection-secret")
+		require.NoError(t, os.WriteFile(secretPath, []byte(string(testToken())), 0o600))
+		exit, output, _ := processCLI(t, binary, "", "connections", "create", "--name", "payments-prod-reporting",
+			"--provider", "postgresql", "--url", "postgres://reporting@db:5432/payments", "--password-file", secretPath)
+		require.Equal(t, 0, exit, output)
+		identifier, _ := decode(t, output).Data.(map[string]any)["id"].(string)
+		master, slave := testPTY(t)
+		original, err := term.GetState(int(slave.Fd()))
+		require.NoError(t, err)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, binary, "connections", "set-credentials", "--connection", "payments-prod-reporting")
+		command.Stdin, command.Stderr = slave, slave
+		command.Env = append(os.Environ(), "PATH=")
+		var out bytes.Buffer
+		command.Stdout = &out
+		require.NoError(t, command.Start())
+		prompt := make([]byte, len("Password: "))
+		for i := range prompt {
+			b, err := inputByte(ctx, master)
+			require.NoError(t, err)
+			prompt[i] = b
+		}
+		require.Equal(t, "Password: ", string(prompt))
+		replacement := testToken()
+		_, err = io.WriteString(master, string(replacement)+"\r")
+		require.NoError(t, err)
+		require.NoError(t, command.Wait())
+		require.NoError(t, ctx.Err(), "terminal subprocess hung")
+		result := decode(t, out.String())
+		require.True(t, result.OK)
+		mutation, _ := result.Data.(map[string]any)
+		require.Equal(t, identifier, mutation["connection"].(map[string]any)["id"])
+		require.Equal(t, false, mutation["dryRun"])
+		require.False(t, strings.Contains(out.String(), string(replacement)))
+		require.NotContains(t, out.String(), "password")
+		fixture.mu.Lock()
+		require.Equal(t, replacement, fixture.connSecrets[identifier])
+		fixture.mu.Unlock()
+		restored, err := term.GetState(int(slave.Fd()))
+		require.NoError(t, err)
+		require.Equal(t, original, restored, "terminal state must always be restored")
+		assertTerminalInputEmpty(t, slave)
+		fds := []unix.PollFd{{Fd: int32(master.Fd()), Events: unix.POLLIN}}
+		n, err := unix.Poll(fds, 100)
+		require.NoError(t, err)
+		require.Positive(t, n)
+		var remaining [2048]byte
+		n, err = master.Read(remaining[:])
+		require.NoError(t, err)
+		require.Equal(t, "\r\n", string(remaining[:n]), "nothing but the prompt newline may be echoed")
 	})
 	t.Run("terminal-users-reset", func(t *testing.T) {
 		cliHome(t)

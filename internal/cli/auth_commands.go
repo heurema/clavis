@@ -52,6 +52,7 @@ func authCommands(streams IO, check func(*urfave.Command) error, set func(Result
 			makeCommand("revoke", "Revoke all current sessions for a user (administrator only)",
 				&urfave.StringFlag{Name: "user", Usage: "Target user UUID"})),
 		group("users", "Manage local users (administrator only)", usersCommands(makeCommand)...),
+		group("connections", "Manage data-source connections (administrator only)", connectionsCommands(makeCommand)...),
 	}
 }
 
@@ -62,6 +63,9 @@ func storageFailure() Result {
 // validateAuthArguments rejects invalid targets before any credential input,
 // cache access or network I/O.
 func validateAuthArguments(operation string, command *urfave.Command) *Result {
+	if connectionCommand(operation) {
+		return validateConnectionArguments(operation, command)
+	}
 	var message string
 	switch operation {
 	case "login", "users.create":
@@ -123,6 +127,13 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 	if needsPassword(operation) {
 		var failed *Result
 		if password, failed = readPassword(ctx, command, streams); failed != nil {
+			return *failed
+		}
+	}
+	var secret auth.Secret
+	if secretCommand(operation) {
+		var failed *Result
+		if secret, failed = readSecret(ctx, command, streams, connectionSecretRequired(operation, command)); failed != nil {
 			return *failed
 		}
 	}
@@ -189,6 +200,9 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 		}
 		return success(revoked)
 	default:
+		if connectionCommand(operation) {
+			return runConnections(ctx, operation, command, api, previous.Token, secret)
+		}
 		return runUsers(ctx, operation, command, api, previous.Token, password)
 	}
 }

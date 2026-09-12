@@ -63,21 +63,33 @@ type cliAuthFixture struct {
 	users      []auth.UserRecord
 	truncated  bool
 	createBody []byte
-	requests   int
-	login      int
-	logout     int
-	whoami     int
-	revoke     int
-	admin      int
+	// connections is the connection store. The raw query, the request bodies
+	// and the committed mutations are recorded so tests can pin the wire shape.
+	connections   []auth.Connection
+	connSecrets   map[string]auth.Secret
+	connTruncated bool
+	connBody      []byte
+	connQuery     string
+	connCalls     int
+	connMutations int
+	connOutcome   auth.CheckOutcome
+	requests      int
+	login         int
+	logout        int
+	whoami        int
+	revoke        int
+	admin         int
 }
 
 func newCLIFixture(t *testing.T, password auth.Secret) (*cliAuthFixture, *httptest.Server) {
 	t.Helper()
 	identity := testIdentity()
-	fixture := &cliAuthFixture{password: password, sessions: map[auth.Secret]auth.Identity{}, users: []auth.UserRecord{{
-		ID: identity.User.ID, Username: identity.User.Username, Role: identity.User.Role,
-		CreatedAt: time.Now().UTC().Add(-time.Hour).Truncate(time.Second),
-	}}}
+	fixture := &cliAuthFixture{password: password, sessions: map[auth.Secret]auth.Identity{},
+		connSecrets: map[string]auth.Secret{}, connOutcome: auth.CheckReachable,
+		users: []auth.UserRecord{{
+			ID: identity.User.ID, Username: identity.User.Username, Role: identity.User.Role,
+			CreatedAt: time.Now().UTC().Add(-time.Hour).Truncate(time.Second),
+		}}}
 	server := httptest.NewServer(http.HandlerFunc(fixture.serve))
 	t.Cleanup(server.Close)
 	return fixture, server
@@ -95,8 +107,10 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(auth.ErrorResponse{Error: safe})
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, auth.MaxCredentialBody+1))
+	// Only the connection routes document query parameters.
+	connections := r.URL.Path == auth.ConnectionsPath || strings.HasPrefix(r.URL.Path, auth.ConnectionsPath+"/")
 	if err != nil || len(body) > auth.MaxCredentialBody || r.Header.Get("Cookie") != "" ||
-		r.URL.RawQuery != "" || r.Header.Get("Accept") != "application/json" {
+		(r.URL.RawQuery != "" && !connections) || r.Header.Get("Accept") != "application/json" {
 		fail(auth.InvalidArgument)
 		return
 	}
@@ -125,6 +139,10 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path == auth.UsersPath || (strings.HasPrefix(r.URL.Path, auth.UsersPath+"/") && !strings.HasSuffix(r.URL.Path, "/sessions/revoke")) {
 		f.serveUsers(w, r, identity, body, fail)
+		return
+	}
+	if connections {
+		f.serveConnections(w, r, identity, body, fail)
 		return
 	}
 	if len(body) != 0 {
