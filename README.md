@@ -12,9 +12,9 @@ sign-in, revocable sessions, administrator-managed local users and registered
 data-source connections with encrypted credentials and connectivity checks, with
 external PostgreSQL. Goose manages embedded migrations and sqlc generates the pgx
 application queries. The embedded templ/htmx interface includes setup/readiness,
-sign-in and a protected admin page with read-only user and connection lists.
-There is no separate frontend server. Connection grants, query execution,
-groups and audit inspection remain planned; Google/OIDC sign-in, self-service password change and
+sign-in and a protected admin page with read-only user, connection and grant
+lists. There is no separate frontend server. Query execution, groups and audit
+inspection remain planned; Google/OIDC sign-in, self-service password change and
 account recovery are outside the MVP.
 
 ## Quick start
@@ -209,10 +209,12 @@ protected input. Passwords and tokens are never command-line values or normal
 output. Results default to one JSON document; `--output text` is also available.
 Sessions are stored privately under the user's configuration directory and keyed
 by server origin. `whoami` verifies the session with the server rather than
-trusting cached identity.
+trusting cached identity, and for members it lists the names of the connections
+they hold a grant on (`connections`, with `connectionsTruncated` when the list is
+cut); administrators see no list because they need no grants.
 
-An administrator can run `./bin/clavis sessions revoke --user <user-id>` to revoke
-that user's existing browser and CLI sessions. Sessions have a fixed eight-hour
+An administrator can run `./bin/clavis sessions revoke --user <uuid-or-username>`
+to revoke that user's existing browser and CLI sessions. Sessions have a fixed eight-hour
 default lifetime (`CLAVIS_SESSION_TTL`, 5 minutes through 24 hours), with no
 automatic refresh. Logout revokes the current session; offline CLI logout removes
 the local credential but returns failure because remote revocation is unconfirmed.
@@ -225,12 +227,14 @@ lists them:
 ```sh
 ./bin/clavis users list
 ./bin/clavis users create --username bob
-./bin/clavis users block --user <user-id>
-./bin/clavis users unblock --user <user-id>
-./bin/clavis users reset-password --user <user-id>
-./bin/clavis users set-role --user <user-id> --role admin
+./bin/clavis users block --user bob
+./bin/clavis users unblock --user bob
+./bin/clavis users reset-password --user bob
+./bin/clavis users set-role --user <uuid-or-username> --role admin
 ```
 
+`--user` accepts a user UUID or a username everywhere; usernames are never
+UUID-shaped, so the two cannot be confused, and results always return both.
 `create` and `reset-password` read the password without echo, or from
 `--password-stdin`, exactly like `login`; the administrator chooses every
 password. New users are members. Blocking and password reset revoke all of the
@@ -280,12 +284,41 @@ Labels are `key=value` pairs; `--selector` accepts comma-separated `key=value`,
 source; `check` runs one probe and records `reachable`, `auth_rejected`,
 `unreachable` or `credentials_unavailable` with its time, claiming nothing about
 which data the credentials can read. Replacing credentials clears the last check.
-Delete requires a disabled connection with no grants. Listing is bounded to 1,000
-connections and to the response body limit, always with an explicit `truncated`
-flag. Statement timeout and result caps default to 30 s, 1,000 rows and 1 MiB
+Delete requires a disabled connection with no grants; the `CONNECTION_IN_USE`
+hint names what still blocks it, including the number of remaining grants.
+Listing is bounded to 1,000 connections and to the response body limit, always
+with an explicit `truncated` flag. Statement timeout and result caps default to 30 s, 1,000 rows and 1 MiB
 with ceilings of 120 s, 100,000 rows and 10 MiB; they are enforced once query
 execution ships. Every mutation, check and denied attempt is audited without
 secrets or target hosts; a dry run records nothing.
+
+## Grants
+
+A grant lets one user use one connection. Administrators use any connection
+without a grant; members may only use, list and inspect the connections they
+hold a grant on. Grants reference users and connections by UUID or name, are
+idempotent for retrying agents, and are audited with both parties:
+
+```sh
+clavis grants create --user alice --connection payments-prod-reporting
+clavis grants list --connection payments-prod-reporting
+clavis grants list --user alice --output text
+clavis grants revoke --user alice --connection payments-prod-reporting --dry-run
+```
+
+`create` returns the grant with both identifiers and names (`created: false`
+when it already existed, without a second audit event); `revoke` reports
+`revoked: false` when there was nothing to remove. A member's `connections list`
+and `connections get` return only granted connections in a reduced projection
+(`id`, `name`, `title`, `description`, `scope`, `provider`, `labels`, `enabled`,
+`lastCheck`) that never carries a target, bounds or credentials; an ungranted
+connection is `CONNECTION_NOT_FOUND`, and a disabled granted connection stays
+listed with `enabled: false` but refuses use with `CONNECTION_DISABLED`. Members
+may run `grants list` and see only their own grants; every administrative
+attempt by a member is refused with `FORBIDDEN` and recorded. Revocation takes
+effect on the member's next request, and grants survive blocking and renames.
+Listing is bounded to 1,000 grants with an explicit `truncated` flag. The
+browser admin page lists grants read-only below the connections.
 
 For a custom API address, add `--server <url>` or export `CLAVIS_SERVER_URL`; the
 CLI does not load `.env`. Authentication requires a root-origin HTTPS URL except

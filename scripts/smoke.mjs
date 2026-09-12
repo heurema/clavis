@@ -765,10 +765,11 @@ try {
     everything.data.connections.map((connection) => connection.name),
     ["smoke-metrics", "smoke-postgres"],
   )
-  assert.equal(
-    (await cli("member", ["connections", "list"], 1)).error.code,
-    "FORBIDDEN",
-  )
+  // A member without grants lists nothing rather than being refused.
+  assert.deepEqual((await cli("member", ["connections", "list"])).data, {
+    connections: [],
+    truncated: false,
+  })
   const guarded = await cli(
     "admin-one",
     ["connections", "delete", "--connection", "smoke-metrics", "--dry-run"],
@@ -844,7 +845,7 @@ try {
     ["action='connection.disable' AND outcome='success'", "1"],
     ["action='connection.delete' AND outcome='success'", "1"],
     ["action='connection.delete' AND outcome='connection_in_use'", "0"],
-    ["action='connections.list' AND outcome='forbidden'", "1"],
+    ["action='connections.list' AND outcome='forbidden'", "0"],
     ["action='connections.list' AND outcome='success'", "0"],
   ])
     assert.equal(
@@ -898,6 +899,295 @@ try {
   summary.connectionManagement = "passed"
   console.log(
     "[smoke] Real CLI connection registration, probes, updates, dry runs, deletion and key handling passed",
+  )
+
+  // Grants connect users to connections by name, members discover exactly
+  // what they hold in the reduced projection, and revocation takes effect on
+  // the next call. A second connection proves the delete guard and deletion.
+  await cli("admin-one", [
+    "connections",
+    "create",
+    "--name",
+    "smoke-grants",
+    "--provider",
+    "victoriametrics",
+    "--url",
+    "http://127.0.0.1:9",
+    "--auth",
+    "none",
+  ])
+  const rehearsedGrant = await cli("admin-one", [
+    "grants",
+    "create",
+    "--user",
+    "smoke-member",
+    "--connection",
+    "smoke-postgres",
+    "--dry-run",
+  ])
+  assert.equal(rehearsedGrant.data.dryRun, true)
+  assert.equal(rehearsedGrant.data.created, true)
+  assert.equal(await sql("SELECT count(*) FROM grants", "grants-none"), "0")
+  const granted = await cli("admin-one", [
+    "grants",
+    "create",
+    "--user",
+    "smoke-member",
+    "--connection",
+    "smoke-postgres",
+  ])
+  assert.equal(granted.data.created, true)
+  assert.deepEqual(granted.data.grant.user, {
+    id: member.id,
+    name: "smoke-member",
+  })
+  assert.deepEqual(granted.data.grant.connection, {
+    id: pgConnection.id,
+    name: "smoke-postgres",
+  })
+  assert.equal(granted.data.grant.createdBy.name, "smoke-admin")
+  const repeated = await cli("admin-one", [
+    "grants",
+    "create",
+    "--user",
+    member.id,
+    "--connection",
+    pgConnection.id,
+  ])
+  assert.equal(repeated.data.created, false)
+  await cli("admin-one", [
+    "grants",
+    "create",
+    "--user",
+    "smoke-member",
+    "--connection",
+    "smoke-grants",
+  ])
+  const identity = await cli("member", ["whoami"])
+  assert.deepEqual(identity.data.connections, [
+    "smoke-grants",
+    "smoke-postgres",
+  ])
+  assert.equal(identity.data.connectionsTruncated, undefined)
+  const visible = await cli("member", [
+    "connections",
+    "list",
+    "--selector",
+    "service=platform",
+  ])
+  assert.deepEqual(
+    visible.data.connections.map((connection) => connection.name),
+    ["smoke-postgres"],
+  )
+  const seen = await cli("member", [
+    "connections",
+    "get",
+    "--connection",
+    "smoke-postgres",
+  ])
+  assert.equal(seen.data.id, pgConnection.id)
+  assert.equal(seen.data.target, undefined, "members never see targets")
+  assert.equal(seen.data.maxRows, undefined, "members never see bounds")
+  assert(!JSON.stringify(seen).includes("127.0.0.1:" + env.CLAVIS_DB_PORT))
+  const memberText = await execute(
+    join(root, "bin/clavis"),
+    [
+      "connections",
+      "get",
+      "--connection",
+      "smoke-postgres",
+      "--output",
+      "text",
+      "--server",
+      apiURL,
+    ],
+    "auth-member-connections-get-text",
+    { env: clientEnv("member") },
+  )
+  assert(memberText.includes("smoke-postgres"))
+  assert(!memberText.includes("Target"))
+  for (const args of [
+    ["connections", "check", "--connection", "smoke-postgres"],
+    [
+      "grants",
+      "create",
+      "--user",
+      "smoke-member",
+      "--connection",
+      "smoke-grants",
+    ],
+    [
+      "grants",
+      "revoke",
+      "--user",
+      "smoke-member",
+      "--connection",
+      "smoke-grants",
+    ],
+    ["grants", "list", "--user", "smoke-admin"],
+  ])
+    assert.equal((await cli("member", args, 1)).error.code, "FORBIDDEN")
+  const own = await cli("member", ["grants", "list"])
+  assert.deepEqual(
+    own.data.grants.map((grant) => grant.connection.name),
+    ["smoke-grants", "smoke-postgres"],
+  )
+  const grantsText = await execute(
+    join(root, "bin/clavis"),
+    ["grants", "list", "--output", "text", "--server", apiURL],
+    "auth-member-grants-text",
+    { env: clientEnv("member") },
+  )
+  assert(grantsText.includes("smoke-member smoke-postgres "))
+  assert(!grantsText.includes("Truncated"))
+  const filtered = await cli("admin-one", [
+    "grants",
+    "list",
+    "--connection",
+    "smoke-grants",
+  ])
+  assert.equal(filtered.data.grants.length, 1)
+  assert.equal(filtered.data.grants[0].user.name, "smoke-member")
+  // The delete guard names both conditions and counts the grants.
+  const stillGranted = await cli(
+    "admin-one",
+    ["connections", "delete", "--connection", "smoke-grants", "--dry-run"],
+    1,
+  )
+  assert.equal(stillGranted.error.code, "CONNECTION_IN_USE")
+  assert(stillGranted.error.hint.includes("1 grant"), stillGranted.error.hint)
+  await cli("admin-one", [
+    "connections",
+    "disable",
+    "--connection",
+    "smoke-grants",
+  ])
+  const disabledView = await cli("member", [
+    "connections",
+    "get",
+    "--connection",
+    "smoke-grants",
+  ])
+  assert.equal(disabledView.data.enabled, false, "disabled grants stay visible")
+  const revokedGrant = await cli("admin-one", [
+    "grants",
+    "revoke",
+    "--user",
+    "smoke-member",
+    "--connection",
+    "smoke-grants",
+  ])
+  assert.equal(revokedGrant.data.revoked, true)
+  const revokedAgain = await cli("admin-one", [
+    "grants",
+    "revoke",
+    "--user",
+    "smoke-member",
+    "--connection",
+    "smoke-grants",
+  ])
+  assert.equal(revokedAgain.data.revoked, false)
+  assert.equal(
+    (
+      await cli(
+        "member",
+        ["connections", "get", "--connection", "smoke-grants"],
+        1,
+      )
+    ).error.code,
+    "CONNECTION_NOT_FOUND",
+  )
+  const removed = await cli("admin-one", [
+    "connections",
+    "delete",
+    "--connection",
+    "smoke-grants",
+  ])
+  assert.equal(removed.data.deleted, true)
+  // Username references work on the existing user commands, and grants
+  // survive blocking.
+  const blockedByName = await cli("admin-one", [
+    "users",
+    "block",
+    "--user",
+    "smoke-member",
+  ])
+  assert.equal(blockedByName.data.user.id, member.id)
+  assert.equal(
+    (await cli("member", ["whoami"], 1)).error.code,
+    "UNAUTHENTICATED",
+  )
+  await cli("admin-one", ["users", "unblock", "--user", "smoke-member"])
+  await login("member", "smoke-member", resetPassword)
+  assert.deepEqual((await cli("member", ["whoami"])).data.connections, [
+    "smoke-postgres",
+  ])
+  assert.equal(
+    (await cli("admin-one", ["whoami"])).data.connections,
+    undefined,
+    "administrators need no grants",
+  )
+  assert.equal(
+    (
+      await cli(
+        "admin-one",
+        [
+          "grants",
+          "create",
+          "--user",
+          "nobody-here",
+          "--connection",
+          "smoke-postgres",
+        ],
+        1,
+      )
+    ).error.code,
+    "USER_NOT_FOUND",
+  )
+  assert.equal(
+    (
+      await cli(
+        "admin-one",
+        [
+          "grants",
+          "create",
+          "--user",
+          "Nobody Here",
+          "--connection",
+          "smoke-postgres",
+        ],
+        2,
+      )
+    ).error.code,
+    "INVALID_ARGUMENT",
+  )
+  for (const [filter, expected] of [
+    ["action='grant.create' AND outcome='success'", "2"],
+    ["action='grant.create' AND outcome='forbidden'", "1"],
+    ["action='grant.create' AND outcome='user_not_found'", "1"],
+    ["action='grant.revoke' AND outcome='success'", "1"],
+    ["action='grant.revoke' AND outcome='forbidden'", "1"],
+    ["action='grants.list' AND outcome='forbidden'", "1"],
+    ["action='grants.list' AND outcome='success'", "0"],
+    ["action='connection.check' AND outcome='forbidden'", "1"],
+    ["action='connection.get' AND outcome='connection_not_found'", "0"],
+    ["action='connection.delete' AND outcome='connection_in_use'", "0"],
+    [
+      "action='grant.create' AND connection_id IS NULL AND outcome='success'",
+      "0",
+    ],
+  ])
+    assert.equal(
+      await sql(
+        `SELECT count(*) FROM auth_events WHERE ${filter}`,
+        `events-${filter.replace(/[^a-z_]+/g, "-")}`,
+      ),
+      expected,
+      filter,
+    )
+  summary.connectionGrants = "passed"
+  console.log(
+    "[smoke] Real CLI grants, member visibility, username references and revocation passed",
   )
 
   await sql(

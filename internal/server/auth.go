@@ -235,7 +235,7 @@ func (a *authHTTP) operation(next http.Handler) http.Handler {
 					a.logoutResult(buffer, r, auth.LogoutOutcome(true, failure))
 				}
 			case "/admin":
-				a.adminResult(buffer, r, auth.Session{}, auth.UserList{}, auth.ConnectionList{}, failure)
+				a.adminResult(buffer, r, auth.Session{}, auth.UserList{}, auth.ConnectionList{}, auth.GrantList{}, failure)
 			default:
 				jsonFailure(buffer, failure)
 			}
@@ -765,7 +765,7 @@ func (a *authHTTP) logoutBrowser(w http.ResponseWriter, r *http.Request) {
 	a.logoutResult(w, r, auth.LogoutOutcome(true, err))
 }
 
-func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, users auth.UserList, connections auth.ConnectionList, err error) {
+func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, users auth.UserList, connections auth.ConnectionList, grants auth.GrantList, err error) {
 	outcome := auth.AdminOutcome(err)
 	if outcome.Location != "" {
 		w.Header().Set("Cache-Control", "no-store")
@@ -780,6 +780,7 @@ func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session a
 	a.render(w, r, 200, a.views.Admin(web.AdminModel{
 		User: session.User, Users: users.Users, Truncated: users.Truncated,
 		Connections: connections.Connections, ConnectionsTruncated: connections.Truncated,
+		Grants: grants.Grants, GrantsTruncated: grants.Truncated,
 	}))
 }
 
@@ -811,7 +812,14 @@ func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
 			connections, err = a.connections.ListConnections(r.Context(), session, nil, auth.MaxConnectionListing)
 		}
 	}
-	a.adminResult(w, r, session, users, connections, err)
+	// Grants load last and the page fails closed without them too.
+	var grants auth.GrantList
+	if err == nil {
+		if err = a.requireGrants(); err == nil {
+			grants, err = a.grants.ListGrants(r.Context(), session, auth.GrantFilter{Limit: auth.MaxGrantListing})
+		}
+	}
+	a.adminResult(w, r, session, users, connections, grants, err)
 }
 
 func newAuthHTTP(origin string, service auth.Service, views AuthViews) (*authHTTP, error) {

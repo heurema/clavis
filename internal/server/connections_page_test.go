@@ -97,6 +97,7 @@ func connectionsPageHandler(t *testing.T, f *backendFixture, connections auth.Co
 	adapter.recorder = f
 	adapter.admin = f
 	adapter.connections = connections
+	adapter.grants = f
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness {
 		return platform.Readiness{State: platform.Ready}
 	})

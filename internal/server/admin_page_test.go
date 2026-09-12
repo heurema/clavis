@@ -55,6 +55,7 @@ func adminPageHandler(t *testing.T, f *backendFixture, admin auth.Administration
 	adapter.recorder = f
 	adapter.admin = admin
 	adapter.connections = f
+	adapter.grants = f
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness {
 		return platform.Readiness{State: platform.Ready}
 	})

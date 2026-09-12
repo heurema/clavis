@@ -132,7 +132,7 @@ After the connection section: create a member, grant the postgres connection by 
 ## Migration Plan
 
 1. Deploy; migration `004` applies once. Existing usernames cannot be UUID-shaped in practice (the smoke and dev data never were); if one exists the migration fails closed and the operator renames it first, which is the safe outcome.
-2. Older CLIs keep working; only the new commands and username references need the new CLI.
+2. Administrators and ungranted members can keep an older CLI; a member holding grants needs the new CLI because `whoami` gains fields the old strict decoder refuses. Nothing is in production, so no compatibility shim is added.
 3. Rollback as before: previous binary and backup; `004` is forward-only.
 
 ## Open Questions

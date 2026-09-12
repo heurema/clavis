@@ -23,6 +23,8 @@ type AdminModel struct {
 	Truncated            bool
 	Connections          []auth.Connection
 	ConnectionsTruncated bool
+	Grants               []auth.Grant
+	GrantsTruncated      bool
 }
 
 type AuthErrorModel struct {
@@ -100,4 +102,8 @@ func checkOutcomeVariant(outcome auth.CheckOutcome) badge.Variant {
 
 func connectionsTruncationNotice() string {
 	return "Showing the first " + strconv.Itoa(auth.MaxConnectionListing) + " connections; the list is limited."
+}
+
+func grantsTruncationNotice() string {
+	return "Showing the first " + strconv.Itoa(auth.MaxGrantListing) + " grants; the list is limited."
 }

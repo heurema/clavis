@@ -28,8 +28,8 @@ Requirements: connection-grants "Grant routes and listing"; connection-managemen
 
 Requirements: connection-grants "Read-only grants table in the browser"; all delta specs end to end; project-bootstrap quality and smoke requirements. Depends on slices 1 to 3. Owned paths: `internal/web/*`, `internal/server/auth.go` (`adminBrowser` grants call), `scripts/smoke.mjs`, `README.md`, `docs/PRD.md` (section 12 status), `reports/` (ignored). Verify: `make check && make smoke && make test-mutation`.
 
-- [ ] 4.1 Add the grants table to the admin page with rendering and page tests, loaded after the connections list and failing closed.
-- [ ] 4.2 Extend smoke with the grant flow from the design (grant by username, member `whoami` and reads in the summary shape, member denials, delete guard count, revoke and its effect, idempotent revoke, event counts, `users block --user <username>`).
-- [ ] 4.3 Update README (grants section, username references, member view, `whoami`) and PRD section 12; record accepted follow-ups.
+- [x] 4.1 Add the grants table to the admin page with rendering and page tests, loaded after the connections list and failing closed.
+- [x] 4.2 Extend smoke with the grant flow from the design (grant by username, member `whoami` and reads in the summary shape, member denials, delete guard count, revoke and its effect, idempotent revoke, event counts, `users block --user <username>`).
+- [x] 4.3 Update README (grants section, username references, member view, `whoami`) and PRD section 12; record accepted follow-ups.
 - [ ] 4.4 Run clean-checkout `make setup`, `make check`, the real-database race suite, `make smoke` and `make test-mutation` (with the documented extended budget if the default still does not fit); report handwritten and generated line counts separately; confirm no tracked source is rewritten by successful checks.
 - [ ] 4.5 Whole-change independent review against the inherited requirements, all five delta specs and the design's inherited-decisions table, with the authorization paths end to end; record the final revision, limits and any exceptions for owner acceptance before archive.
