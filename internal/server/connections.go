@@ -134,8 +134,9 @@ func (a *authHTTP) listConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 		return nil
 	}, func(session auth.Session, _ string) (any, int, error) {
 		// The two GET routes are the only connection routes members may call.
-		// The projection follows the session's current role, which the service
-		// has just rechecked: administrators receive the full record, members
+		// The projection follows the role of the authenticated session; the
+		// service rechecks it again inside its own transaction, so a stale role
+		// fails closed there. Administrators receive the full record, members
 		// the summary, which has no target, bound or secret field at all.
 		if session.User.Role != auth.Admin {
 			if err := a.requireMembers(); err != nil {

@@ -631,3 +631,32 @@ func TestUserCreationRefusesUUIDShapedUsernamesWithAHint(t *testing.T) {
 		})
 	}
 }
+
+// A member holding the maximum number of long-named grants still receives a
+// whoami body the CLI can read under the general response limit; names past
+// the byte budget are dropped in order and reported as truncation.
+func TestIdentityNamesStayWithinTheResponseLimit(t *testing.T) {
+	f, handler := grantFixture(t)
+	f.role = auth.Member
+	names := make([]string, auth.MaxConnectionListing)
+	for index := range names {
+		names[index] = fmt.Sprintf("c%03d-%s", index, strings.Repeat("x", 59))
+	}
+	f.grantedNames = names
+	response := requestAuth(handler, "GET", auth.WhoAmIPath, "", bearerHeaders())
+	require.Equal(t, 200, response.Code)
+	require.LessOrEqual(t, response.Body.Len(), auth.MaxResponseBody)
+	var identity auth.Identity
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &identity))
+	require.True(t, identity.ConnectionsTruncated)
+	require.NotEmpty(t, identity.Connections)
+	require.Less(t, len(identity.Connections), len(names))
+	require.Equal(t, names[:len(identity.Connections)], identity.Connections, "names are dropped from the end only")
+
+	kept, truncated := boundedNames([]string{"a", "b"}, false)
+	require.Equal(t, []string{"a", "b"}, kept)
+	require.False(t, truncated)
+	kept, truncated = boundedNames(nil, true)
+	require.Empty(t, kept)
+	require.True(t, truncated)
+}

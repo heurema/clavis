@@ -608,11 +608,37 @@ func (a *authHTTP) identityJSON(w http.ResponseWriter, r *http.Request) {
 				a.members.ListGrantedConnectionNames(r.Context(), session, auth.MaxConnectionListing)
 		}
 	}
+	if err == nil {
+		session.Connections, session.ConnectionsTruncated = boundedNames(session.Connections, session.ConnectionsTruncated)
+	}
 	if err != nil {
 		jsonFailure(w, err)
 		return
 	}
 	writeJSON(w, 200, session.Identity)
+}
+
+// identityHeadroom is what the identity carries besides the names: the user
+// record, the expiry and the envelope, all far below this reservation.
+const identityHeadroom = 4096
+
+// boundedNames keeps whoami inside the general response limit, which is the
+// limit the CLI reads it under: 1,000 names of 64 bytes would exceed it. Names
+// beyond the byte budget are dropped in order and reported as truncation.
+func boundedNames(names []string, truncated bool) ([]string, bool) {
+	budget := auth.MaxResponseBody - identityHeadroom
+	size := 0
+	for index, name := range names {
+		next := size + len(name) + 2 // quotes
+		if index > 0 {
+			next++ // the separating comma
+		}
+		if next > budget {
+			return names[:index], true
+		}
+		size = next
+	}
+	return names, truncated
 }
 
 func emptyBody(r *http.Request) error {

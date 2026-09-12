@@ -313,7 +313,7 @@ and `connections get` return only granted connections in a reduced projection
 (`id`, `name`, `title`, `description`, `scope`, `provider`, `labels`, `enabled`,
 `lastCheck`) that never carries a target, bounds or credentials; an ungranted
 connection is `CONNECTION_NOT_FOUND`, and a disabled granted connection stays
-listed with `enabled: false` but refuses use with `CONNECTION_DISABLED`. Members
+listed with `enabled: false`, and the authorization check that later query operations run refuses it with `CONNECTION_DISABLED`. Members
 may run `grants list` and see only their own grants; every administrative
 attempt by a member is refused with `FORBIDDEN` and recorded. Revocation takes
 effect on the member's next request, and grants survive blocking and renames.

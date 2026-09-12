@@ -29,7 +29,7 @@ var _ auth.Connections = (*LocalAuth)(nil)
 const (
 	hintConnectionNotFound = "Use `clavis connections list` to find the connection's name or id."
 	hintConnectionExists   = "A connection named like that exists; use `clavis connections update` to change it or choose another name."
-	hintConnectionInUse    = "Disable the connection first; a connection with grants must also have them revoked."
+	hintConnectionInUse    = "Disable the connection first; no grants remain."
 	hintUserNotFound       = "Use `clavis users list` to find the user's username or id."
 	hintCredentials        = "Replace the connection's credentials with `clavis connections set-credentials`; the stored secret cannot be decrypted with the configured key."
 	hintName               = "A connection name is 3 to 64 characters of lowercase letters, digits, dot, dash or underscore, starts with a letter and is never shaped like a UUID."
