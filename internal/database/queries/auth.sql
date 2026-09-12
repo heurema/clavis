@@ -34,10 +34,13 @@ WHERE s.id = sqlc.arg(session_id)::text::uuid
 FOR UPDATE OF s;
 
 -- name: LockMutationUsers :exec
--- Consistent ordering serializes issuance/revocation without opposing-admin deadlocks.
+-- Consistent ordering serializes issuance/revocation without opposing-admin
+-- deadlocks. A target addressed by username is locked by this same statement,
+-- so resolving a name never splits acquisition into two ordered waits.
 SELECT id FROM users
 WHERE id = sqlc.arg(actor_id)::text::uuid
     OR id = NULLIF(sqlc.arg(target_id)::text, '')::uuid
+    OR username = NULLIF(sqlc.arg(target_username)::text, '')
 ORDER BY id FOR UPDATE;
 
 -- name: UserExists :one

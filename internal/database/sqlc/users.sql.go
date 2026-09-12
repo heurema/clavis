@@ -120,6 +120,34 @@ func (q *Queries) ListUsers(ctx context.Context, limitRows int32) ([]ListUsersRo
 	return items, nil
 }
 
+const lockUser = `-- name: LockUser :one
+SELECT id::text, username, role, disabled, created_at
+FROM users WHERE id = $1::text::uuid FOR UPDATE
+`
+
+type LockUserRow struct {
+	ID        string
+	Username  string
+	Role      string
+	Disabled  bool
+	CreatedAt time.Time
+}
+
+// The same projection under the row lock a mutation's target needs, so a
+// concurrent block, demotion or revocation serializes behind it.
+func (q *Queries) LockUser(ctx context.Context, id string) (LockUserRow, error) {
+	row := q.db.QueryRow(ctx, lockUser, id)
+	var i LockUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.Role,
+		&i.Disabled,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const setUserDisabled = `-- name: SetUserDisabled :one
 UPDATE users SET disabled = $1, updated_at = clock_timestamp()
 WHERE id = $2::text::uuid

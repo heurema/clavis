@@ -10,6 +10,12 @@ SELECT EXISTS(SELECT 1 FROM users WHERE username = sqlc.arg(username));
 SELECT id::text, username, role, disabled, created_at
 FROM users WHERE id = sqlc.arg(id)::text::uuid;
 
+-- name: LockUser :one
+-- The same projection under the row lock a mutation's target needs, so a
+-- concurrent block, demotion or revocation serializes behind it.
+SELECT id::text, username, role, disabled, created_at
+FROM users WHERE id = sqlc.arg(id)::text::uuid FOR UPDATE;
+
 -- name: ListUsers :many
 -- The caller requests one row beyond its bound to detect truncation.
 SELECT id::text, username, role, disabled, created_at

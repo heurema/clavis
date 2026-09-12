@@ -187,7 +187,9 @@ func TestAdministrationDeniesMembersRevokedSessionsAndUnknownTargets(t *testing.
 	for _, operation := range operations(auth.Session{}, member.ID) {
 		code(t, operation(), auth.Unauthenticated)
 	}
-	_, err := s.SetUserDisabled(t.Context(), admin, "not-a-uuid", true)
+	// A reference that is neither a UUID nor a username is refused before the
+	// transaction, so it is not an attempt and records nothing.
+	_, err := s.SetUserDisabled(t.Context(), admin, "Not A Ref", true)
 	code(t, err, auth.InvalidArgument)
 	_, err = s.SetRole(t.Context(), admin, member.ID, auth.Role("owner"))
 	code(t, err, auth.InvalidArgument)
@@ -203,6 +205,63 @@ func TestAdministrationDeniesMembersRevokedSessionsAndUnknownTargets(t *testing.
 	require.Equal(t, "member", role)
 	require.False(t, disabled)
 	require.Equal(t, 1, enabledAdmins(t, pool))
+}
+
+func TestUserMutationsAcceptUsernameReferences(t *testing.T) {
+	pool, s, admin, _ := adminFixture(t)
+	member, input := createMember(t, s, admin, "named-member")
+	cli := session(t, s, login(t, s, input), auth.CLI)
+
+	blocked, err := s.SetUserDisabled(t.Context(), admin, "named-member", true)
+	require.NoError(t, err)
+	require.Equal(t, member.ID, blocked.User.ID)
+	require.True(t, blocked.User.Disabled)
+	require.True(t, blocked.SessionsRevoked)
+	_, target, sessionID := lastEvent(t, pool, "user.block", "success")
+	require.Equal(t, []string{member.ID, admin.ID}, []string{target, sessionID})
+	_, err = s.ListUsers(t.Context(), cli)
+	code(t, err, auth.Unauthenticated)
+
+	_, err = s.SetUserDisabled(t.Context(), admin, "named-member", false)
+	require.NoError(t, err)
+	promoted, err := s.SetRole(t.Context(), admin, "named-member", auth.Admin)
+	require.NoError(t, err)
+	require.Equal(t, auth.Admin, promoted.User.Role)
+	require.Equal(t, member.ID, promoted.User.ID)
+	_, err = s.SetRole(t.Context(), admin, "named-member", auth.Member)
+	require.NoError(t, err)
+	reset, err := s.ResetPassword(t.Context(), admin, "named-member", randomPassword(t))
+	require.NoError(t, err)
+	require.Equal(t, member.ID, reset.User.ID)
+	require.NoError(t, s.RevokeUserSessions(t.Context(), admin, "named-member"))
+	_, target, _ = lastEvent(t, pool, "revoke", "success")
+	require.Equal(t, member.ID, target)
+	role, disabled := userState(t, pool, member.ID)
+	require.Equal(t, "member", role)
+	require.False(t, disabled)
+
+	// An unknown username is the denial an unknown UUID has always produced.
+	unknown := map[string]func(string) error{
+		"user.block": func(ref string) error { _, err := s.SetUserDisabled(t.Context(), admin, ref, true); return err },
+		"user.reset_password": func(ref string) error {
+			_, err := s.ResetPassword(t.Context(), admin, ref, randomPassword(t))
+			return err
+		},
+		"user.promote": func(ref string) error { _, err := s.SetRole(t.Context(), admin, ref, auth.Admin); return err },
+		"revoke":       func(ref string) error { return s.RevokeUserSessions(t.Context(), admin, ref) },
+	}
+	for action, operation := range unknown {
+		code(t, operation("nobody-here"), auth.UserNotFound)
+		require.Equal(t, 1, eventCount(t, pool, action, "user_not_found"), action)
+	}
+	// A reference that is neither form is refused before the transaction, so
+	// it is not an attempt and records nothing.
+	events := countRows(t, pool, "auth_events")
+	for _, operation := range unknown {
+		code(t, operation("Not A Ref"), auth.InvalidArgument)
+	}
+	require.Equal(t, events, countRows(t, pool, "auth_events"))
+	require.Equal(t, 2, countRows(t, pool, "users"))
 }
 
 func TestBlockRevokesSessionsAndUnblockRestoresLogin(t *testing.T) {
@@ -326,18 +385,21 @@ func TestSelfTargetingIsRefusedExceptPasswordReset(t *testing.T) {
 	_, err := s.SetRole(t.Context(), admin, other.ID, auth.Admin)
 	require.NoError(t, err)
 	sessions := countRows(t, pool, "sessions")
-	// Even with another enabled administrator present, nobody removes themself.
-	_, err = s.SetUserDisabled(t.Context(), admin, admin.User.ID, true)
-	code(t, err, auth.SelfTarget)
-	_, err = s.SetRole(t.Context(), admin, admin.User.ID, auth.Member)
-	code(t, err, auth.SelfTarget)
+	// Even with another enabled administrator present, nobody removes themself,
+	// whichever spelling of their own reference they use.
+	for _, self := range []string{admin.User.ID, admin.User.Username} {
+		_, err = s.SetUserDisabled(t.Context(), admin, self, true)
+		code(t, err, auth.SelfTarget)
+		_, err = s.SetRole(t.Context(), admin, self, auth.Member)
+		code(t, err, auth.SelfTarget)
+	}
 	role, disabled := userState(t, pool, admin.User.ID)
 	require.Equal(t, "admin", role)
 	require.False(t, disabled)
 	require.Equal(t, 2, enabledAdmins(t, pool))
 	require.Equal(t, sessions, countRows(t, pool, "sessions"))
 	for _, action := range []string{"user.block", "user.demote"} {
-		require.Equal(t, 1, eventCount(t, pool, action, "self_target"), action)
+		require.Equal(t, 2, eventCount(t, pool, action, "self_target"), action)
 		actor, target, sessionID := lastEvent(t, pool, action, "self_target")
 		require.Equal(t, []string{admin.User.ID, admin.User.ID, admin.ID}, []string{actor, target, sessionID}, action)
 	}

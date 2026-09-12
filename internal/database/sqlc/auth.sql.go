@@ -169,17 +169,21 @@ const lockMutationUsers = `-- name: LockMutationUsers :exec
 SELECT id FROM users
 WHERE id = $1::text::uuid
     OR id = NULLIF($2::text, '')::uuid
+    OR username = NULLIF($3::text, '')
 ORDER BY id FOR UPDATE
 `
 
 type LockMutationUsersParams struct {
-	ActorID  string
-	TargetID string
+	ActorID        string
+	TargetID       string
+	TargetUsername string
 }
 
-// Consistent ordering serializes issuance/revocation without opposing-admin deadlocks.
+// Consistent ordering serializes issuance/revocation without opposing-admin
+// deadlocks. A target addressed by username is locked by this same statement,
+// so resolving a name never splits acquisition into two ordered waits.
 func (q *Queries) LockMutationUsers(ctx context.Context, arg LockMutationUsersParams) error {
-	_, err := q.db.Exec(ctx, lockMutationUsers, arg.ActorID, arg.TargetID)
+	_, err := q.db.Exec(ctx, lockMutationUsers, arg.ActorID, arg.TargetID, arg.TargetUsername)
 	return err
 }
 
