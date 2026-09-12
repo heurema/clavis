@@ -31,7 +31,6 @@ func grantsPageHandler(t *testing.T, f *backendFixture, connections auth.Connect
 	t.Helper()
 	adapter, err := newAuthHTTP("http://127.0.0.1", f, AuthViews{})
 	require.NoError(t, err)
-	adapter.recorder = f
 	adapter.admin = f
 	adapter.connections = connections
 	adapter.grants = grants
@@ -60,7 +59,6 @@ func TestGrantsPageRendersTheGrantsTableAfterConnections(t *testing.T) {
 	require.Equal(t, "list", grants.grantCalls[0].operation)
 	require.Equal(t, auth.GrantFilter{Limit: auth.MaxGrantListing}, grants.grantCalls[0].filter)
 	require.Equal(t, auth.Admin, grants.grantCalls[0].role)
-	require.Empty(t, f.events, "reading the page records no event")
 }
 
 // A failed grants listing fails the page closed after the connections listing
@@ -90,7 +88,7 @@ func TestGrantsPageFailsClosedInOrder(t *testing.T) {
 	// A handler composed without the grants dependency refuses the page.
 	adapter, err := newAuthHTTP("http://127.0.0.1", f, AuthViews{})
 	require.NoError(t, err)
-	adapter.recorder, adapter.admin, adapter.connections = f, f, &connectionsPageFake{list: listedConnections}
+	adapter.admin, adapter.connections = f, &connectionsPageFake{list: listedConnections}
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
 	response = adminPage(handler(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)), adapter))
 	require.Equal(t, 503, response.StatusCode)

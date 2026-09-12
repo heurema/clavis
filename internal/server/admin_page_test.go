@@ -52,7 +52,6 @@ func adminPageHandler(t *testing.T, f *backendFixture, admin auth.Administration
 	t.Helper()
 	adapter, err := newAuthHTTP("http://127.0.0.1", f, fixtureViews())
 	require.NoError(t, err)
-	adapter.recorder = f
 	adapter.admin = admin
 	adapter.connections = f
 	adapter.grants = f
@@ -89,7 +88,6 @@ func TestAdminPageRendersTheUserList(t *testing.T) {
 	require.Equal(t, 1, fake.calls)
 	require.Equal(t, "12345678-1234-4234-8234-123456789aaa", fake.session.ID)
 	require.Equal(t, fixtureIdentity.User, fake.session.User)
-	require.Empty(t, f.events, "reading the page records no event")
 	require.Empty(t, response.Header.Get("Set-Cookie"))
 	require.Equal(t, "no-store", response.Header.Get("Cache-Control"))
 	require.Equal(t, "frame-ancestors 'none'", response.Header.Get("Content-Security-Policy"))
@@ -108,7 +106,6 @@ func TestAdminPageMemberIsForbiddenWithoutListing(t *testing.T) {
 	require.Contains(t, string(body), auth.Forbidden)
 	require.NotContains(t, string(body), "blocked-member")
 	require.Zero(t, fake.calls, "the role check precedes the listing")
-	require.Empty(t, f.events)
 	require.Equal(t, "no-store", response.Header.Get("Cache-Control"))
 	require.Equal(t, "frame-ancestors 'none'", response.Header.Get("Content-Security-Policy"))
 }
@@ -143,7 +140,6 @@ func TestAdminPageFailsClosedWhenTheListingFails(t *testing.T) {
 			require.NotContains(t, string(body), "SENTINEL")
 			require.NotContains(t, string(body), "personal-admin")
 			require.NotContains(t, string(body), "blocked-member")
-			require.Empty(t, f.events)
 			require.Empty(t, response.Header.Get("Set-Cookie"))
 			require.Equal(t, "no-store", response.Header.Get("Cache-Control"))
 			require.Equal(t, "frame-ancestors 'none'", response.Header.Get("Content-Security-Policy"))

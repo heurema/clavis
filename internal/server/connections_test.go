@@ -27,7 +27,7 @@ import (
 
 // fakeConnections records exactly what each route handed the service, so a
 // rejected request can be proven never to have reached it. It is embedded in
-// backendFixture, which supplies the session and the event recorder.
+// backendFixture, which supplies the session.
 type fakeConnections struct {
 	connectionList     auth.ConnectionList
 	connectionRecord   auth.Connection
@@ -139,22 +139,21 @@ func connectionPath(pattern string) string {
 type connectionRoute struct {
 	name, method, path, body, operation string
 	success                             int
-	action                              auth.EventAction
 	expected                            any
 	dryRunnable                         bool
 }
 
 func connectionRoutes() []connectionRoute {
 	return []connectionRoute{
-		{"list", "GET", auth.ConnectionsPath, "", "list", 200, auth.EventConnectionsList, connectionListing, false},
-		{"create", "POST", auth.ConnectionsPath, validConnectionBody, "create", 201, auth.EventConnectionCreate, connectionRecord, true},
-		{"get", "GET", connectionPath(auth.ConnectionPath), "", "get", 200, auth.EventConnectionGet, connectionRecord, false},
-		{"update", "POST", connectionPath(auth.ConnectionUpdatePath), validUpdateBody, "update", 200, auth.EventConnectionUpdate, connectionMutation, true},
-		{"credentials", "POST", connectionPath(auth.ConnectionCredentialsPath), validCredentialsBody, "credentials", 200, auth.EventConnectionSecrets, connectionMutation, true},
-		{"enable", "POST", connectionPath(auth.ConnectionEnablePath), "", "enabled", 200, auth.EventConnectionEnable, connectionMutation, true},
-		{"disable", "POST", connectionPath(auth.ConnectionDisablePath), "", "enabled", 200, auth.EventConnectionDisable, connectionMutation, true},
-		{"delete", "POST", connectionPath(auth.ConnectionDeletePath), "", "delete", 200, auth.EventConnectionDelete, connectionDeletion, true},
-		{"check", "POST", connectionPath(auth.ConnectionCheckPath), "", "check", 200, auth.EventConnectionCheck, connectionChecked, false},
+		{"list", "GET", auth.ConnectionsPath, "", "list", 200, connectionListing, false},
+		{"create", "POST", auth.ConnectionsPath, validConnectionBody, "create", 201, connectionRecord, true},
+		{"get", "GET", connectionPath(auth.ConnectionPath), "", "get", 200, connectionRecord, false},
+		{"update", "POST", connectionPath(auth.ConnectionUpdatePath), validUpdateBody, "update", 200, connectionMutation, true},
+		{"credentials", "POST", connectionPath(auth.ConnectionCredentialsPath), validCredentialsBody, "credentials", 200, connectionMutation, true},
+		{"enable", "POST", connectionPath(auth.ConnectionEnablePath), "", "enabled", 200, connectionMutation, true},
+		{"disable", "POST", connectionPath(auth.ConnectionDisablePath), "", "enabled", 200, connectionMutation, true},
+		{"delete", "POST", connectionPath(auth.ConnectionDeletePath), "", "delete", 200, connectionDeletion, true},
+		{"check", "POST", connectionPath(auth.ConnectionCheckPath), "", "check", 200, connectionChecked, false},
 	}
 }
 
@@ -196,7 +195,6 @@ func TestConnectionRoutesReturnDocumentedSuccessBodies(t *testing.T) {
 			require.Len(t, f.connectionCalls, 1)
 			require.Equal(t, route.operation, f.connectionCalls[0].operation)
 			require.False(t, f.connectionCalls[0].dryRun)
-			require.Empty(t, f.events, "a service-owned outcome must not be recorded again by the adapter")
 		})
 	}
 }
@@ -266,7 +264,6 @@ func TestConnectionDryRunIsRequestedExplicitlyAndMarksTheResult(t *testing.T) {
 			require.Len(t, f.connectionCalls, 1)
 			require.True(t, f.connectionCalls[0].dryRun)
 			require.Contains(t, response.Body.String(), `"dryRun":true`)
-			require.Empty(t, f.events)
 			var expected any = f.connectionMutation
 			if route.name == "delete" {
 				expected = f.connectionDeletion
@@ -291,7 +288,6 @@ func TestConnectionCheckReportsAFailedProbeAsASuccessfulRequest(t *testing.T) {
 		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &decoded))
 		require.Equal(t, outcome, decoded.Check.Outcome)
 		require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
-		require.Empty(t, f.events)
 	}
 }
 
@@ -340,7 +336,6 @@ func TestConnectionServiceFailuresUseDocumentedStatusesAndHints(t *testing.T) {
 				require.NotContains(t, response.Body.String(), connectionTargetName)
 				require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 				require.Len(t, f.connectionCalls, 1)
-				require.Empty(t, f.events, "a service-owned denial is never recorded twice")
 			})
 		}
 	}
@@ -351,14 +346,13 @@ func TestConnectionRoutesRequireBearerCredentials(t *testing.T) {
 		name    string
 		headers http.Header
 		status  int
-		outcome auth.EventOutcome
 	}{
-		{"cookie only", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 401, auth.OutcomeUnauthenticated},
-		{"no credentials", http.Header{}, 401, auth.OutcomeUnauthenticated},
+		{"cookie only", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 401},
+		{"no credentials", http.Header{}, 401},
 		{"bearer and cookie", http.Header{"Authorization": {"Bearer " + string(fixtureToken)},
-			"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 400, auth.OutcomeInvalidArgument},
+			"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 400},
 		{"foreign origin", http.Header{"Authorization": {"Bearer " + string(fixtureToken)},
-			"Origin": {"https://attacker.invalid"}}, 403, auth.OutcomeForbidden},
+			"Origin": {"https://attacker.invalid"}}, 403},
 	} {
 		for _, route := range connectionRoutes() {
 			t.Run(tc.name+"/"+route.name, func(t *testing.T) {
@@ -375,7 +369,6 @@ func TestConnectionRoutesRequireBearerCredentials(t *testing.T) {
 				require.Empty(t, response.Header().Get("Set-Cookie"))
 				require.NotContains(t, response.Body.String(), "SENTINEL")
 				require.Empty(t, f.connectionCalls, "no operation may reach the service")
-				require.Equal(t, []auth.Event{{Action: route.action, Outcome: tc.outcome}}, f.events)
 			})
 		}
 	}
@@ -431,7 +424,6 @@ func TestConnectionBodiesAreStrictAndUnreflected(t *testing.T) {
 				require.NotContains(t, response.Body.String(), "SENTINEL")
 				require.NotContains(t, response.Body.String(), connectionTargetName)
 				require.Empty(t, f.connectionCalls, "an invalid body must never reach the service")
-				require.Equal(t, []auth.Event{{Action: route.action, Outcome: auth.OutcomeInvalidArgument}}, f.events)
 			})
 		}
 	}
@@ -448,22 +440,21 @@ func TestConnectionBodiesAreStrictAndUnreflected(t *testing.T) {
 	// Wrong or absent content types, and bodies on the routes that take none.
 	for _, tc := range []struct {
 		name, method, path, body, contentType string
-		action                                auth.EventAction
 	}{
 		{"form create", "POST", auth.ConnectionsPath, "name=warehouse-primary&secret=" + connectionSecret,
-			"application/x-www-form-urlencoded", auth.EventConnectionCreate},
-		{"typeless create", "POST", auth.ConnectionsPath, validConnectionBody, "", auth.EventConnectionCreate},
+			"application/x-www-form-urlencoded"},
+		{"typeless create", "POST", auth.ConnectionsPath, validConnectionBody, ""},
 		{"form credentials", "POST", connectionPath(auth.ConnectionCredentialsPath), "secret=" + connectionSecret,
-			"application/x-www-form-urlencoded", auth.EventConnectionSecrets},
-		{"listing body", "GET", auth.ConnectionsPath, `{"connections":[]}`, "application/json", auth.EventConnectionsList},
-		{"record body", "GET", connectionPath(auth.ConnectionPath), `{}`, "application/json", auth.EventConnectionGet},
-		{"enable body", "POST", connectionPath(auth.ConnectionEnablePath), `{}`, "application/json", auth.EventConnectionEnable},
-		{"disable body", "POST", connectionPath(auth.ConnectionDisablePath), `{}`, "application/json", auth.EventConnectionDisable},
-		{"delete body", "POST", connectionPath(auth.ConnectionDeletePath), `{}`, "application/json", auth.EventConnectionDelete},
-		{"check body", "POST", connectionPath(auth.ConnectionCheckPath), `{}`, "application/json", auth.EventConnectionCheck},
+			"application/x-www-form-urlencoded"},
+		{"listing body", "GET", auth.ConnectionsPath, `{"connections":[]}`, "application/json"},
+		{"record body", "GET", connectionPath(auth.ConnectionPath), `{}`, "application/json"},
+		{"enable body", "POST", connectionPath(auth.ConnectionEnablePath), `{}`, "application/json"},
+		{"disable body", "POST", connectionPath(auth.ConnectionDisablePath), `{}`, "application/json"},
+		{"delete body", "POST", connectionPath(auth.ConnectionDeletePath), `{}`, "application/json"},
+		{"check body", "POST", connectionPath(auth.ConnectionCheckPath), `{}`, "application/json"},
 		{"oversized create", "POST", auth.ConnectionsPath,
 			trim(validConnectionBody) + `,"description":"` + strings.Repeat("d", auth.MaxCredentialBody) + `"}`,
-			"application/json", auth.EventConnectionCreate},
+			"application/json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, handler := connectionFixture(t)
@@ -475,7 +466,6 @@ func TestConnectionBodiesAreStrictAndUnreflected(t *testing.T) {
 			require.Equal(t, 400, response.Code)
 			require.NotContains(t, response.Body.String(), "SENTINEL")
 			require.Empty(t, f.connectionCalls)
-			require.Equal(t, []auth.Event{{Action: tc.action, Outcome: auth.OutcomeInvalidArgument}}, f.events)
 		})
 	}
 }
@@ -483,32 +473,31 @@ func TestConnectionBodiesAreStrictAndUnreflected(t *testing.T) {
 func TestConnectionQueryParametersAreStrict(t *testing.T) {
 	for _, tc := range []struct {
 		name, method, path, body string
-		action                   auth.EventAction
 	}{
-		{"selector", "GET", auth.ConnectionsPath + "?selector=env%3DPROD", "", auth.EventConnectionsList},
-		{"selector terms", "GET", auth.ConnectionsPath + "?selector=a%3D1%2Cb%3D2%2Cc%3D3%2Cd%3D4%2Ce%3D5%2Cf%3D6%2Cg%3D7%2Ch%3D8%2Ci%3D9", "", auth.EventConnectionsList},
-		{"limit zero", "GET", auth.ConnectionsPath + "?limit=0", "", auth.EventConnectionsList},
-		{"limit negative", "GET", auth.ConnectionsPath + "?limit=-1", "", auth.EventConnectionsList},
-		{"limit above bound", "GET", auth.ConnectionsPath + "?limit=1001", "", auth.EventConnectionsList},
-		{"limit text", "GET", auth.ConnectionsPath + "?limit=abc", "", auth.EventConnectionsList},
-		{"limit empty", "GET", auth.ConnectionsPath + "?limit=", "", auth.EventConnectionsList},
-		{"limit repeated", "GET", auth.ConnectionsPath + "?limit=1&limit=2", "", auth.EventConnectionsList},
-		{"listing unknown", "GET", auth.ConnectionsPath + "?dryRun=true", "", auth.EventConnectionsList},
-		{"malformed", "GET", auth.ConnectionsPath + "?limit=%zz", "", auth.EventConnectionsList},
-		{"create dry run value", "POST", auth.ConnectionsPath + "?dryRun=yes", validConnectionBody, auth.EventConnectionCreate},
-		{"create dry run bare", "POST", auth.ConnectionsPath + "?dryRun", validConnectionBody, auth.EventConnectionCreate},
-		{"create dry run case", "POST", auth.ConnectionsPath + "?dryRun=TRUE", validConnectionBody, auth.EventConnectionCreate},
-		{"create dry run false", "POST", auth.ConnectionsPath + "?dryRun=false", validConnectionBody, auth.EventConnectionCreate},
-		{"create unknown", "POST", auth.ConnectionsPath + "?selector=env%3Dprod", validConnectionBody, auth.EventConnectionCreate},
-		{"create extra", "POST", auth.ConnectionsPath + "?dryRun=true&force=1", validConnectionBody, auth.EventConnectionCreate},
-		{"update dry run value", "POST", connectionPath(auth.ConnectionUpdatePath) + "?dryRun=1", validUpdateBody, auth.EventConnectionUpdate},
-		{"credentials unknown", "POST", connectionPath(auth.ConnectionCredentialsPath) + "?limit=1", validCredentialsBody, auth.EventConnectionSecrets},
-		{"enable dry run value", "POST", connectionPath(auth.ConnectionEnablePath) + "?dryRun=on", "", auth.EventConnectionEnable},
-		{"disable unknown", "POST", connectionPath(auth.ConnectionDisablePath) + "?x=1", "", auth.EventConnectionDisable},
-		{"delete dry run value", "POST", connectionPath(auth.ConnectionDeletePath) + "?dryRun=yes", "", auth.EventConnectionDelete},
-		{"check dry run", "POST", connectionPath(auth.ConnectionCheckPath) + "?dryRun=true", "", auth.EventConnectionCheck},
-		{"check unknown", "POST", connectionPath(auth.ConnectionCheckPath) + "?force=1", "", auth.EventConnectionCheck},
-		{"record dry run", "GET", connectionPath(auth.ConnectionPath) + "?dryRun=true", "", auth.EventConnectionGet},
+		{"selector", "GET", auth.ConnectionsPath + "?selector=env%3DPROD", ""},
+		{"selector terms", "GET", auth.ConnectionsPath + "?selector=a%3D1%2Cb%3D2%2Cc%3D3%2Cd%3D4%2Ce%3D5%2Cf%3D6%2Cg%3D7%2Ch%3D8%2Ci%3D9", ""},
+		{"limit zero", "GET", auth.ConnectionsPath + "?limit=0", ""},
+		{"limit negative", "GET", auth.ConnectionsPath + "?limit=-1", ""},
+		{"limit above bound", "GET", auth.ConnectionsPath + "?limit=1001", ""},
+		{"limit text", "GET", auth.ConnectionsPath + "?limit=abc", ""},
+		{"limit empty", "GET", auth.ConnectionsPath + "?limit=", ""},
+		{"limit repeated", "GET", auth.ConnectionsPath + "?limit=1&limit=2", ""},
+		{"listing unknown", "GET", auth.ConnectionsPath + "?dryRun=true", ""},
+		{"malformed", "GET", auth.ConnectionsPath + "?limit=%zz", ""},
+		{"create dry run value", "POST", auth.ConnectionsPath + "?dryRun=yes", validConnectionBody},
+		{"create dry run bare", "POST", auth.ConnectionsPath + "?dryRun", validConnectionBody},
+		{"create dry run case", "POST", auth.ConnectionsPath + "?dryRun=TRUE", validConnectionBody},
+		{"create dry run false", "POST", auth.ConnectionsPath + "?dryRun=false", validConnectionBody},
+		{"create unknown", "POST", auth.ConnectionsPath + "?selector=env%3Dprod", validConnectionBody},
+		{"create extra", "POST", auth.ConnectionsPath + "?dryRun=true&force=1", validConnectionBody},
+		{"update dry run value", "POST", connectionPath(auth.ConnectionUpdatePath) + "?dryRun=1", validUpdateBody},
+		{"credentials unknown", "POST", connectionPath(auth.ConnectionCredentialsPath) + "?limit=1", validCredentialsBody},
+		{"enable dry run value", "POST", connectionPath(auth.ConnectionEnablePath) + "?dryRun=on", ""},
+		{"disable unknown", "POST", connectionPath(auth.ConnectionDisablePath) + "?x=1", ""},
+		{"delete dry run value", "POST", connectionPath(auth.ConnectionDeletePath) + "?dryRun=yes", ""},
+		{"check dry run", "POST", connectionPath(auth.ConnectionCheckPath) + "?dryRun=true", ""},
+		{"check unknown", "POST", connectionPath(auth.ConnectionCheckPath) + "?force=1", ""},
+		{"record dry run", "GET", connectionPath(auth.ConnectionPath) + "?dryRun=true", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, handler := connectionFixture(t)
@@ -520,26 +509,20 @@ func TestConnectionQueryParametersAreStrict(t *testing.T) {
 			require.Equal(t, 400, response.Code)
 			require.Contains(t, response.Body.String(), auth.InvalidArgument)
 			require.Empty(t, f.connectionCalls)
-			require.Equal(t, []auth.Event{{Action: tc.action, Outcome: auth.OutcomeInvalidArgument}}, f.events)
 		})
 	}
 }
 
-func TestConnectionRoutesRejectUnusableReferencesAfterIdentifyingTheActor(t *testing.T) {
-	const sessionID = "12345678-1234-4234-8234-123456789aaa"
-	patterns := map[string]auth.EventAction{
-		auth.ConnectionPath:            auth.EventConnectionGet,
-		auth.ConnectionUpdatePath:      auth.EventConnectionUpdate,
-		auth.ConnectionCredentialsPath: auth.EventConnectionSecrets,
-		auth.ConnectionEnablePath:      auth.EventConnectionEnable,
-		auth.ConnectionDisablePath:     auth.EventConnectionDisable,
-		auth.ConnectionDeletePath:      auth.EventConnectionDelete,
-		auth.ConnectionCheckPath:       auth.EventConnectionCheck,
+func TestConnectionRoutesRejectUnusableReferences(t *testing.T) {
+	patterns := []string{
+		auth.ConnectionPath, auth.ConnectionUpdatePath, auth.ConnectionCredentialsPath,
+		auth.ConnectionEnablePath, auth.ConnectionDisablePath, auth.ConnectionDeletePath,
+		auth.ConnectionCheckPath,
 	}
 	// An empty segment (doubled slash) still matches every suffixed route and
 	// must be rejected here rather than resolved by the service.
 	for _, reference := range []string{"", "ab", "WAREHOUSE", "1warehouse", "wh!primary", "12345678-1234-4234-8234-123456789ab"} {
-		for pattern, action := range patterns {
+		for _, pattern := range patterns {
 			if reference == "" && pattern == auth.ConnectionPath {
 				continue // a bare trailing slash matches no route at all
 			}
@@ -563,35 +546,14 @@ func TestConnectionRoutesRejectUnusableReferencesAfterIdentifyingTheActor(t *tes
 			require.Equal(t, 400, response.Code, path)
 			require.Contains(t, response.Body.String(), auth.InvalidArgument)
 			require.Empty(t, f.connectionCalls)
-			require.Len(t, f.events, 1)
-			require.Equal(t, action, f.events[0].Action)
-			require.Equal(t, auth.OutcomeInvalidArgument, f.events[0].Outcome)
-			require.Equal(t, fixtureIdentity.User.ID, f.events[0].ActorID)
-			require.Equal(t, sessionID, f.events[0].SessionID)
-			require.Empty(t, f.events[0].TargetID, "an unverified target never enters an event")
 		}
 	}
-	// The record route without a reference is no route: the router answers,
-	// the adapter records nothing and the service is never reached.
+	// The record route without a reference is no route: the router answers and
+	// the service is never reached.
 	f, handler := connectionFixture(t)
 	response := requestAuth(handler, "GET", auth.ConnectionsPath+"/", "", bearerHeaders())
 	require.Equal(t, 404, response.Code)
 	require.Empty(t, f.connectionCalls)
-	require.Empty(t, f.events)
-}
-
-func TestConnectionRejectionAuditFailureReturnsUnavailability(t *testing.T) {
-	for _, route := range connectionRoutes() {
-		t.Run(route.name, func(t *testing.T) {
-			f, handler := connectionFixture(t)
-			f.recordErr = errors.New("SENTINEL_PRIVATE_DRIVER")
-			response := requestAuth(handler, route.method, route.path, route.body, http.Header{"Content-Type": {"application/json"}})
-			require.Equal(t, 503, response.Code)
-			require.Contains(t, response.Body.String(), auth.ServiceUnavailable)
-			require.NotContains(t, response.Body.String(), "SENTINEL")
-			require.Empty(t, f.connectionCalls)
-		})
-	}
 }
 
 func TestConnectionRoutesHonorTheOperationDeadline(t *testing.T) {
@@ -729,7 +691,7 @@ func TestRealHTTPConnectionRoutesRoundTrip(t *testing.T) {
 	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
 	require.NoError(t, err)
 	service := local.WithKeyring(serverTestKeyring(t))
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service,
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service,
 		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
@@ -856,33 +818,12 @@ func TestRealHTTPConnectionRoutesRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &deletion))
 	require.Equal(t, auth.ConnectionDeletion{ID: record.ID, Name: record.Name, Deleted: true}, deletion)
 
-	// One pre-service rejection records exactly one event with the mapped
-	// action, which the migrated check constraint must accept.
-	var before int
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events`).Scan(&before))
+	// A pre-service rejection answers without storing anything and without
+	// reflecting the submitted body.
 	response = send("POST", auth.ConnectionsPath, `{"SENTINEL_PRIVATE_BODY":"x"}`)
 	require.Equal(t, 400, response.Code)
-	var total, rejected int
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events`).Scan(&total))
-	require.Equal(t, before+1, total)
-	require.NoError(t, pool.QueryRow(t.Context(),
-		`SELECT count(*) FROM auth_events WHERE action='connection.create' AND outcome='invalid_argument'`).Scan(&rejected))
-	require.Equal(t, 1, rejected)
-	var row string
-	require.NoError(t, pool.QueryRow(t.Context(),
-		`SELECT row_to_json(auth_events)::text FROM auth_events WHERE outcome='invalid_argument'`).Scan(&row))
-	require.NotContains(t, row, "SENTINEL")
+	require.NotContains(t, response.Body.String(), "SENTINEL")
 
-	for action, count := range map[string]int{
-		"connection.create": 2, "connection.update": 1, "connection.set_credentials": 1,
-		"connection.disable": 1, "connection.delete": 1, "connection.check": 2,
-		"connection.get": 0, "connections.list": 0, "connection.enable": 0,
-	} {
-		var events int
-		require.NoError(t, pool.QueryRow(t.Context(),
-			`SELECT count(*) FROM auth_events WHERE action=$1 AND outcome IN ('success','check_failed')`, action).Scan(&events))
-		require.Equal(t, count, events, action)
-	}
 	var stored int
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM connections`).Scan(&stored))
 	require.Equal(t, 1, stored, "only the metrics connection remains")

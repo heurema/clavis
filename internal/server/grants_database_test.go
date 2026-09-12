@@ -28,7 +28,7 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
 	require.NoError(t, err)
 	service := local.WithKeyring(serverTestKeyring(t))
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service,
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service,
 		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	body := func(value any) string {
@@ -55,12 +55,6 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 		result := requestAuth(handler, method, route, payload, request)
 		require.Equal(t, "no-store", result.Header().Get("Cache-Control"))
 		return result
-	}
-	events := func(action, outcome string) int {
-		t.Helper()
-		var count int
-		require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events WHERE action = $1 AND outcome = $2`, action, outcome).Scan(&count))
-		return count
 	}
 	admin := login("personal-admin", password)
 
@@ -95,7 +89,6 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	require.JSONEq(t, `{"connections":[],"truncated":false}`, response.Body.String())
 	response = send(member, "POST", auth.GrantsPath, body(auth.GrantRequest{User: "alice", Connection: "ledger-primary"}))
 	require.Equal(t, 403, response.Code)
-	require.Equal(t, 1, events("grant.create", "forbidden"))
 
 	// Grant by username and name; a dry run first leaves nothing.
 	grant := body(auth.GrantRequest{User: "alice", Connection: "ledger-primary"})
@@ -116,10 +109,9 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	require.Equal(t, 200, response.Code, "a repeated grant is idempotent")
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &mutation))
 	require.False(t, mutation.Created)
-	require.Equal(t, 1, events("grant.create", "success"))
-	var eventConnection string
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT connection_id::text FROM auth_events WHERE action = 'grant.create' AND outcome = 'success'`).Scan(&eventConnection))
-	require.Equal(t, connection.ID, eventConnection)
+	require.NoError(t, pool.QueryRow(t.Context(),
+		`SELECT count(*) FROM grants WHERE user_id = $1 AND connection_id = $2`, created.ID, connection.ID).Scan(&rows))
+	require.Equal(t, 1, rows, "a repeated grant writes no second row")
 
 	// The member now sees the summary shape and nothing more.
 	response = send(member, "GET", auth.WhoAmIPath, "")
@@ -139,7 +131,6 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	require.NotContains(t, response.Body.String(), `"target"`)
 	response = send(member, "GET", strings.Replace(auth.ConnectionPath, "{connectionID}", "metrics-eu", 1), "")
 	require.Equal(t, 404, response.Code, "an ungranted connection does not exist for a member")
-	require.Zero(t, events("connection.get", "connection_not_found"))
 	response = send(member, "GET", auth.GrantsPath, "")
 	require.Equal(t, 200, response.Code)
 	var list auth.GrantList
@@ -147,7 +138,6 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	require.Len(t, list.Grants, 1)
 	response = send(member, "GET", auth.GrantsPath+"?user=personal-admin", "")
 	require.Equal(t, 403, response.Code)
-	require.Equal(t, 1, events("grants.list", "forbidden"))
 
 	// Administrators list with filters and see the join both ways.
 	response = send(admin, "GET", auth.GrantsPath+"?connection="+connection.ID, "")
@@ -183,7 +173,7 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &identity))
 	require.Equal(t, []string{"ledger-primary"}, identity.Connections, "grants survive blocking")
 
-	// Revoke twice: the second is a no-op without an event; then delete works.
+	// Revoke twice: the second is a no-op; then delete works.
 	revoke := body(auth.GrantRequest{User: created.ID, Connection: connection.ID})
 	response = send(admin, "POST", auth.GrantRevokePath, revoke)
 	require.Equal(t, 200, response.Code)
@@ -195,7 +185,8 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	require.Equal(t, 200, response.Code)
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &revocation))
 	require.False(t, revocation.Revoked)
-	require.Equal(t, 1, events("grant.revoke", "success"))
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM grants`).Scan(&rows))
+	require.Zero(t, rows, "a repeated revocation removes nothing more")
 	response = send(member, "GET", auth.ConnectionsPath, "")
 	require.Equal(t, 200, response.Code)
 	require.JSONEq(t, `{"connections":[],"truncated":false}`, response.Body.String())
@@ -204,5 +195,4 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	response = send(admin, "POST", auth.GrantsPath, body(auth.GrantRequest{User: "nobody", Connection: "metrics-eu"}))
 	require.Equal(t, 404, response.Code)
 	require.Contains(t, response.Body.String(), "USER_NOT_FOUND")
-	require.Equal(t, 1, events("grant.create", "user_not_found"))
 }

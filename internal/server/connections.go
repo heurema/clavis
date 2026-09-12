@@ -16,9 +16,9 @@ import (
 // empty update never reaches it, so the guidance has to be given here.
 const hintEmptyUpdate = "Provide at least one field to update"
 
-// The connection service owns readiness, authority rechecks and its own
-// events, exactly like user administration; a composition without one must
-// reject protected requests instead of invoking anything.
+// The connection service owns readiness and authority rechecks, exactly like
+// user administration; a composition without one must reject protected
+// requests instead of invoking anything.
 func (a *authHTTP) requireConnections() error {
 	if a.connections == nil {
 		return &auth.Error{Code: auth.ServiceUnavailable}
@@ -28,11 +28,10 @@ func (a *authHTTP) requireConnections() error {
 
 // connection is the shared shape of every JSON connection route, and mirrors
 // administration: bounded body and query handling first, then a bearer-only
-// session, then the path target, then the service call that owns its own
-// success and denial events. Routes with a {connectionID} segment pass
-// targeted=true so an unusable reference (including the empty segment of a
-// doubled slash) is rejected here and recorded like any other adapter
-// rejection, never resolved by the service.
+// session, then the path target, then the service call. Routes with a
+// {connectionID} segment pass targeted=true so an unusable reference
+// (including the empty segment of a doubled slash) is rejected here, never
+// resolved by the service.
 func (a *authHTTP) connection(w http.ResponseWriter, r *http.Request, targeted bool, body func() error,
 	call func(auth.Session, string) (any, int, error)) {
 	var err error
@@ -54,7 +53,6 @@ func (a *authHTTP) connection(w http.ResponseWriter, r *http.Request, targeted b
 		jsonFailure(w, err)
 		return
 	}
-	serviceOwnsEvent(r)
 	result, status, err := call(session, target)
 	if err != nil {
 		jsonFailure(w, err)
@@ -284,8 +282,7 @@ func (a *authHTTP) updateConnectionJSON(w http.ResponseWriter, r *http.Request) 
 }
 
 // updatesAnything reports whether the body supplied a field at all. An update
-// that changes nothing is a malformed request, not a no-op mutation with an
-// event.
+// that changes nothing is a malformed request, not a no-op mutation.
 func updatesAnything(request auth.UpdateConnectionRequest) bool {
 	return request.Name != nil || request.Title != nil || request.Description != nil ||
 		request.Scope != nil || request.Target != nil || request.Labels != nil ||

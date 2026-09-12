@@ -22,7 +22,7 @@ import (
 
 // fakeAdministration records what each route handed to the service so a
 // rejected request can be proven never to have reached it. It is embedded in
-// backendFixture, which supplies the session and the event recorder.
+// backendFixture, which supplies the session.
 type fakeAdministration struct {
 	list                                              auth.UserList
 	record                                            auth.UserRecord
@@ -103,20 +103,17 @@ const (
 type administrationRoute struct {
 	name, method, path, body string
 	success                  int
-	action                   auth.EventAction
 	expected                 any
 }
 
 func administrationRoutes() []administrationRoute {
 	return []administrationRoute{
-		{"list", "GET", auth.UsersPath, "", 200, auth.EventUsersList, adminList},
-		{"create", "POST", auth.UsersPath, validCreateBody, 201, auth.EventUserCreate, adminRecord},
-		{"block", "POST", userPath(auth.UserBlockPath), "", 200, auth.EventUserBlock, adminMutation},
-		{"unblock", "POST", userPath(auth.UserUnblockPath), "", 200, auth.EventUserUnblock, adminMutation},
-		{"password", "POST", userPath(auth.UserPasswordPath), validPasswordBody, 200, auth.EventUserResetPassword, adminMutation},
-		// A rejected role request is recorded as user.demote whatever it asked
-		// for; the adapter must not trust the submitted role.
-		{"role", "POST", userPath(auth.UserRolePath), validRoleBody, 200, auth.EventUserDemote, adminMutation},
+		{"list", "GET", auth.UsersPath, "", 200, adminList},
+		{"create", "POST", auth.UsersPath, validCreateBody, 201, adminRecord},
+		{"block", "POST", userPath(auth.UserBlockPath), "", 200, adminMutation},
+		{"unblock", "POST", userPath(auth.UserUnblockPath), "", 200, adminMutation},
+		{"password", "POST", userPath(auth.UserPasswordPath), validPasswordBody, 200, adminMutation},
+		{"role", "POST", userPath(auth.UserRolePath), validRoleBody, 200, adminMutation},
 	}
 }
 
@@ -154,7 +151,6 @@ func TestAdministrationRoutesReturnDocumentedSuccessBodies(t *testing.T) {
 			require.NoError(t, err)
 			require.JSONEq(t, string(expected), response.Body.String())
 			require.Len(t, f.adminCalls, 1)
-			require.Empty(t, f.events, "a service-owned outcome must not be recorded again by the adapter")
 		})
 	}
 	f, handler := adminFixture(t)
@@ -205,7 +201,6 @@ func TestAdministrationServiceFailuresUseDocumentedStatuses(t *testing.T) {
 				require.NotContains(t, response.Body.String(), "SENTINEL")
 				require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 				require.Len(t, f.adminCalls, 1)
-				require.Empty(t, f.events)
 				if tc.status == 429 {
 					require.Equal(t, "3", response.Header().Get("Retry-After"))
 				}
@@ -219,14 +214,13 @@ func TestAdministrationRequiresBearerCredentials(t *testing.T) {
 		name    string
 		headers http.Header
 		status  int
-		outcome auth.EventOutcome
 	}{
-		{"cookie only", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 401, auth.OutcomeUnauthenticated},
-		{"no credentials", http.Header{}, 401, auth.OutcomeUnauthenticated},
+		{"cookie only", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 401},
+		{"no credentials", http.Header{}, 401},
 		{"bearer and cookie", http.Header{"Authorization": {"Bearer " + string(fixtureToken)},
-			"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 400, auth.OutcomeInvalidArgument},
+			"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 400},
 		{"foreign origin", http.Header{"Authorization": {"Bearer " + string(fixtureToken)},
-			"Origin": {"https://attacker.invalid"}}, 403, auth.OutcomeForbidden},
+			"Origin": {"https://attacker.invalid"}}, 403},
 	} {
 		for _, route := range administrationRoutes() {
 			t.Run(tc.name+"/"+route.name, func(t *testing.T) {
@@ -241,7 +235,6 @@ func TestAdministrationRequiresBearerCredentials(t *testing.T) {
 				require.Empty(t, response.Header().Get("Location"))
 				require.Empty(t, response.Header().Get("Set-Cookie"))
 				require.Empty(t, f.adminCalls, "no mutation may reach the service")
-				require.Equal(t, []auth.Event{{Action: route.action, Outcome: tc.outcome}}, f.events)
 			})
 		}
 	}
@@ -291,21 +284,19 @@ func TestAdministrationBodiesAreStrictAndUnreflected(t *testing.T) {
 				require.NotContains(t, response.Body.String(), "SENTINEL")
 				require.NotContains(t, response.Body.String(), "member-user")
 				require.Empty(t, f.adminCalls, "an invalid body must never reach hashing or the service")
-				require.Equal(t, []auth.Event{{Action: route.action, Outcome: auth.OutcomeInvalidArgument}}, f.events)
 			})
 		}
 	}
 	// Wrong or absent content types and bodies on bodyless routes.
 	for _, tc := range []struct {
 		name, method, path, body, contentType string
-		action                                auth.EventAction
 	}{
-		{"form create", "POST", auth.UsersPath, "username=member-user&password=" + sentinel, "application/x-www-form-urlencoded", auth.EventUserCreate},
-		{"typeless create", "POST", auth.UsersPath, validCreateBody, "", auth.EventUserCreate},
-		{"form password", "POST", userPath(auth.UserPasswordPath), "password=" + sentinel, "application/x-www-form-urlencoded", auth.EventUserResetPassword},
-		{"listing body", "GET", auth.UsersPath, `{"users":[]}`, "application/json", auth.EventUsersList},
-		{"block body", "POST", userPath(auth.UserBlockPath), `{}`, "application/json", auth.EventUserBlock},
-		{"unblock body", "POST", userPath(auth.UserUnblockPath), `{}`, "application/json", auth.EventUserUnblock},
+		{"form create", "POST", auth.UsersPath, "username=member-user&password=" + sentinel, "application/x-www-form-urlencoded"},
+		{"typeless create", "POST", auth.UsersPath, validCreateBody, ""},
+		{"form password", "POST", userPath(auth.UserPasswordPath), "password=" + sentinel, "application/x-www-form-urlencoded"},
+		{"listing body", "GET", auth.UsersPath, `{"users":[]}`, "application/json"},
+		{"block body", "POST", userPath(auth.UserBlockPath), `{}`, "application/json"},
+		{"unblock body", "POST", userPath(auth.UserUnblockPath), `{}`, "application/json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, handler := adminFixture(t)
@@ -317,13 +308,11 @@ func TestAdministrationBodiesAreStrictAndUnreflected(t *testing.T) {
 			require.Equal(t, 400, response.Code)
 			require.NotContains(t, response.Body.String(), "SENTINEL")
 			require.Empty(t, f.adminCalls)
-			require.Equal(t, []auth.Event{{Action: tc.action, Outcome: auth.OutcomeInvalidArgument}}, f.events)
 		})
 	}
 }
 
-func TestAdministrationRejectsInvalidTargetsAfterIdentifyingTheActor(t *testing.T) {
-	const sessionID = "12345678-1234-4234-8234-123456789aaa"
+func TestAdministrationRejectsInvalidTargets(t *testing.T) {
 	for _, pattern := range []string{auth.UserBlockPath, auth.UserUnblockPath, auth.UserPasswordPath, auth.UserRolePath} {
 		// An empty segment (doubled slash) still matches the route and must be rejected here.
 		// A username is a valid reference now, so the refused shapes are the ones
@@ -346,16 +335,11 @@ func TestAdministrationRejectsInvalidTargetsAfterIdentifyingTheActor(t *testing.
 			require.Equal(t, 400, response.Code, path)
 			require.Contains(t, response.Body.String(), auth.InvalidArgument)
 			require.Empty(t, f.adminCalls)
-			require.Len(t, f.events, 1)
-			require.Equal(t, auth.OutcomeInvalidArgument, f.events[0].Outcome)
-			require.Equal(t, fixtureIdentity.User.ID, f.events[0].ActorID)
-			require.Equal(t, sessionID, f.events[0].SessionID)
-			require.Empty(t, f.events[0].TargetID, "an unverified target never enters an event")
 		}
 	}
 }
 
-func TestAdministrationMemberDenialIsRecordedOnlyByTheService(t *testing.T) {
+func TestAdministrationMemberDenialComesFromTheService(t *testing.T) {
 	for _, route := range administrationRoutes() {
 		t.Run(route.name, func(t *testing.T) {
 			f, handler := adminFixture(t)
@@ -365,21 +349,6 @@ func TestAdministrationMemberDenialIsRecordedOnlyByTheService(t *testing.T) {
 			response := requestAuth(handler, route.method, route.path, route.body, route.headers())
 			require.Equal(t, 403, response.Code)
 			require.Len(t, f.adminCalls, 1)
-			require.Empty(t, f.events)
-		})
-	}
-}
-
-func TestAdministrationRejectionAuditFailureReturnsUnavailability(t *testing.T) {
-	for _, route := range administrationRoutes() {
-		t.Run(route.name, func(t *testing.T) {
-			f, handler := adminFixture(t)
-			f.recordErr = errors.New("SENTINEL_PRIVATE_DRIVER")
-			response := requestAuth(handler, route.method, route.path, route.body, http.Header{"Content-Type": {"application/json"}})
-			require.Equal(t, 503, response.Code)
-			require.Contains(t, response.Body.String(), auth.ServiceUnavailable)
-			require.NotContains(t, response.Body.String(), "SENTINEL")
-			require.Empty(t, f.adminCalls)
 		})
 	}
 }
@@ -421,13 +390,13 @@ func TestListingResponseStaysWithinTheDocumentedBodyLimit(t *testing.T) {
 	require.True(t, decoded.Truncated)
 }
 
-func TestRealHTTPAdministrationRoutesRecordAndFailClosed(t *testing.T) {
+func TestRealHTTPAdministrationRoutesMutateAndFailClosed(t *testing.T) {
 	pool, path, password := serverDatabase(t)
 	checker := store.NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
 	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
 	require.NoError(t, err)
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service,
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service,
 		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
@@ -481,22 +450,16 @@ func TestRealHTTPAdministrationRoutesRecordAndFailClosed(t *testing.T) {
 	response = requestAuth(handler, "POST", strings.Replace(auth.UserBlockPath, "{userID}", adminTargetID, 1), "", headers)
 	require.Equal(t, 404, response.Code)
 
-	// One pre-service rejection records exactly one event with the new action,
-	// which the migrated check constraint must accept.
-	var before, after int
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events`).Scan(&before))
+	// A pre-service rejection answers without creating a user and without
+	// reflecting the submitted body.
+	var users int
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM users`).Scan(&users))
 	response = requestAuth(handler, "POST", auth.UsersPath, `{"SENTINEL_PRIVATE_BODY":"x"}`, jsonHeaders("x"))
 	require.Equal(t, 400, response.Code)
-	require.NoError(t, pool.QueryRow(t.Context(),
-		`SELECT count(*) FROM auth_events WHERE action='user.create' AND outcome='invalid_argument'`).Scan(&after))
-	require.Equal(t, 1, after)
-	var total int
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events`).Scan(&total))
-	require.Equal(t, before+1, total)
-	var row string
-	require.NoError(t, pool.QueryRow(t.Context(),
-		`SELECT row_to_json(auth_events)::text FROM auth_events WHERE outcome='invalid_argument'`).Scan(&row))
-	require.NotContains(t, row, "SENTINEL")
+	require.NotContains(t, response.Body.String(), "SENTINEL")
+	var after int
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM users`).Scan(&after))
+	require.Equal(t, users, after)
 
 	// A held row lock on the target blocks the mutation's ordered lock; the
 	// operation deadline must still answer with safe unavailability.

@@ -26,12 +26,11 @@ import (
 )
 
 type backendFixture struct {
-	loginErr, errorAuth, logoutErr, revokeErr, recordErr error
-	loginCalls, authCalls, logoutCalls, revokeCalls      int
-	lastInput                                            auth.LoginInput
-	events                                               []auth.Event
-	role                                                 auth.Role
-	block                                                func(context.Context)
+	loginErr, errorAuth, logoutErr, revokeErr       error
+	loginCalls, authCalls, logoutCalls, revokeCalls int
+	lastInput                                       auth.LoginInput
+	role                                            auth.Role
+	block                                           func(context.Context)
 	fakeAdministration
 	fakeConnections
 	fakeGrants
@@ -73,14 +72,6 @@ func (f *backendFixture) RevokeUserSessions(ctx context.Context, _ auth.Session,
 	}
 	return f.revokeErr
 }
-func (f *backendFixture) RecordEvent(ctx context.Context, event auth.Event) error {
-	f.events = append(f.events, event)
-	if f.block != nil {
-		f.block(ctx)
-	}
-	return f.recordErr
-}
-
 func fixtureViews() AuthViews {
 	component := func(value any) templ.Component {
 		return templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
@@ -111,7 +102,7 @@ func authHandler(t *testing.T, f *backendFixture, checker platform.Checker, orig
 	}
 	// The fixture supplies every dependency, so the tests exercise the same
 	// composition boundary the production entry point uses.
-	handler, err := HandlerWithAuth(time.Second, checker, f, f, f, f, f, f, origin, fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, checker, f, f, f, f, f, origin, fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	return handler
 }
@@ -141,13 +132,13 @@ func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
 			// An unready real service must never reach its pool, even directly.
 			service, err := store.NewLocalAuth(nil, checker, auth.DefaultSessionTTL)
 			require.NoError(t, err)
-			recorder := &backendFixture{}
+			fixture := &backendFixture{}
 			healthCalls := 0
 			health := platform.CheckFunc(func(ctx context.Context) platform.Readiness {
 				healthCalls++
 				return checker.Check(ctx)
 			})
-			handler, err := HandlerWithAuth(time.Second, health, service, recorder, service, service, recorder, recorder, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			handler, err := HandlerWithAuth(time.Second, health, service, service, service, fixture, fixture, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 			require.NoError(t, err)
 			code := (platform.Readiness{State: state}).Response().Error.Code
 			for _, tc := range []struct {
@@ -214,21 +205,19 @@ func TestHandlerWithAuthRequiresCompleteComposition(t *testing.T) {
 	for _, tc := range []struct {
 		checker     platform.Checker
 		service     auth.Service
-		recorder    auth.EventRecorder
 		admin       auth.Administration
 		connections auth.Connections
 		grants      auth.Grants
 		members     MemberConnections
 	}{
-		{nil, fixture, fixture, fixture, fixture, fixture, fixture},
-		{checker, nil, fixture, fixture, fixture, fixture, fixture},
-		{checker, fixture, nil, fixture, fixture, fixture, fixture},
-		{checker, fixture, fixture, nil, fixture, fixture, fixture},
-		{checker, fixture, fixture, fixture, nil, fixture, fixture},
-		{checker, fixture, fixture, fixture, fixture, nil, fixture},
-		{checker, fixture, fixture, fixture, fixture, fixture, nil},
+		{nil, fixture, fixture, fixture, fixture, fixture},
+		{checker, nil, fixture, fixture, fixture, fixture},
+		{checker, fixture, nil, fixture, fixture, fixture},
+		{checker, fixture, fixture, nil, fixture, fixture},
+		{checker, fixture, fixture, fixture, nil, fixture},
+		{checker, fixture, fixture, fixture, fixture, nil},
 	} {
-		handler, err := HandlerWithAuth(time.Second, tc.checker, tc.service, tc.recorder, tc.admin, tc.connections, tc.grants, tc.members, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		handler, err := HandlerWithAuth(time.Second, tc.checker, tc.service, tc.admin, tc.connections, tc.grants, tc.members, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 		require.Nil(t, handler)
 		require.Error(t, err)
 		status, failure := auth.FailureFor(err)
@@ -267,7 +256,7 @@ func TestNilServiceFixturesFailClosed(t *testing.T) {
 	}
 }
 
-func TestStrictJSONCredentialsAndAnonymousAudits(t *testing.T) {
+func TestStrictJSONCredentialsAndAnonymousRejections(t *testing.T) {
 	valid := `{"username":"personal-admin","password":"SENTINEL_PRIVATE_PASSWORD"}`
 	for _, tc := range []struct {
 		name, body, content string
@@ -297,11 +286,9 @@ func TestStrictJSONCredentialsAndAnonymousAudits(t *testing.T) {
 			require.NotContains(t, response.Body.String(), "SENTINEL")
 			if tc.status == 200 {
 				require.Equal(t, 1, f.loginCalls)
-				require.Empty(t, f.events)
 				require.Equal(t, auth.CLI, f.lastInput.Kind)
 			} else {
 				require.Zero(t, f.loginCalls)
-				require.Equal(t, []auth.Event{{Action: auth.EventLogin, Outcome: auth.OutcomeInvalidArgument}}, f.events)
 			}
 		})
 	}
@@ -330,7 +317,6 @@ func TestOriginTransportAndCredentialIsolation(t *testing.T) {
 			require.Equal(t, 403, response.Code)
 			require.Empty(t, response.Header().Get("Set-Cookie"))
 			require.Zero(t, f.loginCalls+f.logoutCalls+f.authCalls)
-			require.Len(t, f.events, 1)
 		}
 	}
 	for _, headers := range []http.Header{
@@ -376,12 +362,6 @@ func TestOriginTransportAndCredentialIsolation(t *testing.T) {
 		require.Equal(t, 400, response.Code)
 		require.Empty(t, response.Header().Get("Set-Cookie"))
 		require.Zero(t, f.authCalls)
-		f.recordErr = errors.New("storage unavailable")
-		response = requestAuth(authHandler(t, f, nil, "http://127.0.0.1"), "POST", "/logout", "", headers)
-		require.Equal(t, 503, response.Code)
-		require.Empty(t, response.Header().Get("Set-Cookie"))
-		require.Zero(t, f.authCalls)
-		f.recordErr = nil
 	}
 }
 
@@ -449,7 +429,7 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 		t.Fatal("public/local-only path must not touch DB")
 		return platform.Readiness{}
 	})
-	f := &backendFixture{recordErr: errors.New("unavailable")}
+	f := &backendFixture{}
 	handler := authHandler(t, f, checker, "http://127.0.0.1")
 	for _, path := range []string{"/", "/login", "/assets/appearance.js", "/health/live"} {
 		for _, cookie := range []string{"", developmentCookie + "=malformed", developmentCookie + "=" + string(fixtureToken)} {
@@ -463,28 +443,19 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 		require.Equal(t, -1, response.Result().Cookies()[0].MaxAge)
 	}
 	require.Zero(t, f.authCalls+f.loginCalls+f.logoutCalls)
-	require.Empty(t, f.events)
 }
 
-func TestRejectionAuditFailureDeadlineAndNoDuplicate(t *testing.T) {
-	f := &backendFixture{recordErr: errors.New("SENTINEL_PRIVATE_DRIVER")}
+func TestLogoutDeadlineReturnsSafeFailure(t *testing.T) {
+	f := &backendFixture{}
 	handler := authHandler(t, f, nil, "http://127.0.0.1")
-	for _, path := range []string{auth.LoginPath, auth.LogoutPath, "/api/admin/users/" + fixtureIdentity.User.ID + "/sessions/revoke", "/logout"} {
-		response := requestAuth(handler, "POST", path, "", http.Header{})
-		require.Equal(t, 503, response.Code)
-		require.Empty(t, response.Header().Get("Set-Cookie"))
-		require.NotContains(t, response.Body.String(), "SENTINEL")
-	}
-	f.recordErr = nil
-	f.events = nil
 	f.loginErr = &auth.Error{Code: auth.InvalidCredentials}
 	response := requestAuth(handler, "POST", auth.LoginPath, `{"username":"personal-admin","password":"valid test password"}`, http.Header{"Content-Type": {"application/json"}})
 	require.Equal(t, 401, response.Code)
-	require.Empty(t, f.events)
 	f.block = func(ctx context.Context) { <-ctx.Done() }
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 	request := httptest.NewRequest("POST", auth.LogoutPath, nil).WithContext(ctx)
+	request.Header.Set("Authorization", "Bearer "+string(fixtureToken))
 	response = httptest.NewRecorder()
 	start := time.Now()
 	handler.ServeHTTP(response, request)

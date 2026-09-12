@@ -41,7 +41,6 @@ type authHTTP struct {
 	connections auth.Connections
 	grants      auth.Grants
 	members     MemberConnections
-	recorder    auth.EventRecorder
 	origin      string
 	secure      bool
 	views       AuthViews
@@ -84,108 +83,12 @@ type responseBuffer struct {
 	bytes.Buffer
 }
 
-type operationAudit struct {
-	serviceOwns     bool
+// operationState carries the status an early browser rejection already
+// rendered, so the failure path can tell a 400 apart from other rejections.
+type operationState struct {
 	rejectionStatus int
-	actorID         string
-	sessionID       string
 }
-type operationAuditKey struct{}
-
-func serviceOwnsEvent(r *http.Request) {
-	r.Context().Value(operationAuditKey{}).(*operationAudit).serviceOwns = true
-}
-
-// rejectionAction maps the matched route, never the raw request path, to the
-// action an adapter rejection records. Routes absent from the table record
-// nothing: reading existing credentials (whoami, the browser admin page) is not
-// a rejectable mutation, and the listing route is the only recorded GET.
-func rejectionAction(r *http.Request) (auth.EventAction, bool) {
-	switch chi.RouteContext(r.Context()).RoutePattern() {
-	case "/login", auth.LoginPath:
-		return auth.EventLogin, true
-	case "/logout", auth.LogoutPath:
-		return auth.EventLogout, true
-	case auth.RevokePath:
-		return auth.EventRevoke, true
-	case auth.UsersPath:
-		if r.Method == http.MethodGet {
-			return auth.EventUsersList, true
-		}
-		return auth.EventUserCreate, true
-	case auth.UserBlockPath:
-		return auth.EventUserBlock, true
-	case auth.UserUnblockPath:
-		return auth.EventUserUnblock, true
-	case auth.UserPasswordPath:
-		return auth.EventUserResetPassword, true
-	case auth.UserRolePath:
-		// A rejected role request is recorded as user.demote whether or not a
-		// role was submitted: the request never reached the service, no role
-		// changed, and the rejection must not depend on untrusted body fields.
-		return auth.EventUserDemote, true
-	case auth.ConnectionsPath:
-		if r.Method == http.MethodGet {
-			return auth.EventConnectionsList, true
-		}
-		return auth.EventConnectionCreate, true
-	case auth.ConnectionPath:
-		return auth.EventConnectionGet, true
-	case auth.ConnectionUpdatePath:
-		return auth.EventConnectionUpdate, true
-	case auth.ConnectionCredentialsPath:
-		return auth.EventConnectionSecrets, true
-	case auth.ConnectionEnablePath:
-		return auth.EventConnectionEnable, true
-	case auth.ConnectionDisablePath:
-		return auth.EventConnectionDisable, true
-	case auth.ConnectionDeletePath:
-		return auth.EventConnectionDelete, true
-	case auth.ConnectionCheckPath:
-		return auth.EventConnectionCheck, true
-	case auth.GrantsPath:
-		if r.Method == http.MethodGet {
-			return auth.EventGrantsList, true
-		}
-		return auth.EventGrantCreate, true
-	case auth.GrantRevokePath:
-		return auth.EventGrantRevoke, true
-	}
-	return "", false
-}
-
-func (a *authHTTP) auditRejection(r *http.Request, status int) error {
-	state := r.Context().Value(operationAuditKey{}).(*operationAudit)
-	if state.serviceOwns {
-		return nil
-	}
-	action, ok := rejectionAction(r)
-	if !ok {
-		return nil
-	}
-	if state.rejectionStatus != 0 {
-		status = state.rejectionStatus
-	}
-	var outcome auth.EventOutcome
-	switch status {
-	case 400:
-		outcome = auth.OutcomeInvalidArgument
-	case 401:
-		outcome = auth.OutcomeUnauthenticated
-	case 403:
-		outcome = auth.OutcomeForbidden
-	case 429:
-		outcome = auth.OutcomeRateLimited
-	default:
-		return nil
-	}
-	if a.recorder == nil {
-		return &auth.Error{Code: auth.ServiceUnavailable}
-	}
-	return a.recorder.RecordEvent(r.Context(), auth.Event{
-		Action: action, Outcome: outcome, ActorID: state.actorID, SessionID: state.sessionID,
-	})
-}
+type operationStateKey struct{}
 
 func (w *responseBuffer) Header() http.Header { return w.header }
 func (w *responseBuffer) WriteHeader(status int) {
@@ -201,7 +104,7 @@ func (w *responseBuffer) Write(b []byte) (int, error) {
 }
 
 // Socket read deadlines unblock body consumption, while the context also bounds
-// pool/row locks and audit writes. Response publication waits for preparation.
+// pool and row locks. Response publication waits for preparation.
 func (a *authHTTP) operation(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), auth.OperationTimeout)
@@ -215,13 +118,12 @@ func (a *authHTTP) operation(next http.Handler) http.Handler {
 				_ = controller.SetReadDeadline(time.Time{})
 			}
 		}()
-		r = r.WithContext(context.WithValue(ctx, operationAuditKey{}, &operationAudit{}))
+		r = r.WithContext(context.WithValue(ctx, operationStateKey{}, &operationState{}))
 		buffer := &responseBuffer{header: make(http.Header)}
 		next.ServeHTTP(buffer, r)
-		auditErr := a.auditRejection(r, buffer.status)
 		timedOut := ctx.Err() != nil || !time.Now().Before(deadline)
-		if timedOut || auditErr != nil {
-			keepCookie := !a.originAllowed(r, true) || r.Context().Value(operationAuditKey{}).(*operationAudit).rejectionStatus == 400
+		if timedOut {
+			keepCookie := !a.originAllowed(r, true) || r.Context().Value(operationStateKey{}).(*operationState).rejectionStatus == 400
 			buffer = &responseBuffer{header: make(http.Header)}
 			r = r.WithContext(context.WithoutCancel(ctx))
 			failure := &auth.Error{Code: auth.ServiceUnavailable}
@@ -561,7 +463,6 @@ func (a *authHTTP) loginJSON(w http.ResponseWriter, r *http.Request) {
 		jsonFailure(w, err)
 		return
 	}
-	serviceOwnsEvent(r)
 	response, err := a.service.Login(r.Context(), auth.LoginInput{Username: input.Username, Password: input.Password, Kind: auth.CLI, Peer: peer(r)})
 	if err != nil {
 		jsonFailure(w, err)
@@ -570,15 +471,8 @@ func (a *authHTTP) loginJSON(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, response)
 }
 
-// Remember only identities established by successful authentication. Subsequent
-// adapter rejection can then be attributed without looking up rejected input.
 func (a *authHTTP) authenticate(r *http.Request, token auth.Secret, kind auth.Kind) (auth.Session, error) {
-	session, err := a.service.Authenticate(r.Context(), token, kind)
-	if err == nil {
-		state := r.Context().Value(operationAuditKey{}).(*operationAudit)
-		state.actorID, state.sessionID = session.User.ID, session.ID
-	}
-	return session, err
+	return a.service.Authenticate(r.Context(), token, kind)
 }
 
 func (a *authHTTP) cliSession(r *http.Request) (auth.Session, error) {
@@ -656,7 +550,6 @@ func (a *authHTTP) logoutJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := a.cliSession(r)
 	if err == nil {
-		serviceOwnsEvent(r)
 		err = a.service.Logout(r.Context(), session)
 	}
 	if err != nil {
@@ -679,7 +572,6 @@ func (a *authHTTP) revokeJSON(w http.ResponseWriter, r *http.Request) {
 		err = &auth.Error{Code: auth.InvalidArgument}
 	}
 	if err == nil {
-		serviceOwnsEvent(r)
 		err = a.service.RevokeUserSessions(r.Context(), session, chi.URLParam(r, "userID"))
 	}
 	if err != nil {
@@ -691,7 +583,7 @@ func (a *authHTTP) revokeJSON(w http.ResponseWriter, r *http.Request) {
 
 func (a *authHTTP) render(w http.ResponseWriter, r *http.Request, status int, component templ.Component) {
 	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
-	if state, ok := r.Context().Value(operationAuditKey{}).(*operationAudit); ok && status >= 400 {
+	if state, ok := r.Context().Value(operationStateKey{}).(*operationState); ok && status >= 400 {
 		state.rejectionStatus = status
 	}
 	_ = web.Render(w, r, status, component)
@@ -735,7 +627,6 @@ func (a *authHTTP) loginBrowser(w http.ResponseWriter, r *http.Request) {
 		a.loginFailure(w, r, values.Get("username"), err)
 		return
 	}
-	serviceOwnsEvent(r)
 	response, err := a.service.Login(r.Context(), auth.LoginInput{Username: values.Get("username"), Password: auth.Secret(values.Get("password")), Kind: auth.Browser, Peer: peer(r)})
 	if err != nil {
 		a.loginFailure(w, r, values.Get("username"), err)
@@ -781,11 +672,7 @@ func (a *authHTTP) logoutBrowser(w http.ResponseWriter, r *http.Request) {
 		var session auth.Session
 		session, err = a.authenticate(r, token, auth.Browser)
 		if err == nil {
-			serviceOwnsEvent(r)
 			err = a.service.Logout(r.Context(), session)
-		} else {
-			status, _ := auth.FailureFor(err)
-			r.Context().Value(operationAuditKey{}).(*operationAudit).rejectionStatus = status
 		}
 	}
 	a.logoutResult(w, r, auth.LogoutOutcome(true, err))
@@ -823,7 +710,7 @@ func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
 		err = &auth.Error{Code: auth.Forbidden}
 	}
 	// The page fails closed rather than rendering administration without the
-	// current list. Listing a validated session records no event of its own.
+	// current list.
 	var users auth.UserList
 	if err == nil {
 		if err = a.requireAdministration(); err == nil {
