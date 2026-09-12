@@ -339,13 +339,6 @@ try {
     await sql("SELECT count(*) FROM users", "bootstrap-account-count"),
     "1",
   )
-  assert.equal(
-    await sql(
-      "SELECT count(*) FROM auth_events WHERE action='bootstrap'",
-      "bootstrap-event-count",
-    ),
-    "1",
-  )
   summary.concurrentBootstrap = "passed"
   const doctor = JSON.parse(
     await execute(
@@ -397,7 +390,7 @@ try {
 
   await login("admin-one")
   // Users are created and managed through the product CLI. The only fixture
-  // SQL left here forces expiry and counts events, which have no product API.
+  // SQL left here forces expiry and inspects fixtures that have no product API.
   const memberPassword = randomBytes(32).toString("hex")
   secrets.add(memberPassword)
   const created = await cli(
@@ -569,29 +562,6 @@ try {
     (await cli("member", ["users", "list"], 1)).error.code,
     "FORBIDDEN",
   )
-  for (const [filter, expected] of [
-    ["action='user.create' AND outcome='success'", "1"],
-    ["action='user.create' AND outcome='username_taken'", "1"],
-    ["action='user.block' AND outcome='self_target'", "1"],
-    ["action='user.demote' AND outcome='self_target'", "2"],
-    ["action='user.block' AND outcome='user_not_found'", "1"],
-    ["action='user.block' AND outcome='success'", "1"],
-    ["action='user.unblock' AND outcome='success'", "1"],
-    ["action='user.reset_password' AND outcome='success'", "1"],
-    ["action='user.promote' AND outcome='success'", "2"],
-    ["action='user.demote' AND outcome='success'", "2"],
-    ["action='users.list' AND outcome='forbidden'", "3"],
-    ["action='users.list' AND outcome='success'", "0"],
-    ["outcome='last_administrator'", "0"],
-  ])
-    assert.equal(
-      await sql(
-        `SELECT count(*) FROM auth_events WHERE ${filter}`,
-        `events-${filter.replace(/[^a-z_]+/g, "-")}`,
-      ),
-      expected,
-      filter,
-    )
   summary.userAdministration = "passed"
   console.log(
     "[smoke] Real CLI user creation, listing, blocking, password reset, role changes and self-protection passed",
@@ -599,7 +569,7 @@ try {
 
   // Connections are registered through the product CLI with encrypted secrets
   // and probed against the smoke database itself and a local VictoriaMetrics
-  // health stub. Only event counts come from fixture SQL.
+  // health stub. Only fixture checks come from SQL.
   const databasePassword = "clavis-local-only"
   secrets.add(databasePassword)
   const databasePasswordFile = join(privateDirectory, "database-password")
@@ -836,26 +806,6 @@ try {
       `${pgConnection.id} smoke-postgres postgresql enabled reachable`,
     ),
   )
-  for (const [filter, expected] of [
-    ["action='connection.create' AND outcome='success'", "2"],
-    ["action='connection.check' AND outcome='success'", "3"],
-    ["action='connection.check' AND outcome='check_failed'", "3"],
-    ["action='connection.set_credentials' AND outcome='success'", "3"],
-    ["action='connection.update' AND outcome='success'", "2"],
-    ["action='connection.disable' AND outcome='success'", "1"],
-    ["action='connection.delete' AND outcome='success'", "1"],
-    ["action='connection.delete' AND outcome='connection_in_use'", "0"],
-    ["action='connections.list' AND outcome='forbidden'", "0"],
-    ["action='connections.list' AND outcome='success'", "0"],
-  ])
-    assert.equal(
-      await sql(
-        `SELECT count(*) FROM auth_events WHERE ${filter}`,
-        `events-${filter.replace(/[^a-z_]+/g, "-")}`,
-      ),
-      expected,
-      filter,
-    )
   assert.equal(
     await sql(
       "SELECT count(*) FROM connections WHERE secret_envelope NOT LIKE 'v1:%'",
@@ -1161,30 +1111,6 @@ try {
     ).error.code,
     "INVALID_ARGUMENT",
   )
-  for (const [filter, expected] of [
-    ["action='grant.create' AND outcome='success'", "2"],
-    ["action='grant.create' AND outcome='forbidden'", "1"],
-    ["action='grant.create' AND outcome='user_not_found'", "1"],
-    ["action='grant.revoke' AND outcome='success'", "1"],
-    ["action='grant.revoke' AND outcome='forbidden'", "1"],
-    ["action='grants.list' AND outcome='forbidden'", "1"],
-    ["action='grants.list' AND outcome='success'", "0"],
-    ["action='connection.check' AND outcome='forbidden'", "1"],
-    ["action='connection.get' AND outcome='connection_not_found'", "0"],
-    ["action='connection.delete' AND outcome='connection_in_use'", "0"],
-    [
-      "action='grant.create' AND connection_id IS NULL AND outcome='success'",
-      "0",
-    ],
-  ])
-    assert.equal(
-      await sql(
-        `SELECT count(*) FROM auth_events WHERE ${filter}`,
-        `events-${filter.replace(/[^a-z_]+/g, "-")}`,
-      ),
-      expected,
-      filter,
-    )
   summary.connectionGrants = "passed"
   console.log(
     "[smoke] Real CLI grants, member visibility, username references and revocation passed",

@@ -12,15 +12,15 @@ Requirements: local-authentication (removed "Secret-free authentication events",
 
 Requirements: user-administration "JSON administration transport", connection-management "JSON connection routes", connection-grants "Grant routes and listing", cli-authentication "Connection management commands". Depends on slice 1. Owned paths: `internal/server/auth.go`, `server.go`, `*_test.go`, `cmd/server/main.go`, `internal/cli/*_test.go` if any test asserted events. Verify: `go test -race ./internal/server/ ./internal/cli/ && make build && CLAVIS_BACKEND_TEST_DATABASE_URL=... go test -race -p 1 ./internal/server/`.
 
-- [ ] 2.1 Remove the adapter recorder, `rejectionAction` and the pre-service rejection recording; drop the `recorder` dependency from `HandlerWithAuth` and the server entry point; every rejection keeps its status and body.
-- [ ] 2.2 Update server and CLI tests: remove event fixtures and assertions, keep every status, body, header and mutation assertion.
-- [ ] 2.3 Independent acceptance review of slice 2; record the revision.
+- [x] 2.1 Remove the adapter recorder, `rejectionAction` and the pre-service rejection recording; drop the `recorder` dependency from `HandlerWithAuth` and the server entry point; every rejection keeps its status and body.
+- [x] 2.2 Update server and CLI tests: remove event fixtures and assertions, keep every status, body, header and mutation assertion.
+- [x] 2.3 Independent acceptance review of slice 2; record the revision. Reviewed 2026-09-12 on the working tree over `ecc85d0`: ACCEPT, three nits, two applied (a dead status write in the browser logout path removed; the deadline test renamed to say what it now proves), one declined (`authenticate` kept as a one-line pass-through). Verified: every rejection keeps its status, body, headers, cookie and redirect behaviour; `HandlerWithAuth` lost exactly the recorder; `cmd/server` and the CLI untouched; every removed assertion was event-only and idempotency and rejection proofs moved to row counts. Handwritten +247/−579, no generated output.
 
 ## 3. Smoke, documentation and whole-change verification
 
 Requirements: project-bootstrap quality and smoke requirements; all delta specs end to end. Depends on slices 1 and 2. Owned paths: `scripts/smoke.mjs`, `README.md`, `docs/PRD.md` (section 12 status), `reports/` (ignored). Verify: `make check && make smoke && make test-mutation`.
 
-- [ ] 3.1 Remove the event-count blocks and event-content checks from smoke; keep every behavioural assertion; confirm the `sql` helper is still needed or remove it.
-- [ ] 3.2 Update README and PRD section 12; record accepted follow-ups.
+- [x] 3.1 Remove the event-count blocks and event-content checks from smoke; keep every behavioural assertion; confirm the `sql` helper is still needed or remove it.
+- [x] 3.2 Update README and PRD section 12; record accepted follow-ups. Accepted follow-up: the readiness column test never covered `connections` (pre-existing gap noted by the slice 1 review).
 - [ ] 3.3 Run clean-checkout `make setup`, `make check`, the real-database race suite, `make smoke` and `make test-mutation` (with the documented extended budget); report handwritten and generated line counts separately; confirm no tracked source is rewritten by successful checks.
 - [ ] 3.4 Whole-change independent review against the six delta specs and the inherited transaction, guard and dry-run requirements; record the final revision and any exceptions for owner acceptance before archive.
