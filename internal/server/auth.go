@@ -62,6 +62,15 @@ func (a *authHTTP) mount(router chi.Router) {
 	router.With(a.operation).Post(auth.UserUnblockPath, a.unblockUserJSON)
 	router.With(a.operation).Post(auth.UserPasswordPath, a.resetPasswordJSON)
 	router.With(a.operation).Post(auth.UserRolePath, a.setRoleJSON)
+	router.With(a.operation).Get(auth.ConnectionsPath, a.listConnectionsJSON)
+	router.With(a.operation).Post(auth.ConnectionsPath, a.createConnectionJSON)
+	router.With(a.operation).Get(auth.ConnectionPath, a.getConnectionJSON)
+	router.With(a.operation).Post(auth.ConnectionUpdatePath, a.updateConnectionJSON)
+	router.With(a.operation).Post(auth.ConnectionCredentialsPath, a.setConnectionCredentialsJSON)
+	router.With(a.operation).Post(auth.ConnectionEnablePath, a.enableConnectionJSON)
+	router.With(a.operation).Post(auth.ConnectionDisablePath, a.disableConnectionJSON)
+	router.With(a.operation).Post(auth.ConnectionDeletePath, a.deleteConnectionJSON)
+	router.With(a.operation).Post(auth.ConnectionCheckPath, a.checkConnectionJSON)
 }
 
 type responseBuffer struct {
@@ -110,6 +119,25 @@ func rejectionAction(r *http.Request) (auth.EventAction, bool) {
 		// role was submitted: the request never reached the service, no role
 		// changed, and the rejection must not depend on untrusted body fields.
 		return auth.EventUserDemote, true
+	case auth.ConnectionsPath:
+		if r.Method == http.MethodGet {
+			return auth.EventConnectionsList, true
+		}
+		return auth.EventConnectionCreate, true
+	case auth.ConnectionPath:
+		return auth.EventConnectionGet, true
+	case auth.ConnectionUpdatePath:
+		return auth.EventConnectionUpdate, true
+	case auth.ConnectionCredentialsPath:
+		return auth.EventConnectionSecrets, true
+	case auth.ConnectionEnablePath:
+		return auth.EventConnectionEnable, true
+	case auth.ConnectionDisablePath:
+		return auth.EventConnectionDisable, true
+	case auth.ConnectionDeletePath:
+		return auth.EventConnectionDelete, true
+	case auth.ConnectionCheckPath:
+		return auth.EventConnectionCheck, true
 	}
 	return "", false
 }
@@ -356,47 +384,128 @@ func credentialBody(r *http.Request) ([]byte, error) {
 	return boundedBody(r, auth.MaxCredentialBody)
 }
 
-// decodeJSON reads one bounded JSON object whose members are exactly the
-// allowlisted string fields in into. Members are decoded explicitly so
-// duplicate fields, case aliases, null, non-string values and trailing
-// documents cannot be accepted by encoding/json's permissive struct decoder.
-// Values are assigned but never validated here and never reflected back.
-func decodeJSON(r *http.Request, limit int, into map[string]func(string)) error {
-	invalid := &auth.Error{Code: auth.InvalidArgument}
+// jsonValue decodes one allowlisted member's value from the token stream. Each
+// member type has exactly one decoder, so a value of the wrong shape is a
+// rejection rather than a coercion.
+type jsonValue func(*json.Decoder) error
+
+func invalidArgument() error { return &auth.Error{Code: auth.InvalidArgument} }
+
+func jsonString(assign func(string)) jsonValue {
+	return func(decoder *json.Decoder) error {
+		token, err := decoder.Token()
+		text, ok := token.(string)
+		if err != nil || !ok {
+			return invalidArgument()
+		}
+		assign(text)
+		return nil
+	}
+}
+
+// jsonInt accepts only an integer literal: the decoder reads numbers as
+// json.Number, so a fraction, an exponent or a quoted digit string is refused
+// instead of being rounded into a resource bound.
+func jsonInt(assign func(int)) jsonValue {
+	return func(decoder *json.Decoder) error {
+		token, err := decoder.Token()
+		number, ok := token.(json.Number)
+		if err != nil || !ok {
+			return invalidArgument()
+		}
+		value, convErr := strconv.Atoi(number.String())
+		if convErr != nil {
+			return invalidArgument()
+		}
+		assign(value)
+		return nil
+	}
+}
+
+// jsonStringMap reads one nested object of string values, the shape both
+// target settings and labels take. Duplicate keys are rejected here too, so a
+// nested object cannot smuggle an ambiguous member past the outer check.
+func jsonStringMap(assign func(map[string]string)) jsonValue {
+	return func(decoder *json.Decoder) error {
+		token, err := decoder.Token()
+		if err != nil || token != json.Delim('{') {
+			return invalidArgument()
+		}
+		values := map[string]string{}
+		for decoder.More() {
+			key, err := decoder.Token()
+			name, ok := key.(string)
+			if err != nil || !ok {
+				return invalidArgument()
+			}
+			if _, duplicate := values[name]; duplicate {
+				return invalidArgument()
+			}
+			value, err := decoder.Token()
+			text, ok := value.(string)
+			if err != nil || !ok {
+				return invalidArgument()
+			}
+			values[name] = text
+		}
+		if _, err := decoder.Token(); err != nil {
+			return invalidArgument()
+		}
+		assign(values)
+		return nil
+	}
+}
+
+// decodeFields reads one bounded JSON object whose members are exactly the
+// allowlisted fields in into. Members are decoded explicitly so duplicate
+// fields, case aliases, null, wrongly typed values and trailing documents
+// cannot be accepted by encoding/json's permissive struct decoder. Values are
+// assigned but never validated here and never reflected back. A member absent
+// from the body leaves its field untouched, which is how optional update
+// fields stay distinguishable from supplied empty ones.
+func decodeFields(r *http.Request, limit int, into map[string]jsonValue) error {
 	if !mediaType(r, "application/json") {
-		return invalid
+		return invalidArgument()
 	}
 	b, err := boundedBody(r, limit)
 	if err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(b))
+	decoder.UseNumber()
 	first, err := decoder.Token()
 	if err != nil || first != json.Delim('{') {
-		return invalid
+		return invalidArgument()
 	}
 	seen := map[string]bool{}
 	for decoder.More() {
 		key, err := decoder.Token()
 		name, ok := key.(string)
 		if err != nil || !ok || into[name] == nil || seen[name] {
-			return invalid
+			return invalidArgument()
 		}
 		seen[name] = true
-		value, err := decoder.Token()
-		text, ok := value.(string)
-		if err != nil || !ok {
-			return invalid
+		if err := into[name](decoder); err != nil {
+			return invalidArgument()
 		}
-		into[name](text)
 	}
 	if _, err := decoder.Token(); err != nil {
-		return invalid
+		return invalidArgument()
 	}
 	if _, err := decoder.Token(); err != io.EOF {
-		return invalid
+		return invalidArgument()
 	}
 	return nil
+}
+
+// decodeJSON is decodeFields for the credential bodies whose members are all
+// plain strings.
+func decodeJSON(r *http.Request, limit int, into map[string]func(string)) error {
+	fields := make(map[string]jsonValue, len(into))
+	for name, assign := range into {
+		fields[name] = jsonString(assign)
+	}
+	return decodeFields(r, limit, fields)
 }
 
 func decodeLogin(r *http.Request) (auth.LoginRequest, error) {

@@ -33,43 +33,7 @@ type backendFixture struct {
 	role                                                 auth.Role
 	block                                                func(context.Context)
 	fakeAdministration
-	fixtureConnections
-}
-
-// fixtureConnections satisfies the administration page's connection dependency
-// with an empty listing. The page only reads, so every mutation is refused.
-type fixtureConnections struct{}
-
-func (fixtureConnections) ListConnections(context.Context, auth.Session, []auth.SelectorTerm, int) (auth.ConnectionList, error) {
-	return auth.ConnectionList{}, nil
-}
-
-func (fixtureConnections) GetConnection(context.Context, auth.Session, string) (auth.Connection, error) {
-	return auth.Connection{}, errNoBrowserMutation
-}
-
-func (fixtureConnections) CreateConnection(context.Context, auth.Session, auth.CreateConnectionRequest, bool) (auth.ConnectionMutation, error) {
-	return auth.ConnectionMutation{}, errNoBrowserMutation
-}
-
-func (fixtureConnections) UpdateConnection(context.Context, auth.Session, string, auth.UpdateConnectionRequest, bool) (auth.ConnectionMutation, error) {
-	return auth.ConnectionMutation{}, errNoBrowserMutation
-}
-
-func (fixtureConnections) SetConnectionCredentials(context.Context, auth.Session, string, auth.Secret, bool) (auth.ConnectionMutation, error) {
-	return auth.ConnectionMutation{}, errNoBrowserMutation
-}
-
-func (fixtureConnections) SetConnectionEnabled(context.Context, auth.Session, string, bool, bool) (auth.ConnectionMutation, error) {
-	return auth.ConnectionMutation{}, errNoBrowserMutation
-}
-
-func (fixtureConnections) DeleteConnection(context.Context, auth.Session, string, bool) (auth.ConnectionDeletion, error) {
-	return auth.ConnectionDeletion{}, errNoBrowserMutation
-}
-
-func (fixtureConnections) CheckConnection(context.Context, auth.Session, string) (auth.ConnectionCheck, error) {
-	return auth.ConnectionCheck{}, errNoBrowserMutation
+	fakeConnections
 }
 
 var fixtureToken = auth.Secret(strings.Repeat("A", 43))
@@ -144,12 +108,11 @@ func authHandler(t *testing.T, f *backendFixture, checker platform.Checker, orig
 	if checker == nil {
 		checker = platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
 	}
-	// Composed directly rather than through HandlerWithAuth so the browser page
-	// has a connection listing before the production constructor carries one.
-	adapter, err := newAuthHTTP(origin, f, fixtureViews())
+	// The fixture supplies every dependency, so the tests exercise the same
+	// composition boundary the production entry point uses.
+	handler, err := HandlerWithAuth(time.Second, checker, f, f, f, f, origin, fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
-	adapter.recorder, adapter.admin, adapter.connections = f, f, f
-	return handler(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)), adapter)
+	return handler
 }
 
 func requestAuth(handler http.Handler, method, path, body string, headers http.Header) *httptest.ResponseRecorder {
@@ -183,7 +146,7 @@ func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
 				healthCalls++
 				return checker.Check(ctx)
 			})
-			handler, err := HandlerWithAuth(time.Second, health, service, recorder, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			handler, err := HandlerWithAuth(time.Second, health, service, recorder, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 			require.NoError(t, err)
 			code := (platform.Readiness{State: state}).Response().Error.Code
 			for _, tc := range []struct {
@@ -248,17 +211,19 @@ func TestHandlerWithAuthRequiresCompleteComposition(t *testing.T) {
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
 	fixture := &backendFixture{}
 	for _, tc := range []struct {
-		checker  platform.Checker
-		service  auth.Service
-		recorder auth.EventRecorder
-		admin    auth.Administration
+		checker     platform.Checker
+		service     auth.Service
+		recorder    auth.EventRecorder
+		admin       auth.Administration
+		connections auth.Connections
 	}{
-		{nil, fixture, fixture, fixture},
-		{checker, nil, fixture, fixture},
-		{checker, fixture, nil, fixture},
-		{checker, fixture, fixture, nil},
+		{nil, fixture, fixture, fixture, fixture},
+		{checker, nil, fixture, fixture, fixture},
+		{checker, fixture, nil, fixture, fixture},
+		{checker, fixture, fixture, nil, fixture},
+		{checker, fixture, fixture, fixture, nil},
 	} {
-		handler, err := HandlerWithAuth(time.Second, tc.checker, tc.service, tc.recorder, tc.admin, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		handler, err := HandlerWithAuth(time.Second, tc.checker, tc.service, tc.recorder, tc.admin, tc.connections, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 		require.Nil(t, handler)
 		require.Error(t, err)
 		status, failure := auth.FailureFor(err)

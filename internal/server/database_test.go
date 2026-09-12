@@ -71,7 +71,7 @@ func TestRealHTTPLoginFailsClosedBeforeInitializationAndAfterPoolClose(t *testin
 		checks++
 		return checker.Check(ctx)
 	})
-	handler, err := HandlerWithAuth(time.Second, health, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, health, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	reject := func(t *testing.T) {
 		t.Helper()
@@ -110,7 +110,7 @@ func TestRealHTTPAuthenticationEventsAndLockDeadlines(t *testing.T) {
 	})
 	service, err := store.NewLocalAuth(pool, readiness, auth.DefaultSessionTTL)
 	require.NoError(t, err)
-	handler, err := HandlerWithAuth(time.Second, readiness, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, readiness, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
 	require.NoError(t, err)
@@ -227,7 +227,7 @@ func TestBrowserLoginNeverRetargetsAnExistingSession(t *testing.T) {
 	_, err = pool.Exec(t.Context(), `INSERT INTO users(id,username,password_hash,role)
 		SELECT $1,'member-user',password_hash,'member' FROM users WHERE username='personal-admin'`, fixtureIdentity.User.ID)
 	require.NoError(t, err)
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	headers := http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}
 	form := func(username string, password auth.Secret) string {
