@@ -32,15 +32,35 @@ func TestServerProcess(t *testing.T) {
 	build := exec.Command("go", "build", "-o", binary, ".")
 	output, err := build.CombinedOutput()
 	require.NoError(t, err, string(output))
+	// The credential encryption key is a required startup input like the
+	// database URL; the test key never leaves the temporary directory.
+	keyFile := filepath.Join(t.TempDir(), "encryption-key")
+	require.NoError(t, os.WriteFile(keyFile, []byte(strings.Repeat("ab", 32)+"\n"), 0o600))
+	keyEnv := "CLAVIS_ENCRYPTION_KEY_FILE=" + keyFile
 	t.Run("invalid config is safe", func(t *testing.T) {
 		for _, value := range []string{"", "postgres://user:SECRET@127.0.0.1/db?connect_timeout=SECRET"} {
 			command := exec.Command(binary)
-			command.Env = serverEnvironment("CLAVIS_DATABASE_URL=" + value)
+			command.Env = serverEnvironment("CLAVIS_DATABASE_URL="+value, keyEnv)
 			output, err := command.CombinedOutput()
 			require.Error(t, err)
 			assert.Contains(t, string(output), "configuration_invalid")
 			assert.NotContains(t, string(output), "SECRET")
 			assert.NotContains(t, string(output), "server_started")
+		}
+	})
+	t.Run("missing or unsafe encryption key is safe", func(t *testing.T) {
+		unsafe := filepath.Join(t.TempDir(), "SECRETPATH-key")
+		require.NoError(t, os.WriteFile(unsafe, []byte(strings.Repeat("ab", 32)+"\n"), 0o644))
+		for name, value := range map[string]string{"missing": "", "relative": "relative/key", "absent": filepath.Join(t.TempDir(), "absent"), "unsafe": unsafe} {
+			command := exec.Command(binary)
+			command.Env = serverEnvironment("CLAVIS_DATABASE_URL=postgres://local@127.0.0.1/clavis", "CLAVIS_ENCRYPTION_KEY_FILE="+value)
+			output, err := command.CombinedOutput()
+			require.Error(t, err, name)
+			assert.Contains(t, string(output), "configuration_invalid", name)
+			assert.Contains(t, string(output), "CLAVIS_ENCRYPTION_KEY_FILE", name)
+			assert.NotContains(t, string(output), "SECRETPATH", name)
+			assert.NotContains(t, string(output), "abab", name)
+			assert.NotContains(t, string(output), "server_started", name)
 		}
 	})
 	t.Run("startup and shutdown with blocked database", func(t *testing.T) {
@@ -59,7 +79,7 @@ func TestServerProcess(t *testing.T) {
 		address := reserve.Addr().String()
 		require.NoError(t, reserve.Close())
 		command := exec.Command(binary)
-		command.Env = serverEnvironment("CLAVIS_HTTP_ADDR="+address, "CLAVIS_DATABASE_URL=postgres://local:SECRET@"+db.Addr().String()+"/clavis?sslmode=disable", "CLAVIS_DB_CHECK_TIMEOUT=30s", "CLAVIS_SHUTDOWN_TIMEOUT=100ms")
+		command.Env = serverEnvironment("CLAVIS_HTTP_ADDR="+address, "CLAVIS_DATABASE_URL=postgres://local:SECRET@"+db.Addr().String()+"/clavis?sslmode=disable", "CLAVIS_DB_CHECK_TIMEOUT=30s", "CLAVIS_SHUTDOWN_TIMEOUT=100ms", keyEnv)
 		logPath := filepath.Join(t.TempDir(), "server.log")
 		log, err := os.Create(logPath)
 		require.NoError(t, err)

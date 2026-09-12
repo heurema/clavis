@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { execFileSync, spawn, spawnSync } from "node:child_process"
-import { createHash } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import {
   copyFileSync,
   cpSync,
@@ -24,6 +24,12 @@ const root = fileURLToPath(new URL("../", import.meta.url))
 function fixture(t, webTools = true) {
   mkdirSync(join(root, ".local"), { recursive: true })
   const directory = mkdtempSync(join(root, ".local/build-test-"))
+  // The server requires a credential encryption key; the copied binary must
+  // start with a throwaway one that never leaves the test directory.
+  const keyFile = join(directory, "encryption-key")
+  writeFileSync(keyFile, randomBytes(32).toString("hex") + "\n", {
+    mode: 0o600,
+  })
   t.after(() => rmSync(directory, { recursive: true, force: true }))
   for (const path of [
     "cmd",
@@ -85,6 +91,7 @@ async function freePort() {
 }
 
 async function checkCopiedServer(directory) {
+  const keyFile = join(directory, "encryption-key")
   const runtime = join(directory, "runtime")
   mkdirSync(runtime)
   const executable = join(runtime, "server")
@@ -99,6 +106,7 @@ async function checkCopiedServer(directory) {
       PATH: "",
       CLAVIS_HTTP_ADDR: `127.0.0.1:${port}`,
       CLAVIS_DATABASE_URL: `postgres://unused:sentinel-private@127.0.0.1:${databasePort}/unused?sslmode=disable`,
+      CLAVIS_ENCRYPTION_KEY_FILE: keyFile,
       CLAVIS_DB_CHECK_TIMEOUT: "100ms",
       CLAVIS_SHUTDOWN_TIMEOUT: "1s",
       CLAVIS_LOG_LEVEL: "info",
@@ -187,6 +195,7 @@ function signalProcess(pid, signal) {
 async function checkDevelopment(directory, target, signal) {
   const port = await freePort()
   const databasePort = await freePort()
+  const keyFile = join(directory, "encryption-key")
   const origin = `http://127.0.0.1:${port}`
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith("CLAVIS_")),
@@ -194,6 +203,7 @@ async function checkDevelopment(directory, target, signal) {
   const settings = {
     CLAVIS_HTTP_ADDR: `127.0.0.1:${port}`,
     CLAVIS_DATABASE_URL: `postgres://unused:unused@127.0.0.1:${databasePort}/unused?sslmode=disable`,
+    CLAVIS_ENCRYPTION_KEY_FILE: keyFile,
     CLAVIS_DB_CHECK_TIMEOUT: "100ms",
     CLAVIS_SHUTDOWN_TIMEOUT: "1s",
     CLAVIS_LOG_LEVEL: "info",

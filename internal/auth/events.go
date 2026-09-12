@@ -18,6 +18,14 @@ const (
 	EventUserPromote       EventAction  = "user.promote"
 	EventUserDemote        EventAction  = "user.demote"
 	EventUsersList         EventAction  = "users.list"
+	EventConnectionCreate  EventAction  = "connection.create"
+	EventConnectionUpdate  EventAction  = "connection.update"
+	EventConnectionSecrets EventAction  = "connection.set_credentials"
+	EventConnectionEnable  EventAction  = "connection.enable"
+	EventConnectionDisable EventAction  = "connection.disable"
+	EventConnectionDelete  EventAction  = "connection.delete"
+	EventConnectionCheck   EventAction  = "connection.check"
+	EventConnectionsList   EventAction  = "connections.list"
 	OutcomeInvalidArgument EventOutcome = "invalid_argument"
 	OutcomeUnauthenticated EventOutcome = "unauthenticated"
 	OutcomeForbidden       EventOutcome = "forbidden"
@@ -42,7 +50,9 @@ func ValidEventAction(action EventAction) bool {
 	switch action {
 	case EventLogin, EventLogout, EventRevoke,
 		EventUserCreate, EventUserBlock, EventUserUnblock, EventUserResetPassword,
-		EventUserPromote, EventUserDemote, EventUsersList:
+		EventUserPromote, EventUserDemote, EventUsersList,
+		EventConnectionCreate, EventConnectionUpdate, EventConnectionSecrets, EventConnectionEnable,
+		EventConnectionDisable, EventConnectionDelete, EventConnectionCheck, EventConnectionsList:
 		return true
 	}
 	return false

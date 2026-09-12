@@ -3,3 +3,27 @@
 //   sqlc v1.31.1
 
 package sqlc
+
+import (
+	"time"
+)
+
+type Connection struct {
+	ID                 string
+	Name               string
+	Title              string
+	Description        string
+	Scope              string
+	Provider           string
+	Target             []byte
+	Labels             []byte
+	SecretEnvelope     string
+	Enabled            bool
+	StatementTimeoutMs int32
+	MaxRows            int32
+	MaxBytes           int32
+	LastCheckOutcome   *string
+	LastCheckAt        *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}

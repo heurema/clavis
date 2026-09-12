@@ -26,6 +26,9 @@ const (
 type Failure struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	// Hint is optional next-step guidance owned by the application; it is
+	// additive to the response contract and never carries submitted input.
+	Hint string `json:"hint,omitempty"`
 }
 
 type Response struct {

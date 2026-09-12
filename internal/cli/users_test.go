@@ -114,7 +114,7 @@ func TestUsersWorkflow(t *testing.T) {
 	exit, result, _ = cliInvoke(t, string(replacement), "users", "create", "--username=alice", "--password-stdin", "--server", server.URL)
 	require.Equal(t, 1, exit)
 	_, taken, _ := auth.LookupFailure(auth.UsernameTaken)
-	require.Equal(t, &Error{taken.Code, taken.Message}, result.Error)
+	require.Equal(t, &Error{Code: taken.Code, Message: taken.Message}, result.Error)
 	// Self-block and self-demotion are refused before any guard or mutation.
 	_, selfTarget, _ := auth.LookupFailure(auth.SelfTarget)
 	for _, args := range [][]string{{"users", "block", "--user", self}, {"users", "set-role", "--user", self, "--role=member"}} {
@@ -123,7 +123,7 @@ func TestUsersWorkflow(t *testing.T) {
 		fixture.mu.Unlock()
 		exit, result, output = cliInvoke(t, "", append(args, "--server", server.URL)...)
 		require.Equal(t, 1, exit)
-		require.Equal(t, &Error{selfTarget.Code, selfTarget.Message}, result.Error)
+		require.Equal(t, &Error{Code: selfTarget.Code, Message: selfTarget.Message}, result.Error)
 		require.Nil(t, result.Data)
 		require.NotContains(t, output, "password")
 		fixture.mu.Lock()
@@ -156,7 +156,7 @@ func TestUsersWorkflow(t *testing.T) {
 		fixture.mu.Unlock()
 		exit, result, _ = cliInvoke(t, string(replacement), append(args, "--server", server.URL)...)
 		require.Equal(t, 1, exit)
-		require.Equal(t, &Error{forbidden.Code, forbidden.Message}, result.Error)
+		require.Equal(t, &Error{Code: forbidden.Code, Message: forbidden.Message}, result.Error)
 		fixture.mu.Lock()
 		require.Equal(t, before+1, fixture.requests, "exactly one request for %v", args)
 		require.Len(t, fixture.users, 2)

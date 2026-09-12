@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"github.com/heurema/clavis/internal/secrets"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -18,4 +19,12 @@ func Open(ctx context.Context, connectionString string) (*pgxpool.Pool, error) {
 	config.MinIdleConns = 0
 	config.MaxConns = 4
 	return pgxpool.NewWithConfig(ctx, config)
+}
+
+// WithKeyring attaches the credential keyring used by connection management.
+// It is set once at composition time; connection operations fail closed
+// while it is absent.
+func (s *LocalAuth) WithKeyring(keys *secrets.Keyring) *LocalAuth {
+	s.keys = keys
+	return s
 }

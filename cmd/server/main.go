@@ -12,6 +12,7 @@ import (
 	"github.com/caarlos0/env/v11"
 	"github.com/heurema/clavis/internal/config"
 	"github.com/heurema/clavis/internal/database"
+	"github.com/heurema/clavis/internal/secrets"
 	"github.com/heurema/clavis/internal/server"
 )
 
@@ -27,6 +28,19 @@ func run() int {
 		}
 		return 1
 	}
+	// The key is read once, before any listener or database connection. Its
+	// path and contents never reach the log; only the category does.
+	keys, err := secrets.LoadKeyFile(cfg.EncryptionKeyFile)
+	if err != nil {
+		code := "UNREADABLE"
+		var failure *secrets.FileError
+		if errors.As(err, &failure) {
+			code = failure.Code
+		}
+		logger.Error("configuration_invalid", "field", "CLAVIS_ENCRYPTION_KEY_FILE", "code", code)
+		return 1
+	}
+	cfg.Keys = keys
 	logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.Level()}))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

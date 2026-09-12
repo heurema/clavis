@@ -232,6 +232,12 @@ try {
   const password = randomBytes(32).toString("hex")
   secrets.add(password)
   writeFileSync(passwordFile, password, { mode: 0o600 })
+  // Connection credentials are encrypted under this key; it is a private
+  // input like the password file and is removed during cleanup.
+  const keyFile = join(privateDirectory, "encryption-key")
+  writeFileSync(keyFile, randomBytes(32).toString("hex") + "\n", {
+    mode: 0o600,
+  })
   const homes = new Map()
   function clientEnv(name) {
     if (!homes.has(name)) {
@@ -309,6 +315,7 @@ try {
     CLAVIS_LOG_LEVEL: "info",
     CLAVIS_BOOTSTRAP_USERNAME: "smoke-admin",
     CLAVIS_BOOTSTRAP_PASSWORD_FILE: passwordFile,
+    CLAVIS_ENCRYPTION_KEY_FILE: keyFile,
   }
   summary.origin = apiURL
   function startAPI(overrides = {}) {

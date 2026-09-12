@@ -113,3 +113,88 @@ func TestAdministrationProjectionsAndEvents(t *testing.T) {
 	require.False(t, auth.Event{Action: auth.EventUserCreate, Outcome: "success"}.Valid())
 	require.False(t, auth.Event{Action: auth.EventUserCreate, Outcome: "username_taken"}.Valid())
 }
+
+func TestConnectionContracts(t *testing.T) {
+	for code, expected := range map[string]int{
+		auth.ConnectionExists: http.StatusConflict, auth.ConnectionNotFound: http.StatusNotFound,
+		auth.ConnectionInUse: http.StatusConflict, auth.CredentialsUnavailable: http.StatusConflict,
+	} {
+		status, response := auth.FailureFor(&auth.Error{Code: code, Hint: "run clavis connections update"})
+		require.Equal(t, expected, status, code)
+		require.Equal(t, "run clavis connections update", response.Error.Hint)
+	}
+	// Hints are optional and omitted from JSON when absent.
+	_, response := auth.FailureFor(&auth.Error{Code: auth.ConnectionNotFound})
+	encoded, err := json.Marshal(response)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "hint")
+	for _, action := range []auth.EventAction{
+		auth.EventConnectionCreate, auth.EventConnectionUpdate, auth.EventConnectionSecrets, auth.EventConnectionEnable,
+		auth.EventConnectionDisable, auth.EventConnectionDelete, auth.EventConnectionCheck, auth.EventConnectionsList,
+	} {
+		require.True(t, auth.ValidEventAction(action), string(action))
+	}
+	require.False(t, auth.ValidEventAction("connection.delete "))
+
+	// The secret-bearing request DTOs redact under ordinary formatting.
+	for _, value := range []any{
+		auth.CreateConnectionRequest{Name: "payments", Secret: auth.Secret("SENTINEL_SECRET_VALUE")},
+		auth.SetConnectionCredentialsRequest{Secret: auth.Secret("SENTINEL_SECRET_VALUE")},
+	} {
+		require.NotContains(t, fmt.Sprintf("%v %+v %#v", value, value, value), "SENTINEL_SECRET_VALUE")
+	}
+	record := auth.Connection{ID: "id", Name: "payments-prod-reporting", Provider: auth.ProviderPostgreSQL,
+		Target: map[string]string{"host": "db"}, Labels: map[string]string{"env": "prod"}, Enabled: true}
+	encoded, err = json.Marshal(auth.ConnectionMutation{Connection: record, DryRun: true})
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"dryRun":true`)
+	require.Contains(t, string(encoded), `"lastCheck":null`)
+	require.NotContains(t, string(encoded), "secret")
+}
+
+func TestConnectionNamesLabelsAndSelectors(t *testing.T) {
+	require.True(t, auth.ValidConnectionRef("payments-prod-reporting"))
+	require.True(t, auth.ValidConnectionRef("7fde7ce1-cc8d-4de8-a9c0-df22ce8d92ba"))
+	for _, bad := range []string{"", "Payments", "1abc", "a", strings.Repeat("a", 65), "a b", "7fde7ce1-cc8d-4de8-a9c0"} {
+		require.False(t, auth.ValidConnectionRef(bad), bad)
+	}
+	// A lowercase UUID satisfies the username characters but must never be a
+	// name, or the UUID-first lookup could shadow it.
+	require.False(t, auth.ValidConnectionName("abcdef12-3456-4890-abcd-ef1234567890"))
+	require.True(t, auth.ValidConnectionRef("abcdef12-3456-4890-abcd-ef1234567890"), "still a valid UUID reference")
+	require.True(t, auth.ValidProvider(auth.ProviderVictoriaMetrics))
+	require.False(t, auth.ValidProvider("mysql"))
+	require.True(t, auth.ValidSecret("hunter2-hunter2"))
+	require.False(t, auth.ValidSecret(""))
+	require.False(t, auth.ValidSecret(auth.Secret("a\nb")))
+	require.False(t, auth.ValidSecret(auth.Secret(strings.Repeat("x", auth.MaxSecretBytes+1))))
+
+	labels, ok := auth.ParseLabels([]string{"env=prod", "service=payments", "team=finance"})
+	require.True(t, ok)
+	require.Equal(t, map[string]string{"env": "prod", "service": "payments", "team": "finance"}, labels)
+	for _, bad := range [][]string{{"env"}, {"env="}, {"=prod"}, {"Env=prod"}, {"env=Prod"}, {"env=prod", "env=stage"}} {
+		_, ok := auth.ParseLabels(bad)
+		require.False(t, ok, strings.Join(bad, ","))
+	}
+	many := make([]string, auth.MaxLabels+1)
+	for n := range many {
+		many[n] = fmt.Sprintf("k%d=v", n)
+	}
+	_, ok = auth.ParseLabels(many)
+	require.False(t, ok)
+
+	terms, ok := auth.ParseSelector("env=prod, service!=legacy ,team")
+	require.True(t, ok)
+	require.Equal(t, []auth.SelectorTerm{
+		{Key: "env", Op: auth.SelectorEquals, Value: "prod"},
+		{Key: "service", Op: auth.SelectorNotEquals, Value: "legacy"},
+		{Key: "team", Op: auth.SelectorExists},
+	}, terms)
+	terms, ok = auth.ParseSelector("  ")
+	require.True(t, ok)
+	require.Empty(t, terms)
+	for _, bad := range []string{"env==prod", "=prod", "env!=", "Env", "a,b,c,d,e,f,g,h,i", "env=prod,,team"} {
+		_, ok := auth.ParseSelector(bad)
+		require.False(t, ok, bad)
+	}
+}

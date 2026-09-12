@@ -12,6 +12,7 @@ import (
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/database/sqlc"
 	"github.com/heurema/clavis/internal/platform"
+	"github.com/heurema/clavis/internal/secrets"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -22,6 +23,7 @@ type LocalAuth struct {
 	pool    *pgxpool.Pool
 	checker platform.Checker
 	ttl     time.Duration
+	keys    *secrets.Keyring
 }
 
 func NewLocalAuth(pool *pgxpool.Pool, checker platform.Checker, ttl time.Duration) (*LocalAuth, error) {

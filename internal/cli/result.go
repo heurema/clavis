@@ -12,6 +12,7 @@ import (
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+	Hint    string `json:"hint,omitempty"`
 }
 
 type Result struct {
@@ -28,7 +29,7 @@ type Diagnosis struct {
 
 func success(data any) Result { return Result{SchemaVersion: 1, OK: true, Data: data} }
 func failure(code, message string, data any) Result {
-	return Result{SchemaVersion: 1, Data: data, Error: &Error{code, message}}
+	return Result{SchemaVersion: 1, Data: data, Error: &Error{Code: code, Message: message}}
 }
 
 func render(w io.Writer, result Result, format string) error {
