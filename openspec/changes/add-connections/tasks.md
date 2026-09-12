@@ -37,9 +37,9 @@ Requirements: connection-management "JSON connection routes"; inherited transpor
 
 Requirements: connection-management "Read-only connections table in the browser". Depends on slice 1 DTOs. Owned paths: `internal/web/auth.templ`, `auth_templ.go`, `auth_models.go`, `internal/web/*_test.go`, `internal/server/auth.go` (`adminBrowser` listing call only), new `internal/server/connections_page_test.go`. Verify: `make generate-web && make check-web-generated && go test ./internal/web/ ./internal/server/ -run 'Admin|Render|Connections'`.
 
-- [ ] 5.1 Extend the admin model and template with a connections table (name, title, provider, labels, status, last check outcome and time), truncation notice, no forms; load it in `adminBrowser` after the users list and fail closed on error; regenerate templ.
-- [ ] 5.2 Rendering and HTTP tests: populated, empty, truncated, escaped label text, no hosts or secrets in HTML, list failure 503, no event on page load.
-- [ ] 5.3 Independent acceptance review of slice 5; record the revision.
+- [x] 5.1 Extend the admin model and template with a connections table (name, title, provider, labels, status, last check outcome and time), truncation notice, no forms; load it in `adminBrowser` after the users list and fail closed on error; regenerate templ.
+- [x] 5.2 Rendering and HTTP tests: populated, empty, truncated, escaped label text, no hosts or secrets in HTML, list failure 503, no event on page load.
+- [x] 5.3 Independent acceptance review of slice 5; record the revision. Reviewed 2026-09-12 on the working tree over `3fe5a1e`: ACCEPT, no blocking findings; handwritten about 285 lines plus a 192-line page test, generated templ +310/−49. Intermediate state noted: the production constructor does not yet set the connections dependency, so the real admin page fails closed with 503 until slice 4 wires `HandlerWithAuth` and restores the `authHandler` test helper to call it; the docs task should reword the admin page sentence about connection management.
 
 ## 6. CLI connections commands
 

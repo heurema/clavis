@@ -98,6 +98,7 @@ templ Admin(model AdminModel) {
 		<p class="break-all text-lg font-semibold">{ model.User.Username }</p>
 		<p class="text-sm leading-6 text-muted-foreground">Administrator access. Manage users through the CLI; connection management is not available in this release.</p>
 		@userList(model)
+		@connectionList(model)
 		<form action="/logout" method="post">
 			@button.Button(button.Props{Type: button.TypeSubmit, Variant: button.VariantSecondary}) {
 				Sign out
@@ -146,6 +147,75 @@ templ userList(model AdminModel) {
 			</div>
 			if model.Truncated {
 				<p class="text-sm leading-6 text-muted-foreground">{ truncationNotice() }</p>
+			}
+		}
+	</section>
+}
+
+// Connections are listed exactly like users: read-only, escaped text and
+// badges only. Targets, roles, URLs and credentials are never display data, so
+// no cell reads Connection.Target and the model carries no secret at all.
+templ connectionList(model AdminModel) {
+	<section class="space-y-3">
+		<h2 class="text-xl font-semibold tracking-tight">Connections</h2>
+		if len(model.Connections) == 0 {
+			<p class="text-sm leading-6 text-muted-foreground">No connections are registered.</p>
+		} else {
+			<div class="overflow-x-auto">
+				<table class="w-full border-collapse text-left text-sm">
+					<thead>
+						<tr class="border-b text-xs uppercase tracking-wide text-muted-foreground">
+							<th scope="col" class="py-2 pr-4 font-medium">Name</th>
+							<th scope="col" class="py-2 pr-4 font-medium">Title</th>
+							<th scope="col" class="py-2 pr-4 font-medium">Provider</th>
+							<th scope="col" class="py-2 pr-4 font-medium">Labels</th>
+							<th scope="col" class="py-2 pr-4 font-medium">Status</th>
+							<th scope="col" class="py-2 font-medium">Last check</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, connection := range model.Connections {
+							<tr class="border-b last:border-0 align-top">
+								<th scope="row" class="break-all py-2 pr-4 font-medium">{ connection.Name }</th>
+								<td class="break-words py-2 pr-4">{ connection.Title }</td>
+								<td class="py-2 pr-4">{ string(connection.Provider) }</td>
+								<td class="py-2 pr-4">
+									if len(connection.Labels) == 0 {
+										<span class="text-muted-foreground">None</span>
+									} else {
+										<span class="flex flex-wrap gap-1">
+											for _, pair := range labelPairs(connection.Labels) {
+												@badge.Badge(badge.Props{Variant: badge.VariantOutline}) {
+													{ pair }
+												}
+											}
+										</span>
+									}
+								</td>
+								<td class="py-2 pr-4">
+									@badge.Badge(badge.Props{Variant: connectionStatusVariant(connection.Enabled)}) {
+										{ connectionStatusLabel(connection.Enabled) }
+									}
+								</td>
+								<td class="py-2">
+									if connection.LastCheck == nil {
+										<span class="text-muted-foreground">Unchecked</span>
+									} else {
+										<span class="flex flex-wrap items-center gap-2">
+											@badge.Badge(badge.Props{Variant: checkOutcomeVariant(connection.LastCheck.Outcome)}) {
+												{ string(connection.LastCheck.Outcome) }
+											}
+											<span class="whitespace-nowrap tabular-nums">{ createdLabel(connection.LastCheck.CheckedAt) }</span>
+										</span>
+									}
+								</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+			if model.ConnectionsTruncated {
+				<p class="text-sm leading-6 text-muted-foreground">{ connectionsTruncationNotice() }</p>
 			}
 		}
 	</section>

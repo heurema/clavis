@@ -36,12 +36,13 @@ type AuthViews struct {
 }
 
 type authHTTP struct {
-	service  auth.Service
-	admin    auth.Administration
-	recorder auth.EventRecorder
-	origin   string
-	secure   bool
-	views    AuthViews
+	service     auth.Service
+	admin       auth.Administration
+	connections auth.Connections
+	recorder    auth.EventRecorder
+	origin      string
+	secure      bool
+	views       AuthViews
 }
 
 func (a *authHTTP) mount(router chi.Router) {
@@ -194,7 +195,7 @@ func (a *authHTTP) operation(next http.Handler) http.Handler {
 					a.logoutResult(buffer, r, auth.LogoutOutcome(true, failure))
 				}
 			case "/admin":
-				a.adminResult(buffer, r, auth.Session{}, auth.UserList{}, failure)
+				a.adminResult(buffer, r, auth.Session{}, auth.UserList{}, auth.ConnectionList{}, failure)
 			default:
 				jsonFailure(buffer, failure)
 			}
@@ -629,7 +630,7 @@ func (a *authHTTP) logoutBrowser(w http.ResponseWriter, r *http.Request) {
 	a.logoutResult(w, r, auth.LogoutOutcome(true, err))
 }
 
-func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, users auth.UserList, err error) {
+func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, users auth.UserList, connections auth.ConnectionList, err error) {
 	outcome := auth.AdminOutcome(err)
 	if outcome.Location != "" {
 		w.Header().Set("Cache-Control", "no-store")
@@ -641,7 +642,10 @@ func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session a
 		a.render(w, r, outcome.Status, a.views.Error(web.AuthErrorModel{ErrorCode: outcome.ErrorCode}))
 		return
 	}
-	a.render(w, r, 200, a.views.Admin(web.AdminModel{User: session.User, Users: users.Users, Truncated: users.Truncated}))
+	a.render(w, r, 200, a.views.Admin(web.AdminModel{
+		User: session.User, Users: users.Users, Truncated: users.Truncated,
+		Connections: connections.Connections, ConnectionsTruncated: connections.Truncated,
+	}))
 }
 
 func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
@@ -664,7 +668,15 @@ func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
 			users, err = a.admin.ListUsers(r.Context(), session)
 		}
 	}
-	a.adminResult(w, r, session, users, err)
+	var connections auth.ConnectionList
+	if err == nil {
+		if a.connections == nil {
+			err = &auth.Error{Code: auth.ServiceUnavailable}
+		} else {
+			connections, err = a.connections.ListConnections(r.Context(), session, nil, auth.MaxConnectionListing)
+		}
+	}
+	a.adminResult(w, r, session, users, connections, err)
 }
 
 func newAuthHTTP(origin string, service auth.Service, views AuthViews) (*authHTTP, error) {

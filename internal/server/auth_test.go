@@ -33,6 +33,43 @@ type backendFixture struct {
 	role                                                 auth.Role
 	block                                                func(context.Context)
 	fakeAdministration
+	fixtureConnections
+}
+
+// fixtureConnections satisfies the administration page's connection dependency
+// with an empty listing. The page only reads, so every mutation is refused.
+type fixtureConnections struct{}
+
+func (fixtureConnections) ListConnections(context.Context, auth.Session, []auth.SelectorTerm, int) (auth.ConnectionList, error) {
+	return auth.ConnectionList{}, nil
+}
+
+func (fixtureConnections) GetConnection(context.Context, auth.Session, string) (auth.Connection, error) {
+	return auth.Connection{}, errNoBrowserMutation
+}
+
+func (fixtureConnections) CreateConnection(context.Context, auth.Session, auth.CreateConnectionRequest, bool) (auth.ConnectionMutation, error) {
+	return auth.ConnectionMutation{}, errNoBrowserMutation
+}
+
+func (fixtureConnections) UpdateConnection(context.Context, auth.Session, string, auth.UpdateConnectionRequest, bool) (auth.ConnectionMutation, error) {
+	return auth.ConnectionMutation{}, errNoBrowserMutation
+}
+
+func (fixtureConnections) SetConnectionCredentials(context.Context, auth.Session, string, auth.Secret, bool) (auth.ConnectionMutation, error) {
+	return auth.ConnectionMutation{}, errNoBrowserMutation
+}
+
+func (fixtureConnections) SetConnectionEnabled(context.Context, auth.Session, string, bool, bool) (auth.ConnectionMutation, error) {
+	return auth.ConnectionMutation{}, errNoBrowserMutation
+}
+
+func (fixtureConnections) DeleteConnection(context.Context, auth.Session, string, bool) (auth.ConnectionDeletion, error) {
+	return auth.ConnectionDeletion{}, errNoBrowserMutation
+}
+
+func (fixtureConnections) CheckConnection(context.Context, auth.Session, string) (auth.ConnectionCheck, error) {
+	return auth.ConnectionCheck{}, errNoBrowserMutation
 }
 
 var fixtureToken = auth.Secret(strings.Repeat("A", 43))
@@ -107,9 +144,12 @@ func authHandler(t *testing.T, f *backendFixture, checker platform.Checker, orig
 	if checker == nil {
 		checker = platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
 	}
-	handler, err := HandlerWithAuth(time.Second, checker, f, f, f, origin, fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	// Composed directly rather than through HandlerWithAuth so the browser page
+	// has a connection listing before the production constructor carries one.
+	adapter, err := newAuthHTTP(origin, f, fixtureViews())
 	require.NoError(t, err)
-	return handler
+	adapter.recorder, adapter.admin, adapter.connections = f, f, f
+	return handler(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)), adapter)
 }
 
 func requestAuth(handler http.Handler, method, path, body string, headers http.Header) *httptest.ResponseRecorder {
