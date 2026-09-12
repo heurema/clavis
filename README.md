@@ -4,11 +4,13 @@ Clavis is a CLI-first platform by heurema for controlled access to operational
 systems by people and agents.
 
 Currently, it provides automated initial administrator setup, local browser/CLI
-sign-in and revocable sessions, with external PostgreSQL. Goose manages embedded
-migrations and sqlc generates the pgx application queries. The embedded templ/htmx
-interface includes setup/readiness, sign-in and a minimal protected admin page.
-There is no separate frontend server. Full user/permission management, Google/OIDC,
-account recovery and external integrations remain planned.
+sign-in, revocable sessions and administrator-managed local users, with external
+PostgreSQL. Goose manages embedded migrations and sqlc generates the pgx
+application queries. The embedded templ/htmx interface includes setup/readiness,
+sign-in and a protected admin page with a read-only user list. There is no
+separate frontend server. Groups, connection grants, providers and audit
+inspection remain planned; Google/OIDC sign-in, self-service password change and
+account recovery are outside the MVP.
 
 ## Quick start
 
@@ -88,8 +90,9 @@ not install browser binaries.
 and runs it there with an empty executable search path. HTTP requests verify the
 login document and availability of its referenced embedded assets. JSON API
 requests and the CLI exercise concurrent initialization, authentication, expiry,
-role checks and multi-client revocation, then outage/recovery by stopping and
-restarting an isolated PostgreSQL database and the copied server. Test credentials
+multi-client revocation and user administration (creation, listing, blocking,
+password reset, role changes and self-protection), then outage/recovery by
+stopping and restarting an isolated PostgreSQL database and the copied server. Test credentials
 and CLI homes are private temporary inputs, not companion application assets,
 and are removed during cleanup. An additional loopback HTTPS proxy uses an
 in-memory test certificate to verify that the CLI rejects a self-signed
@@ -196,6 +199,34 @@ that user's existing browser and CLI sessions. Sessions have a fixed eight-hour
 default lifetime (`CLAVIS_SESSION_TTL`, 5 minutes through 24 hours), with no
 automatic refresh. Logout revokes the current session; offline CLI logout removes
 the local credential but returns failure because remote revocation is unconfirmed.
+
+## User administration
+
+Administrators manage local users through the CLI; the browser admin page only
+lists them:
+
+```sh
+./bin/clavis users list
+./bin/clavis users create --username bob
+./bin/clavis users block --user <user-id>
+./bin/clavis users unblock --user <user-id>
+./bin/clavis users reset-password --user <user-id>
+./bin/clavis users set-role --user <user-id> --role admin
+```
+
+`create` and `reset-password` read the password without echo, or from
+`--password-stdin`, exactly like `login`; the administrator chooses every
+password. New users are members. Blocking and password reset revoke all of the
+target's sessions; unblocking does not restore them. Administrators are peers:
+any administrator can manage any other, an administrator cannot block or demote
+their own account (`SELF_TARGET`), and the installation always keeps at least
+one enabled administrator. Every operation is recorded as a safe audit event
+without passwords or query text. Listing is bounded to 1,000 users and reports
+`truncated` when more exist.
+
+The MVP has no self-service password change and no account recovery: a lost
+password is replaced by an administrator with `reset-password`, and a lost
+administrator password is replaced by another administrator.
 
 For a custom API address, add `--server <url>` or export `CLAVIS_SERVER_URL`; the
 CLI does not load `.env`. Authentication requires a root-origin HTTPS URL except

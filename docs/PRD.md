@@ -394,6 +394,7 @@ Decided on September 11, 2026 (applied throughout this document):
 | Passwords | Administrators set and reset passwords; no self-service change or recovery in the MVP |
 | Initial administrator | Created once at startup from deployment configuration and a mounted password file |
 | Management permission | The administrator role; grants mean "may use" only |
+| Administrator model | Administrators are peers (GitLab group-owner style): any administrator manages any other, nobody can block or demote themself, and the installation always keeps at least one enabled administrator; there is no root tier |
 | Credential storage | Encrypted at rest with a mounted deployment key; rotation deferred |
 | PostgreSQL operations | Pass-through of any submitted SQL; the external role is the only access boundary |
 | Resource bounds | Per-connection timeout and result cap with explicit truncation |
@@ -409,7 +410,7 @@ Still open, to be settled with the pilot team:
 - Default values for per-connection timeouts and result caps.
 - The first real questions from managers and developers used to evaluate the pilot.
 
-The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. Implemented so far: automated initial administrator setup, local browser/CLI sign-in, revocable sessions and a minimal protected admin page. In progress: local user and administrator role management. Planned next: groups and connection grants, providers and connections with encrypted credentials, PostgreSQL and VictoriaMetrics pass-through with resource bounds, request auditing and inspection, and the agent skill.
+The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. Implemented so far: automated initial administrator setup, local browser/CLI sign-in, revocable sessions, administrator-managed local users with the peer administrator model and self-protection, and a protected admin page with a read-only user list. Planned next: groups and connection grants, providers and connections with encrypted credentials, PostgreSQL and VictoriaMetrics pass-through with resource bounds, request auditing and inspection, and the agent skill.
 
 ## 13. Sources and Context
 
