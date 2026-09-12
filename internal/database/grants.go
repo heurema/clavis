@@ -34,8 +34,6 @@ func grantRecord(row sqlc.FindGrantRow) auth.Grant {
 
 // grantParties resolves and locks both sides of a grant inside the mutation's
 // transaction, so a concurrent block, rename or delete serializes behind it.
-// The user is reported to the caller even when the connection lookup fails, so
-// the committed denial can still name the verified party.
 func grantParties(ctx context.Context, queries *sqlc.Queries,
 	request auth.GrantRequest) (sqlc.FindUserRow, sqlc.Connection, error) {
 	user, err := lockUser(ctx, queries, request.User)
@@ -47,17 +45,17 @@ func grantParties(ctx context.Context, queries *sqlc.Queries,
 }
 
 // CreateGrant is idempotent: a grant that already exists is returned with
-// Created false and records no second event, so a retrying agent leaves one
-// trace for one decision.
+// Created false and leaves its row untouched, so a retrying agent changes
+// nothing.
 func (s *LocalAuth) CreateGrant(ctx context.Context, session auth.Session,
 	request auth.GrantRequest, dryRun bool) (auth.GrantMutation, error) {
 	var result auth.GrantMutation
-	err := s.administer(ctx, session, grantMutationLock, request.User, string(auth.EventGrantCreate), dryRun, nil,
-		func(ctx context.Context, tx pgx.Tx, actor auth.Session) (mutation, error) {
+	err := s.administer(ctx, session, grantMutationLock, request.User, dryRun, nil,
+		func(ctx context.Context, tx pgx.Tx, actor auth.Session) error {
 			queries := sqlc.New(tx)
 			user, connection, err := grantParties(ctx, queries, request)
 			if err != nil {
-				return mutation{target: user.ID}, err
+				return err
 			}
 			_, err = queries.InsertGrant(ctx, sqlc.InsertGrantParams{
 				UserID: user.ID, ConnectionID: connection.ID, CreatedBy: actor.User.ID,
@@ -66,20 +64,16 @@ func (s *LocalAuth) CreateGrant(ctx context.Context, session auth.Session,
 			// means the pair was already granted.
 			existed := errors.Is(err, pgx.ErrNoRows)
 			if err != nil && !existed {
-				return mutation{}, err
+				return err
 			}
 			row, err := queries.FindGrant(ctx, sqlc.FindGrantParams{
 				UserID: user.ID, ConnectionID: connection.ID,
 			})
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			result = auth.GrantMutation{Grant: grantRecord(row), Created: !existed, DryRun: dryRun}
-			event := mutation{target: user.ID, connection: connection.ID}
-			if existed {
-				event.outcome = outcomeNone
-			}
-			return event, nil
+			return nil
 		})
 	if err != nil {
 		return auth.GrantMutation{}, hinted(err)
@@ -88,33 +82,29 @@ func (s *LocalAuth) CreateGrant(ctx context.Context, session auth.Session,
 }
 
 // RevokeGrant succeeds whether or not a grant was there; removing nothing
-// reports Revoked false and records no event.
+// reports Revoked false and changes no row.
 func (s *LocalAuth) RevokeGrant(ctx context.Context, session auth.Session,
 	request auth.GrantRequest, dryRun bool) (auth.GrantRevocation, error) {
 	var result auth.GrantRevocation
-	err := s.administer(ctx, session, grantMutationLock, request.User, string(auth.EventGrantRevoke), dryRun, nil,
-		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (mutation, error) {
+	err := s.administer(ctx, session, grantMutationLock, request.User, dryRun, nil,
+		func(ctx context.Context, tx pgx.Tx, _ auth.Session) error {
 			queries := sqlc.New(tx)
 			user, connection, err := grantParties(ctx, queries, request)
 			if err != nil {
-				return mutation{target: user.ID}, err
+				return err
 			}
 			removed, err := queries.DeleteGrant(ctx, sqlc.DeleteGrantParams{
 				UserID: user.ID, ConnectionID: connection.ID,
 			})
 			if err != nil {
-				return mutation{}, err
+				return err
 			}
 			result = auth.GrantRevocation{
 				User:       auth.GrantParty{ID: user.ID, Name: user.Username},
 				Connection: auth.GrantParty{ID: connection.ID, Name: connection.Name},
 				Revoked:    removed > 0, DryRun: dryRun,
 			}
-			event := mutation{target: user.ID, connection: connection.ID}
-			if removed == 0 {
-				event.outcome = outcomeNone
-			}
-			return event, nil
+			return nil
 		})
 	if err != nil {
 		return auth.GrantRevocation{}, hinted(err)
@@ -150,9 +140,9 @@ func filterID(ctx context.Context, queries *sqlc.Queries, ref string, user bool)
 	return row.ID, err == nil, err
 }
 
-// ListGrants is a read: no advisory key and no success event. Administrators
-// see every grant and may filter by either party; a member sees only their own
-// and naming another user is refused with a recorded denial.
+// ListGrants is a read: no advisory key and no mutation. Administrators see
+// every grant and may filter by either party; a member sees only their own and
+// naming another user is refused.
 func (s *LocalAuth) ListGrants(ctx context.Context, previous auth.Session,
 	filter auth.GrantFilter) (auth.GrantList, error) {
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
@@ -174,12 +164,11 @@ func (s *LocalAuth) ListGrants(ctx context.Context, previous auth.Session,
 	}
 	defer rollback(ctx, tx)
 	queries := sqlc.New(tx)
-	action := string(auth.EventGrantsList)
 	current, err := recheck(ctx, tx, previous)
 	if err != nil {
 		var failure *auth.Error
 		if errors.As(err, &failure) && failure.Code == auth.Unauthenticated {
-			return list, deny(ctx, tx, previous.User.ID, "", previous.ID, action, auth.Unauthenticated)
+			return list, &auth.Error{Code: auth.Unauthenticated}
 		}
 		return list, unavailable()
 	}
@@ -195,7 +184,7 @@ func (s *LocalAuth) ListGrants(ctx context.Context, previous auth.Session,
 		// A member's listing is their own. Naming somebody else is an attempt
 		// to read another account's access, not a narrower question.
 		if filter.User != "" && filter.User != current.User.ID && filter.User != current.User.Username {
-			return list, deny(ctx, tx, current.User.ID, "", current.ID, action, auth.Forbidden)
+			return list, &auth.Error{Code: auth.Forbidden}
 		}
 		params.UserID = &current.User.ID
 	}
@@ -252,8 +241,8 @@ func grantedConnection(ctx context.Context, queries *sqlc.Queries, userID, ref s
 // AuthorizeConnection is the single answer to "may this session use this
 // connection now": it rechecks the session and the current role, requires a
 // grant of members, lets administrators through without one and refuses a
-// disabled connection. Success records no event, and neither does a member's
-// not-found, which must stay indistinguishable from an unknown reference.
+// disabled connection. A member's not-found stays indistinguishable from an
+// unknown reference.
 func (s *LocalAuth) AuthorizeConnection(ctx context.Context, previous auth.Session, ref string) (auth.Connection, error) {
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
 	defer cancel()
@@ -270,12 +259,11 @@ func (s *LocalAuth) AuthorizeConnection(ctx context.Context, previous auth.Sessi
 	}
 	defer rollback(ctx, tx)
 	queries := sqlc.New(tx)
-	action := string(auth.EventConnectionGet)
 	current, err := recheck(ctx, tx, previous)
 	if err != nil {
 		var failure *auth.Error
 		if errors.As(err, &failure) && failure.Code == auth.Unauthenticated {
-			return record, deny(ctx, tx, previous.User.ID, "", previous.ID, action, auth.Unauthenticated)
+			return record, &auth.Error{Code: auth.Unauthenticated}
 		}
 		return record, unavailable()
 	}
@@ -305,10 +293,9 @@ func (s *LocalAuth) AuthorizeConnection(ctx context.Context, previous auth.Sessi
 }
 
 // memberRead opens the bounded read transaction every member-scoped connection
-// read shares: recheck with a recorded denial for a revoked session, and no
-// success event. The caller runs its query against the returned transaction.
-func (s *LocalAuth) memberRead(ctx context.Context, previous auth.Session,
-	action string) (pgx.Tx, auth.Session, error) {
+// read shares: a recheck that refuses a revoked session, and no mutation. The
+// caller runs its query against the returned transaction.
+func (s *LocalAuth) memberRead(ctx context.Context, previous auth.Session) (pgx.Tx, auth.Session, error) {
 	var current auth.Session
 	if !validSession(previous) {
 		return nil, current, &auth.Error{Code: auth.Unauthenticated}
@@ -324,7 +311,7 @@ func (s *LocalAuth) memberRead(ctx context.Context, previous auth.Session,
 	if err != nil {
 		var failure *auth.Error
 		if errors.As(err, &failure) && failure.Code == auth.Unauthenticated {
-			err = deny(ctx, tx, previous.User.ID, "", previous.ID, action, auth.Unauthenticated)
+			err = &auth.Error{Code: auth.Unauthenticated}
 		} else {
 			err = unavailable()
 		}
@@ -336,7 +323,7 @@ func (s *LocalAuth) memberRead(ctx context.Context, previous auth.Session,
 
 // ListGrantedConnections is the member listing: the connections the caller
 // holds a grant on, in the reduced projection, with the selector, ordering and
-// bounds of the administrator listing and no success event. Disabled
+// bounds of the administrator listing. Disabled
 // connections are listed with Enabled false; an administrator reads the
 // grants they happen to hold, which is normally none.
 func (s *LocalAuth) ListGrantedConnections(ctx context.Context, previous auth.Session,
@@ -354,7 +341,7 @@ func (s *LocalAuth) ListGrantedConnections(ctx context.Context, previous auth.Se
 	if limit <= 0 || limit > auth.MaxConnectionListing {
 		limit = auth.MaxConnectionListing
 	}
-	tx, current, err := s.memberRead(ctx, previous, string(auth.EventConnectionsList))
+	tx, current, err := s.memberRead(ctx, previous)
 	if err != nil {
 		return list, err
 	}
@@ -387,14 +374,14 @@ func (s *LocalAuth) ListGrantedConnections(ctx context.Context, previous auth.Se
 }
 
 // GetGrantedConnection returns one granted connection in the reduced
-// projection. An ungranted or unknown reference is CONNECTION_NOT_FOUND and
-// records no event, so absence discloses nothing either way.
+// projection. An ungranted or unknown reference is CONNECTION_NOT_FOUND, so
+// absence discloses nothing either way.
 func (s *LocalAuth) GetGrantedConnection(ctx context.Context, previous auth.Session,
 	ref string) (auth.ConnectionSummary, error) {
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
 	defer cancel()
 	var summary auth.ConnectionSummary
-	tx, current, err := s.memberRead(ctx, previous, string(auth.EventConnectionGet))
+	tx, current, err := s.memberRead(ctx, previous)
 	if err != nil {
 		return summary, err
 	}
@@ -428,7 +415,7 @@ func (s *LocalAuth) ListGrantedConnectionNames(ctx context.Context, previous aut
 	if limit <= 0 || limit > auth.MaxConnectionListing {
 		limit = auth.MaxConnectionListing
 	}
-	tx, current, err := s.memberRead(ctx, previous, string(auth.EventConnectionsList))
+	tx, current, err := s.memberRead(ctx, previous)
 	if err != nil {
 		return names, false, err
 	}

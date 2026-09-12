@@ -77,7 +77,7 @@ func TestBootstrapLedgerReadFailureRecoversInRunningWorker(t *testing.T) {
 				start: func(ctx context.Context, conn *pgx.Conn, sql string) context.Context {
 					// Goose must have finished and bootstrap must have successfully
 					// acquired its transaction lock. Interrupt the ledger SELECT,
-					// before BootstrapState or any credential/account/event operation.
+					// before BootstrapState or any credential or account operation.
 					if sql != migrationRowsSQL || lockedPID.Load() != conn.PgConn().PID() || !injected.CompareAndSwap(false, true) {
 						return ctx
 					}
@@ -122,7 +122,7 @@ func TestBootstrapLedgerReadFailureRecoversInRunningWorker(t *testing.T) {
 				t.Fatal("ledger read did not finish")
 			}
 			require.Eventually(t, func() bool { return i.state.Load() == platform.DependencyUnavailable }, time.Second, time.Millisecond)
-			for _, table := range []string{"users", "auth_events", "installation"} {
+			for _, table := range []string{"users", "installation"} {
 				require.Zero(t, countRows(t, pool, table))
 			}
 			select {
@@ -132,7 +132,7 @@ func TestBootstrapLedgerReadFailureRecoversInRunningWorker(t *testing.T) {
 			}
 			require.Equal(t, platform.Ready, i.state.Load())
 			require.Equal(t, platform.Ready, i.Check(t.Context()).State)
-			for _, table := range []string{"users", "auth_events", "installation"} {
+			for _, table := range []string{"users", "installation"} {
 				require.Equal(t, 1, countRows(t, pool, table))
 			}
 		})
@@ -165,41 +165,14 @@ func TestBootstrapLedgerSchemaFaultRemainsTerminal(t *testing.T) {
 			require.True(t, injected.Load())
 			require.NoError(t, <-result)
 			require.Equal(t, platform.SchemaError, i.state.Load())
-			for _, table := range []string{"users", "auth_events", "installation"} {
+			for _, table := range []string{"users", "installation"} {
 				require.Zero(t, countRows(t, pool, table))
 			}
 		})
 	}
 }
 
-func assertBootstrapFailureEvents(t *testing.T, pool *pgxpool.Pool, count int, private ...string) {
-	t.Helper()
-	var events string
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT coalesce(json_agg(auth_events)::text, '[]') FROM auth_events`).Scan(&events))
-	var rows []map[string]any
-	require.NoError(t, json.Unmarshal([]byte(events), &rows))
-	require.Len(t, rows, count)
-	ids := make(map[string]bool)
-	for _, row := range rows {
-		require.Len(t, row, 8, "audit rows contain only the documented identifiers and metadata")
-		require.Equal(t, "bootstrap", row["action"])
-		require.Equal(t, "invalid_argument", row["outcome"])
-		for _, field := range []string{"actor_id", "target_id", "session_id", "connection_id"} {
-			require.Nil(t, row[field], field)
-		}
-		id, ok := row["id"].(string)
-		require.True(t, ok)
-		require.NotEmpty(t, id)
-		require.False(t, ids[id], "each real attempt has its own event")
-		ids[id] = true
-		require.NotEmpty(t, row["created_at"])
-	}
-	for _, value := range private {
-		require.NotContains(t, events, value)
-	}
-}
-
-func TestBootstrapValidationAuditsEachAttemptSafely(t *testing.T) {
+func TestBootstrapValidationFailsSafelyOnEachAttempt(t *testing.T) {
 	for _, failure := range []string{"bad-filename", "relative-path", "permissions", "username", "unsafe-password", "directory", "fifo", "unexpected-user"} {
 		t.Run(failure, func(t *testing.T) {
 			pool := testPool(t)
@@ -237,7 +210,14 @@ func TestBootstrapValidationAuditsEachAttemptSafely(t *testing.T) {
 				for range 3 {
 					require.Equal(t, platform.BootstrapFailed, i.Check(t.Context()).State)
 				}
-				assertBootstrapFailureEvents(t, pool, attempt, username, input, string(password), hex.EncodeToString(digest[:]), "private-existing-hash")
+				// The reported state never carries a supplied identity, path,
+				// secret or stored hash, on this or any earlier attempt.
+				safe, err := json.Marshal(i.Check(t.Context()))
+				require.NoError(t, err)
+				for _, value := range []string{username, input, string(password),
+					hex.EncodeToString(digest[:]), "private-existing-hash"} {
+					require.NotContains(t, string(safe), value, attempt)
+				}
 			}
 			if existingUsers != 0 {
 				var role, hash string
@@ -254,16 +234,14 @@ func TestBootstrapValidationAuditsEachAttemptSafely(t *testing.T) {
 			require.Equal(t, platform.Ready, i.Attempt(t.Context()).State)
 			require.Equal(t, 1, countRows(t, pool, "users"))
 			require.Equal(t, 1, countRows(t, pool, "installation"))
-			require.Equal(t, 3, countRows(t, pool, "auth_events"))
-			var successes int
-			require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events e JOIN users u ON e.actor_id=u.id AND e.target_id=u.id
-				WHERE e.action='bootstrap' AND e.outcome='success' AND e.session_id IS NULL AND u.role='admin'`).Scan(&successes))
-			require.Equal(t, 1, successes)
+			var role string
+			require.NoError(t, pool.QueryRow(t.Context(), `SELECT role FROM users`).Scan(&role))
+			require.Equal(t, "admin", role)
 		})
 	}
 }
 
-func TestBootstrapMissingSetupAndReadOnlyChecksDoNotAudit(t *testing.T) {
+func TestBootstrapMissingSetupAndReadOnlyChecksWriteNothing(t *testing.T) {
 	pool := testPool(t)
 	require.NoError(t, Migrate(t.Context(), pool))
 	for _, input := range [][2]string{{"", ""}, {"", "/private/absent-secret"}, {"INVALID USERNAME", ""}} {
@@ -278,12 +256,12 @@ func TestBootstrapMissingSetupAndReadOnlyChecksDoNotAudit(t *testing.T) {
 	for range 3 {
 		require.Equal(t, platform.Initializing, i.Check(t.Context()).State)
 	}
-	for _, table := range []string{"users", "auth_events", "installation"} {
+	for _, table := range []string{"users", "installation"} {
 		require.Zero(t, countRows(t, pool, table))
 	}
 }
 
-func TestInitializedBootstrapDoesNotReadInputsOrAudit(t *testing.T) {
+func TestInitializedBootstrapDoesNotReadInputs(t *testing.T) {
 	pool := testPool(t)
 	path, _ := testSecret(t)
 	require.Equal(t, platform.Ready, NewInitializer(pool, "personal-admin", path).Attempt(t.Context()).State)
@@ -309,46 +287,6 @@ func TestInitializedBootstrapDoesNotReadInputsOrAudit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, len(payload), n)
 	require.Equal(t, payload, buffer)
-	require.Equal(t, 1, countRows(t, pool, "auth_events"))
 	require.Equal(t, 1, countRows(t, pool, "users"))
-}
-
-func TestBootstrapValidationAuditFailureRollsBack(t *testing.T) {
-	for _, deferred := range []bool{false, true} {
-		t.Run(map[bool]string{false: "insert", true: "commit"}[deferred], func(t *testing.T) {
-			pool := testPool(t)
-			require.NoError(t, Migrate(t.Context(), pool))
-			execSQL(t, pool, `CREATE FUNCTION reject_bootstrap_audit() RETURNS trigger LANGUAGE plpgsql AS $$
-				BEGIN RAISE EXCEPTION 'private-driver-secret-and-path'; END $$`)
-			if deferred {
-				execSQL(t, pool, `CREATE CONSTRAINT TRIGGER reject_bootstrap_audit AFTER INSERT ON auth_events DEFERRABLE INITIALLY DEFERRED
-					FOR EACH ROW EXECUTE FUNCTION reject_bootstrap_audit()`)
-			} else {
-				execSQL(t, pool, `CREATE TRIGGER reject_bootstrap_audit BEFORE INSERT ON auth_events
-					FOR EACH ROW EXECUTE FUNCTION reject_bootstrap_audit()`)
-			}
-			path, _ := testSecret(t)
-			require.NoError(t, os.Chmod(path, 0644))
-			i := NewInitializer(pool, "personal-admin", path)
-			for range 2 {
-				result := i.Attempt(t.Context())
-				require.Equal(t, platform.DependencyUnavailable, result.State)
-				safe, err := json.Marshal(result)
-				require.NoError(t, err)
-				require.NotContains(t, string(safe), path)
-				require.NotContains(t, string(safe), "private-driver-secret-and-path")
-				for _, table := range []string{"users", "auth_events", "installation"} {
-					require.Zero(t, countRows(t, pool, table))
-				}
-			}
-			execSQL(t, pool, `DROP TRIGGER reject_bootstrap_audit ON auth_events`)
-			require.Equal(t, platform.BootstrapFailed, i.Attempt(t.Context()).State)
-			assertBootstrapFailureEvents(t, pool, 1, path, "personal-admin", "private-driver-secret-and-path")
-			require.NoError(t, os.Chmod(path, 0600))
-			require.Equal(t, platform.Ready, i.Attempt(t.Context()).State)
-			require.Equal(t, 1, countRows(t, pool, "users"))
-			require.Equal(t, 1, countRows(t, pool, "installation"))
-			require.Equal(t, 2, countRows(t, pool, "auth_events"))
-		})
-	}
+	require.Equal(t, 1, countRows(t, pool, "installation"))
 }

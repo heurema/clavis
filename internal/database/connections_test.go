@@ -22,7 +22,7 @@ import (
 // Direct SQL in this file is fixture setup, fault injection, or an independent
 // assertion against persisted state. Application operations use LocalAuth.
 
-// Sentinels must never reach an event, an error, a hint or the projection.
+// Sentinels must never reach an error, a hint or the projection.
 const (
 	sentinelSecret = "sentinel-secret-never-in-output"
 	sentinelHost   = "sentinel-host.invalid"
@@ -100,8 +100,8 @@ func selector(t *testing.T, value string) []auth.SelectorTerm {
 	return terms
 }
 
-// connectionOperations is every service call, keyed by the event action it
-// records, so denial and rollback tests can cover them uniformly.
+// connectionOperations is every service call, keyed by its operation name, so
+// denial and rollback tests can cover them uniformly.
 func connectionOperations(ctx context.Context, s *LocalAuth, actor auth.Session, ref string, dryRun bool) map[string]func() error {
 	title := "Updated title"
 	return map[string]func() error{
@@ -209,8 +209,6 @@ func TestCreateConnectionStoresSealedRecord(t *testing.T) {
 	same := connectionRequest("metrics-prod")
 	second := createConnection(t, s, admin, same)
 	require.NotEqual(t, envelope, storedEnvelope(t, pool, second.ID))
-	actor, target, sessionID := lastEvent(t, pool, "connection.create", "success")
-	require.Equal(t, []string{admin.User.ID, second.ID, admin.ID}, []string{actor, target, sessionID})
 
 	byName, err := s.GetConnection(t.Context(), admin, "payments-prod")
 	require.NoError(t, err)
@@ -218,7 +216,6 @@ func TestCreateConnectionStoresSealedRecord(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, record, byName)
 	require.Equal(t, record, byID)
-	require.Equal(t, 0, eventCount(t, pool, "connection.get", "success"))
 
 	// An omitted title defaults to the name; the bounds default too.
 	bare := auth.CreateConnectionRequest{
@@ -255,25 +252,23 @@ func TestCreateConnectionAcceptsVictoriaMetricsWithoutASecret(t *testing.T) {
 
 func TestConnectionOperationsRejectUnknownReferences(t *testing.T) {
 	pool, s, admin, _ := connectionFixture(t)
-	createConnection(t, s, admin, connectionRequest("payments-prod"))
-	events := countRows(t, pool, "auth_events")
+	record := createConnection(t, s, admin, connectionRequest("payments-prod"))
 	for _, ref := range []string{"missing-connection", randomTestID(t), "Not A Ref"} {
 		_, err := s.GetConnection(t.Context(), admin, ref)
 		code(t, err, auth.ConnectionNotFound)
 		require.Equal(t, hintConnectionNotFound, hintOf(t, err))
 	}
-	require.Equal(t, events, countRows(t, pool, "auth_events"), "an unknown get records no event")
-
 	for action, operation := range connectionOperations(t.Context(), s, admin, "missing-connection", false) {
 		if action == "connection.create" || action == "connections.list" || action == "connection.get" {
 			continue
 		}
-		code(t, operation(), auth.ConnectionNotFound)
-		require.Equal(t, 1, eventCount(t, pool, action, "connection_not_found"), action)
-		actor, target, sessionID := lastEvent(t, pool, action, "connection_not_found")
-		require.Equal(t, []string{admin.User.ID, "", admin.ID}, []string{actor, target, sessionID}, action)
+		code(t, operation(), auth.ConnectionNotFound, action)
 	}
 	require.Equal(t, 1, countRows(t, pool, "connections"))
+	// The existing connection is untouched by every unknown reference.
+	after, err := s.GetConnection(t.Context(), admin, record.Name)
+	require.NoError(t, err)
+	require.Equal(t, record, after)
 }
 
 func TestCreateConnectionRefusesDuplicateNames(t *testing.T) {
@@ -284,17 +279,10 @@ func TestCreateConnectionRefusesDuplicateNames(t *testing.T) {
 	_, err := s.CreateConnection(t.Context(), admin, connectionRequest("payments-prod"), false)
 	code(t, err, auth.ConnectionExists)
 	require.Equal(t, hintConnectionExists, hintOf(t, err))
-	require.Equal(t, 1, eventCount(t, pool, "connection.create", "connection_exists"))
-	actor, target, _ := lastEvent(t, pool, "connection.create", "connection_exists")
-	require.Equal(t, admin.User.ID, actor)
-	require.Empty(t, target, "an unwritten connection has no verified identifier")
 
 	taken := "payments-prod"
 	_, err = s.UpdateConnection(t.Context(), admin, second.ID, auth.UpdateConnectionRequest{Name: &taken}, false)
 	code(t, err, auth.ConnectionExists)
-	require.Equal(t, 1, eventCount(t, pool, "connection.update", "connection_exists"))
-	_, target, _ = lastEvent(t, pool, "connection.update", "connection_exists")
-	require.Equal(t, second.ID, target)
 	require.Equal(t, 2, countRows(t, pool, "connections"))
 	unchanged, err := s.GetConnection(t.Context(), admin, second.ID)
 	require.NoError(t, err)
@@ -332,7 +320,6 @@ func TestCreateConnectionMapsUniqueViolationUnderRace(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond)
 	require.NoError(t, racer.Commit(t.Context()))
 	code(t, <-done, auth.ConnectionExists)
-	require.Equal(t, 1, eventCount(t, pool, "connection.create", "connection_exists"))
 	require.Equal(t, 1, countRows(t, pool, "connections"))
 }
 
@@ -342,7 +329,6 @@ func TestCreateConnectionValidatesEveryBound(t *testing.T) {
 	for index := range auth.MaxLabels + 1 {
 		labels["key"+string(rune('a'+index))] = "value"
 	}
-	events := countRows(t, pool, "auth_events")
 	for name, mutate := range map[string]func(*auth.CreateConnectionRequest){
 		"uuid-shaped name": func(r *auth.CreateConnectionRequest) { r.Name = randomTestID(t) },
 		"upper-case name":  func(r *auth.CreateConnectionRequest) { r.Name = "Payments" },
@@ -398,7 +384,6 @@ func TestCreateConnectionValidatesEveryBound(t *testing.T) {
 	require.Contains(t, hintOf(t, err), string(auth.ProviderPostgreSQL))
 	require.Contains(t, hintOf(t, err), string(auth.ProviderVictoriaMetrics))
 	require.Zero(t, countRows(t, pool, "connections"))
-	require.Equal(t, events, countRows(t, pool, "auth_events"), "rejected input records no event")
 }
 
 func TestUpdateConnectionChangesOnlySuppliedFields(t *testing.T) {
@@ -427,9 +412,6 @@ func TestUpdateConnectionChangesOnlySuppliedFields(t *testing.T) {
 	require.Equal(t, auth.CheckReachable, updated.LastCheck.Outcome)
 	require.Equal(t, envelope, storedEnvelope(t, pool, record.ID))
 	require.True(t, updated.UpdatedAt.After(record.UpdatedAt))
-	require.Equal(t, 1, eventCount(t, pool, "connection.update", "success"))
-	_, target, _ := lastEvent(t, pool, "connection.update", "success")
-	require.Equal(t, record.ID, target)
 
 	// A rename keeps the identity; labels are replaced as a whole set.
 	name, title := "payments-prod-reporting", "Reporting"
@@ -454,8 +436,10 @@ func TestUpdateConnectionChangesOnlySuppliedFields(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, name, result.Connection.Title)
 
-	// Input a body can only reject after reading the row is still a rejection.
-	events := countRows(t, pool, "auth_events")
+	// Input a body can only reject after reading the row is still a rejection,
+	// and it changes nothing.
+	before, err := s.GetConnection(t.Context(), admin, record.ID)
+	require.NoError(t, err)
 	bad := map[string]string{"url": "postgres://reader:" + sentinelSecret + "@" + sentinelHost + "/ledger"}
 	_, err = s.UpdateConnection(t.Context(), admin, record.ID, auth.UpdateConnectionRequest{Target: &bad}, false)
 	code(t, err, auth.InvalidArgument)
@@ -463,7 +447,9 @@ func TestUpdateConnectionChangesOnlySuppliedFields(t *testing.T) {
 	long := strings.Repeat("t", auth.MaxTitleLength+1)
 	_, err = s.UpdateConnection(t.Context(), admin, record.ID, auth.UpdateConnectionRequest{Title: &long}, false)
 	code(t, err, auth.InvalidArgument)
-	require.Equal(t, events, countRows(t, pool, "auth_events"))
+	unchangedAfterRejection, err := s.GetConnection(t.Context(), admin, record.ID)
+	require.NoError(t, err)
+	require.Equal(t, before, unchangedAfterRejection)
 }
 
 func TestSetConnectionCredentialsReplacesEnvelopeAndClearsCheck(t *testing.T) {
@@ -481,14 +467,9 @@ func TestSetConnectionCredentialsReplacesEnvelopeAndClearsCheck(t *testing.T) {
 	require.True(t, strings.HasPrefix(after, "v1:"))
 	require.NotContains(t, after, sentinelSecret)
 	require.Empty(t, storedOutcome(t, pool, record.ID))
-	require.Equal(t, 1, eventCount(t, pool, "connection.set_credentials", "success"))
-	_, target, _ := lastEvent(t, pool, "connection.set_credentials", "success")
-	require.Equal(t, record.ID, target)
 
-	events := countRows(t, pool, "auth_events")
 	_, err = s.SetConnectionCredentials(t.Context(), admin, record.Name, auth.Secret("with\nbreak"), false)
 	code(t, err, auth.InvalidArgument)
-	require.Equal(t, events, countRows(t, pool, "auth_events"))
 	require.Equal(t, after, storedEnvelope(t, pool, record.ID))
 }
 
@@ -499,21 +480,20 @@ func TestConnectionEnableIsIdempotentAndDeleteIsGuarded(t *testing.T) {
 	_, err := s.DeleteConnection(t.Context(), admin, record.Name, false)
 	code(t, err, auth.ConnectionInUse)
 	require.Equal(t, hintConnectionInUse, hintOf(t, err))
-	require.Equal(t, 1, eventCount(t, pool, "connection.delete", "connection_in_use"))
-	_, target, _ := lastEvent(t, pool, "connection.delete", "connection_in_use")
-	require.Equal(t, record.ID, target, "a verified connection names itself in its denial")
 	require.Equal(t, 1, countRows(t, pool, "connections"))
 
 	for range 2 {
 		result, err := s.SetConnectionEnabled(t.Context(), admin, record.Name, false, false)
 		require.NoError(t, err)
 		require.False(t, result.Connection.Enabled)
+		// The repeated disable leaves the stored row exactly as it was.
+		stored, err := s.GetConnection(t.Context(), admin, record.Name)
+		require.NoError(t, err)
+		require.False(t, stored.Enabled)
 	}
-	require.Equal(t, 2, eventCount(t, pool, "connection.disable", "success"))
 	enabled, err := s.SetConnectionEnabled(t.Context(), admin, record.ID, true, false)
 	require.NoError(t, err)
 	require.True(t, enabled.Connection.Enabled)
-	require.Equal(t, 1, eventCount(t, pool, "connection.enable", "success"))
 
 	_, err = s.SetConnectionEnabled(t.Context(), admin, record.ID, false, false)
 	require.NoError(t, err)
@@ -521,9 +501,6 @@ func TestConnectionEnableIsIdempotentAndDeleteIsGuarded(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, auth.ConnectionDeletion{ID: record.ID, Name: record.Name, Deleted: true}, deletion)
 	require.Zero(t, countRows(t, pool, "connections"))
-	require.Equal(t, 1, eventCount(t, pool, "connection.delete", "success"))
-	_, target, _ = lastEvent(t, pool, "connection.delete", "success")
-	require.Equal(t, record.ID, target)
 	_, err = s.GetConnection(t.Context(), admin, record.Name)
 	code(t, err, auth.ConnectionNotFound)
 }
@@ -543,9 +520,6 @@ func TestCheckConnectionStoresEveryOutcome(t *testing.T) {
 	require.Equal(t, time.UTC, result.Check.CheckedAt.Location())
 	require.WithinDuration(t, time.Now(), result.Check.CheckedAt, 30*time.Second)
 	require.Equal(t, "reachable", storedOutcome(t, pool, record.ID))
-	require.Equal(t, 1, eventCount(t, pool, "connection.check", "success"))
-	_, eventTarget, _ := lastEvent(t, pool, "connection.check", "success")
-	require.Equal(t, record.ID, eventTarget)
 
 	_, err = s.SetConnectionCredentials(t.Context(), admin, record.ID, password+"-wrong", false)
 	require.NoError(t, err)
@@ -553,7 +527,6 @@ func TestCheckConnectionStoresEveryOutcome(t *testing.T) {
 	require.NoError(t, err, "a failed check is a result, not an error")
 	require.Equal(t, auth.CheckAuthRejected, result.Check.Outcome)
 	require.Equal(t, "auth_rejected", storedOutcome(t, pool, record.ID))
-	require.Equal(t, 1, eventCount(t, pool, "connection.check", "check_failed"))
 
 	host, port, err := net.SplitHostPort(closedPort(t))
 	require.NoError(t, err)
@@ -564,7 +537,6 @@ func TestCheckConnectionStoresEveryOutcome(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, auth.CheckUnreachable, result.Check.Outcome)
 	require.Equal(t, "unreachable", storedOutcome(t, pool, record.ID))
-	require.Equal(t, 2, eventCount(t, pool, "connection.check", "check_failed"))
 
 	token := auth.Secret("bearer-" + sentinelSecret)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -594,15 +566,15 @@ func TestCheckConnectionStoresEveryOutcome(t *testing.T) {
 	require.Equal(t, auth.CheckAuthRejected, result.Check.Outcome)
 	require.Equal(t, "auth_rejected", storedOutcome(t, pool, monitoring.ID))
 
-	// No result, projection or event ever carries the secret or the host.
+	// No result or stored projection ever carries the secret or the host.
 	encoded, err := json.Marshal(result)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), sentinelSecret)
-	var events string
+	var stored string
 	require.NoError(t, pool.QueryRow(t.Context(),
-		`SELECT coalesce(string_agg(action||' '||outcome, ' '), '') FROM auth_events`).Scan(&events))
-	require.NotContains(t, events, sentinelSecret)
-	require.NotContains(t, events, sentinelHost)
+		`SELECT coalesce(string_agg(name||' '||coalesce(last_check_outcome,''), ' '), '') FROM connections`).Scan(&stored))
+	require.NotContains(t, stored, sentinelSecret)
+	require.NotContains(t, stored, sentinelHost)
 }
 
 func TestCheckConnectionFailsClosedWithoutTheKey(t *testing.T) {
@@ -617,9 +589,6 @@ func TestCheckConnectionFailsClosedWithoutTheKey(t *testing.T) {
 	require.Equal(t, hintCredentials, hintOf(t, err))
 	require.NotContains(t, err.Error(), sentinelSecret)
 	require.Equal(t, "credentials_unavailable", storedOutcome(t, pool, record.ID))
-	require.Equal(t, 1, eventCount(t, pool, "connection.check", "credentials_unavailable"))
-	_, target, _ := lastEvent(t, pool, "connection.check", "credentials_unavailable")
-	require.Equal(t, record.ID, target)
 
 	// An envelope is bound to its row and cannot be moved to another.
 	execSQL(t, pool, `UPDATE connections SET secret_envelope=(SELECT secret_envelope FROM connections WHERE id=$1) WHERE id=$2`,
@@ -627,7 +596,6 @@ func TestCheckConnectionFailsClosedWithoutTheKey(t *testing.T) {
 	_, err = s.CheckConnection(t.Context(), admin, second.ID)
 	code(t, err, auth.CredentialsUnavailable)
 	require.Equal(t, "credentials_unavailable", storedOutcome(t, pool, second.ID))
-	require.Equal(t, 2, eventCount(t, pool, "connection.check", "credentials_unavailable"))
 
 	// Without a keyring at all the service fails closed the same way.
 	bare, err := NewLocalAuth(pool, s.checker, auth.DefaultSessionTTL)
@@ -642,29 +610,21 @@ func TestCheckConnectionFailsClosedWithoutTheKey(t *testing.T) {
 func TestConnectionOperationsDenyMembersAndRevokedSessions(t *testing.T) {
 	pool, s, admin, input := connectionFixture(t)
 	record := createConnection(t, s, admin, connectionRequest("payments-prod"))
-	member, memberInput := createMember(t, s, admin, "plain-member")
+	_, memberInput := createMember(t, s, admin, "plain-member")
 	memberSession := session(t, s, login(t, s, memberInput), auth.CLI)
 	revoked := session(t, s, login(t, s, input), auth.CLI)
 	require.NoError(t, s.Logout(t.Context(), revoked))
 	connections := countRows(t, pool, "connections")
 
 	for action, operation := range connectionOperations(t.Context(), s, memberSession, record.Name, false) {
-		code(t, operation(), auth.Forbidden)
-		require.Equal(t, 1, eventCount(t, pool, action, "forbidden"), action)
-		actor, target, sessionID := lastEvent(t, pool, action, "forbidden")
-		require.Equal(t, []string{member.ID, "", memberSession.ID}, []string{actor, target, sessionID}, action)
+		code(t, operation(), auth.Forbidden, action)
 	}
 	for action, operation := range connectionOperations(t.Context(), s, revoked, record.Name, false) {
-		code(t, operation(), auth.Unauthenticated)
-		require.Equal(t, 1, eventCount(t, pool, action, "unauthenticated"), action)
-		actor, _, sessionID := lastEvent(t, pool, action, "unauthenticated")
-		require.Equal(t, []string{admin.User.ID, revoked.ID}, []string{actor, sessionID}, action)
+		code(t, operation(), auth.Unauthenticated, action)
 	}
-	events := countRows(t, pool, "auth_events")
 	for _, operation := range connectionOperations(t.Context(), s, auth.Session{}, record.Name, false) {
 		code(t, operation(), auth.Unauthenticated)
 	}
-	require.Equal(t, events, countRows(t, pool, "auth_events"), "a caller without a session is not an attempt")
 	require.Equal(t, connections, countRows(t, pool, "connections"))
 	after, err := s.GetConnection(t.Context(), admin, record.Name)
 	require.NoError(t, err)
@@ -681,7 +641,7 @@ func TestConnectionDryRunLeavesNoTrace(t *testing.T) {
 	_, memberInput := createMember(t, s, admin, "watching-member")
 	memberSession := session(t, s, login(t, s, memberInput), auth.CLI)
 	envelope := storedEnvelope(t, pool, record.ID)
-	connections, events := countRows(t, pool, "connections"), countRows(t, pool, "auth_events")
+	connections := countRows(t, pool, "connections")
 
 	created, err := s.CreateConnection(t.Context(), admin, connectionRequest("metrics-prod"), true)
 	require.NoError(t, err)
@@ -726,7 +686,6 @@ func TestConnectionDryRunLeavesNoTrace(t *testing.T) {
 	code(t, err, auth.InvalidArgument)
 
 	require.Equal(t, connections, countRows(t, pool, "connections"))
-	require.Equal(t, events, countRows(t, pool, "auth_events"))
 	require.Equal(t, envelope, storedEnvelope(t, pool, record.ID))
 	require.Equal(t, "reachable", storedOutcome(t, pool, record.ID))
 	after, err := s.GetConnection(t.Context(), admin, record.Name)
@@ -776,12 +735,6 @@ func TestListConnectionsOrdersFiltersAndBounds(t *testing.T) {
 		require.Equal(t, want, connectionNames(list), value)
 		require.False(t, list.Truncated, value)
 	}
-	require.Equal(t, 0, eventCount(t, pool, "connections.list", "success"))
-	var recorded int
-	require.NoError(t, pool.QueryRow(t.Context(),
-		`SELECT count(*) FROM auth_events WHERE action='connections.list'`).Scan(&recorded))
-	require.Zero(t, recorded)
-
 	// Fixture rows only; the listing bound and its flag are the subject.
 	execSQL(t, pool, `INSERT INTO connections(id,name,title,provider,target,labels,secret_envelope)
 		SELECT gen_random_uuid(), 'bulk-'||lpad(n::text,5,'0'), 'bulk', 'postgresql',
@@ -801,39 +754,6 @@ func TestListConnectionsOrdersFiltersAndBounds(t *testing.T) {
 	over, err := s.ListConnections(t.Context(), admin, nil, auth.MaxConnectionListing*10)
 	require.NoError(t, err)
 	require.Len(t, over.Connections, auth.MaxConnectionListing)
-}
-
-func TestConnectionAuditFailureRollsBack(t *testing.T) {
-	pool, s, admin, _ := connectionFixture(t)
-	request := connectionRequest("payments-prod")
-	request.Target = map[string]string{"url": "postgres://reader@" + closedPort(t) + "/ledger?sslmode=disable"}
-	record := createConnection(t, s, admin, request)
-	envelope := storedEnvelope(t, pool, record.ID)
-	connections, events := countRows(t, pool, "connections"), countRows(t, pool, "auth_events")
-	execSQL(t, pool, `CREATE FUNCTION reject_event() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SENTINEL_PRIVATE_DRIVER'; END $$;
-		CREATE TRIGGER reject_event BEFORE INSERT ON auth_events FOR EACH ROW EXECUTE FUNCTION reject_event()`)
-	for action, operation := range connectionOperations(t.Context(), s, admin, record.Name, false) {
-		if action == "connections.list" || action == "connection.get" {
-			continue
-		}
-		err := operation()
-		code(t, err, auth.ServiceUnavailable)
-		require.NotContains(t, err.Error(), "SENTINEL", action)
-	}
-	// Reads write no success event, so they keep working.
-	list, err := s.ListConnections(t.Context(), admin, nil, 0)
-	require.NoError(t, err)
-	require.Len(t, list.Connections, 1)
-	current, err := s.GetConnection(t.Context(), admin, record.Name)
-	require.NoError(t, err)
-	require.Equal(t, record, current)
-	require.Equal(t, connections, countRows(t, pool, "connections"))
-	require.Equal(t, events, countRows(t, pool, "auth_events"))
-	require.Equal(t, envelope, storedEnvelope(t, pool, record.ID))
-	require.Empty(t, storedOutcome(t, pool, record.ID), "a rolled back check stores no outcome")
-	execSQL(t, pool, `DROP TRIGGER reject_event ON auth_events`)
-	_, err = s.SetConnectionEnabled(t.Context(), admin, record.Name, false, false)
-	require.NoError(t, err)
 }
 
 func TestConnectionMutationsSerializeOnTheirAdvisoryKey(t *testing.T) {

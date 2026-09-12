@@ -167,44 +167,16 @@ func TestGeneratedGrantQueriesAndConstraints(t *testing.T) {
 	deleted, err = qtx.DeleteGrant(t.Context(), sqlc.DeleteGrantParams{UserID: alice, ConnectionID: payments})
 	require.NoError(t, err)
 	require.Zero(t, deleted)
-
-	// Grant events carry the user target and the connection column; the
-	// allowlists accept the new actions and outcome and refuse near misses.
-	for _, event := range []struct{ action, outcome string }{
-		{"grant.create", "success"}, {"grant.revoke", "success"}, {"grants.list", "forbidden"},
-		{"connection.get", "connection_disabled"},
-	} {
-		require.NoError(t, qtx.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{
-			ID: randomTestID(t), ActorID: admin, TargetID: alice, ConnectionID: payments, Action: event.action, Outcome: event.outcome,
-		}), event.action+"/"+event.outcome)
-	}
-	var connectionID *string
-	require.NoError(t, tx.QueryRow(t.Context(), `SELECT connection_id::text FROM auth_events WHERE action = 'grant.create'`).Scan(&connectionID))
-	require.NotNil(t, connectionID)
-	require.Equal(t, payments, *connectionID)
-	require.NoError(t, qtx.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{ID: randomTestID(t), Action: "login", Outcome: "success"}))
-	require.NoError(t, tx.QueryRow(t.Context(), `SELECT connection_id::text FROM auth_events WHERE action = 'login'`).Scan(&connectionID))
-	require.Nil(t, connectionID)
-	for _, event := range []struct{ action, outcome string }{
-		{"grant.delete", "success"}, {"grants.create", "success"}, {"grant.create", "grant_exists"},
-	} {
-		_, err := tx.Exec(t.Context(), "SAVEPOINT ev")
-		require.NoError(t, err)
-		err = qtx.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{ID: randomTestID(t), Action: event.action, Outcome: event.outcome})
-		require.ErrorAs(t, err, &pgErr)
-		require.Equal(t, "23514", pgErr.Code, event.action+"/"+event.outcome)
-		_, err = tx.Exec(t.Context(), "ROLLBACK TO SAVEPOINT ev")
-		require.NoError(t, err)
-	}
 }
 
 func TestGrantMigrationAppliesToInitializedInstallation(t *testing.T) {
 	pool := testPool(t)
 	previous := embeddedMapFS(t)
 	delete(previous, "004_grants.sql")
+	delete(previous, "005_drop_audit_events.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	queries := sqlc.New(pool)
-	// The previous release stored events without the connection column.
+	// The previous release still had the journal and stored rows in it.
 	execSQL(t, pool, `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'connection.check', 'check_failed')`, randomTestID(t))
 	var present bool
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('grants') IS NOT NULL`).Scan(&present))
@@ -213,13 +185,10 @@ func TestGrantMigrationAppliesToInitializedInstallation(t *testing.T) {
 
 	require.NoError(t, Migrate(t.Context(), pool))
 	require.NoError(t, Migrate(t.Context(), pool))
-	require.Equal(t, 1, countRows(t, pool, "auth_events"))
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('grants') IS NOT NULL`).Scan(&present))
 	require.True(t, present)
-	var connectionID *string
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT connection_id::text FROM auth_events`).Scan(&connectionID))
-	require.Nil(t, connectionID, "existing rows keep a null connection")
-	require.NoError(t, queries.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{ID: randomTestID(t), Action: "grant.create", Outcome: "success"}))
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('auth_events') IS NOT NULL`).Scan(&present))
+	require.False(t, present, "the populated journal is dropped with its rows")
 	_, err := queries.InsertUser(t.Context(), sqlc.InsertUserParams{ID: randomTestID(t), Username: "abcdef12-3456-4890-abcd-ef1234567890", PasswordHash: "fixture"})
 	var pgErr *pgconn.PgError
 	require.ErrorAs(t, err, &pgErr)
@@ -231,6 +200,7 @@ func TestGrantMigrationFailsClosedOnUUIDShapedUsername(t *testing.T) {
 	pool := testPool(t)
 	previous := embeddedMapFS(t)
 	delete(previous, "004_grants.sql")
+	delete(previous, "005_drop_audit_events.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	// The previous release's pattern admitted a lowercase UUID as a username;
 	// the constraint replacement must refuse to apply while one exists, and
@@ -250,7 +220,7 @@ func TestGrantMigrationFailsClosedOnUUIDShapedUsername(t *testing.T) {
 
 	execSQL(t, pool, `UPDATE users SET username = 'renamed-operator'`)
 	require.NoError(t, Migrate(t.Context(), pool))
-	require.Equal(t, ledger+1, countRows(t, pool, "goose_db_version"))
+	require.Equal(t, ledger+2, countRows(t, pool, "goose_db_version"))
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('grants') IS NOT NULL`).Scan(&present))
 	require.True(t, present)
 }
