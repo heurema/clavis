@@ -8,7 +8,7 @@ Let administrators register external data-source connections with encrypted cred
 
 ### Requirement: Provider registry
 
-The system SHALL define a closed registry of provider types, initially `postgresql` and `victoriametrics`. Each provider SHALL declare its non-secret target settings, its secret fields, its supported authentication methods and a connectivity probe. Creating a connection with an unknown provider SHALL fail with `INVALID_ARGUMENT` and a hint listing the registered providers. The registry SHALL be the only place that knows provider-specific parsing; connection storage, authorization and audit SHALL be provider-neutral.
+The system SHALL define a closed registry of provider types, initially `postgresql` and `victoriametrics`. Each provider SHALL declare its non-secret target settings, its secret fields, its supported authentication methods and a connectivity probe. Creating a connection with an unknown provider SHALL fail with `INVALID_ARGUMENT` and a hint listing the registered providers. The registry SHALL be the only place that knows provider-specific parsing; connection storage and authorization SHALL be provider-neutral.
 
 #### Scenario: Create with a registered provider
 - **WHEN** an administrator creates a connection with provider `postgresql` and a valid target URL
@@ -38,11 +38,11 @@ For `postgresql` the target SHALL be a `postgres://` or `postgresql://` URL carr
 
 #### Scenario: Rename keeps identity
 - **WHEN** an administrator changes a connection's name
-- **THEN** the UUID, credentials, labels and check history are unchanged and audit events continue to reference the UUID
+- **THEN** the UUID, credentials, labels, grants and check history are unchanged
 
 ### Requirement: Encrypted credentials at rest
 
-The server SHALL require `CLAVIS_ENCRYPTION_KEY_FILE`, an absolute path to a protected regular file holding exactly 32 key bytes encoded as 64 hexadecimal characters with at most one terminal newline, read with the same type, size and permission rules as the bootstrap password file. Startup SHALL fail before listening when the setting is absent, unreadable or invalid. Connection secrets SHALL be encrypted with AES-256-GCM using a fresh random 96-bit nonce per write, the connection UUID and key version as associated data, and stored as a versioned envelope. Plaintext secrets SHALL exist in memory only during creation, credential replacement and a connectivity check, and SHALL never be returned by any route, rendered in HTML, written to audit events or logged. A stored envelope that cannot be decrypted SHALL make the dependent operation fail closed with `CREDENTIALS_UNAVAILABLE` without affecting readiness.
+The server SHALL require `CLAVIS_ENCRYPTION_KEY_FILE`, an absolute path to a protected regular file holding exactly 32 key bytes encoded as 64 hexadecimal characters with at most one terminal newline, read with the same type, size and permission rules as the bootstrap password file. Startup SHALL fail before listening when the setting is absent, unreadable or invalid. Connection secrets SHALL be encrypted with AES-256-GCM using a fresh random 96-bit nonce per write, the connection UUID and key version as associated data, and stored as a versioned envelope. Plaintext secrets SHALL exist in memory only during creation, credential replacement and a connectivity check, and SHALL never be returned by any route, rendered in HTML or logged. A stored envelope that cannot be decrypted SHALL make the dependent operation fail closed with `CREDENTIALS_UNAVAILABLE` without affecting readiness.
 
 #### Scenario: Server starts without a key
 - **WHEN** the server starts with no `CLAVIS_ENCRYPTION_KEY_FILE`, a group-readable file, a wrong length or a non-hexadecimal value
@@ -54,28 +54,28 @@ The server SHALL require `CLAVIS_ENCRYPTION_KEY_FILE`, an absolute path to a pro
 
 #### Scenario: Envelope moved between rows or key changed
 - **WHEN** a ciphertext is copied to another connection's row, or the key file is replaced with a different key
-- **THEN** decryption fails, the operation reports `CREDENTIALS_UNAVAILABLE`, an event records the failure and readiness remains unaffected
+- **THEN** decryption fails, the operation reports `CREDENTIALS_UNAVAILABLE` and readiness remains unaffected
 
 #### Scenario: Secret in an internal error
 - **WHEN** a probe or driver error contains a sentinel secret or the target host
-- **THEN** neither responses, events, logs nor CLI output contain them
+- **THEN** neither responses, logs nor CLI output contain them
 
 ### Requirement: Administrator-only connection operations
 
-Creating, updating, replacing credentials, enabling, disabling, deleting and checking connections SHALL require a current administrator session rechecked inside the operation, following the transaction shape, deadline, readiness gate and denial-event rules of user administration. Members SHALL receive `FORBIDDEN` with a denial event and no mutation for those operations. Listing and getting connections SHALL be available to administrators in full and to members in the reduced projection defined by connection-grants. Update SHALL change only the supplied fields. Replacing credentials SHALL clear the last check result. Disabling SHALL be idempotent. Delete SHALL succeed only when the connection is disabled and holds no grants, otherwise fail with `CONNECTION_IN_USE` and a hint naming the blocking condition, including the number of remaining grants. Every mutation SHALL support a dry run that performs validation, authorization and guards inside a transaction that is rolled back, returning the same result shape marked `dryRun: true` and recording no event. Listing SHALL be bounded to 1,000 connections ordered by name with a `truncated` flag, SHALL support label selectors with equality, inequality and existence terms combined with AND, and SHALL record no success event. Getting one connection SHALL likewise record no success event; denied administrative list and get attempts SHALL be recorded as `connections.list` and `connection.get` respectively, and an unknown reference on get SHALL fail with `CONNECTION_NOT_FOUND` without an event.
+Creating, updating, replacing credentials, enabling, disabling, deleting and checking connections SHALL require a current administrator session rechecked inside the operation, following the transaction shape, deadline and readiness gate of user administration. Members SHALL receive `FORBIDDEN` and no mutation for those operations. Listing and getting connections SHALL be available to administrators in full and to members in the reduced projection defined by connection-grants. Update SHALL change only the supplied fields. Replacing credentials SHALL clear the last check result. Disabling SHALL be idempotent. Delete SHALL succeed only when the connection is disabled and holds no grants, otherwise fail with `CONNECTION_IN_USE` and a hint naming the blocking condition, including the number of remaining grants. Every mutation SHALL support a dry run that performs validation, authorization and guards inside a transaction that is rolled back, returning the same result shape marked `dryRun: true`. Listing SHALL be bounded to 1,000 connections ordered by name with a `truncated` flag, SHALL support label selectors with equality, inequality and existence terms combined with AND. An unknown reference on get SHALL fail with `CONNECTION_NOT_FOUND`.
 
 #### Scenario: Update a subset of fields
 - **WHEN** an administrator updates only the statement timeout
-- **THEN** every other field, the credentials and the last check are unchanged and one `connection.update` event is recorded
+- **THEN** every other field, the credentials and the last check are unchanged
 
 #### Scenario: Guarded delete
 - **WHEN** delete targets an enabled connection, or a disabled one that still has grants
 - **THEN** it fails with `CONNECTION_IN_USE`, the hint says to disable it or revoke its remaining grants and states how many remain, and nothing is removed
-- **AND** delete of a disabled, grant-free connection removes the row and records `connection.delete` with the UUID and name
+- **AND** delete of a disabled, grant-free connection removes the row and reports its UUID and name
 
 #### Scenario: Dry run
 - **WHEN** any mutation runs with `--dry-run`
-- **THEN** it returns the outcome it would have had, including denials and guard failures, commits nothing and records no event
+- **THEN** it returns the outcome it would have had, including denials and guard failures, and commits nothing
 
 #### Scenario: Filter by selector
 - **WHEN** an administrator lists with `env=prod,service!=legacy,team`
@@ -83,11 +83,11 @@ Creating, updating, replacing credentials, enabling, disabling, deleting and che
 
 #### Scenario: Member attempts a mutation or a check
 - **WHEN** a member session invokes create, update, credential replacement, enable, disable, delete or check
-- **THEN** it is refused with `FORBIDDEN`, a denial event is recorded and nothing changes
+- **THEN** it is refused with `FORBIDDEN` and nothing changes
 
 ### Requirement: Explicit connectivity check
 
-A check SHALL run only on request, never on creation. It SHALL decrypt the secret in memory, run the provider's probe against the stored target within the five-second operation deadline, and store one outcome of `reachable`, `auth_rejected`, `unreachable` or `credentials_unavailable` with the check time, replacing the previous outcome. For `postgresql` the probe SHALL open one connection and execute `SELECT 1`; for `victoriametrics` it SHALL send one GET to the health endpoint with the configured authentication. The stored and returned result SHALL carry a safe category only, never the source's error text. A check SHALL claim nothing about which data the credentials can access. The check outcome SHALL be recorded as a `connection.check` event with outcome `success` for `reachable` and `check_failed` otherwise.
+A check SHALL run only on request, never on creation. It SHALL decrypt the secret in memory, run the provider's probe against the stored target within the five-second operation deadline, and store one outcome of `reachable`, `auth_rejected`, `unreachable` or `credentials_unavailable` with the check time, replacing the previous outcome. For `postgresql` the probe SHALL open one connection and execute `SELECT 1`; for `victoriametrics` it SHALL send one GET to the health endpoint with the configured authentication. The stored and returned result SHALL carry a safe category only, never the source's error text. A check SHALL claim nothing about which data the credentials can access.
 
 #### Scenario: Reachable source
 - **WHEN** the target accepts the credentials
@@ -103,7 +103,7 @@ A check SHALL run only on request, never on creation. It SHALL decrypt the secre
 
 ### Requirement: JSON connection routes
 
-The server SHALL expose the operations as JSON routes under `/api/admin/connections` for CLI bearer sessions only, following the transport rules of the user-administration routes: bearer-only sessions, configured-origin check, strict bounded JSON bodies, no cookies, no redirects, `Cache-Control: no-store`, adapter-recorded pre-service rejections and service-owned outcomes. The two `GET` routes SHALL accept member sessions and return the reduced projection; every other route SHALL remain administrator-only. Error bodies MAY carry an optional `hint` string alongside `code` and `message`; hints SHALL be application-owned text and never echo submitted values. Secrets SHALL arrive only in request bodies for create and credential replacement and SHALL be bounded like passwords. Dry runs SHALL be requested with a documented query parameter. The listing response SHALL stay under the listing body limit shared with users.
+The server SHALL expose the operations as JSON routes under `/api/admin/connections` for CLI bearer sessions only, following the transport rules of the user-administration routes: bearer-only sessions, configured-origin check, strict bounded JSON bodies, no cookies, no redirects, `Cache-Control: no-store` and application-owned error bodies. The two `GET` routes SHALL accept member sessions and return the reduced projection; every other route SHALL remain administrator-only. Error bodies MAY carry an optional `hint` string alongside `code` and `message`; hints SHALL be application-owned text and never echo submitted values. Secrets SHALL arrive only in request bodies for create and credential replacement and SHALL be bounded like passwords. Dry runs SHALL be requested with a documented query parameter. The listing response SHALL stay under the listing body limit shared with users.
 
 #### Scenario: Create through the API
 - **WHEN** an administrator's bearer request posts a valid connection body

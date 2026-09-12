@@ -145,7 +145,7 @@ Every mutating command SHALL accept `--dry-run`, forwarding it so the server val
 
 #### Scenario: Dry run
 - **WHEN** `connections delete --connection x --dry-run` targets an enabled connection
-- **THEN** the CLI exits 1 with `CONNECTION_IN_USE`, renders the hint, and the server has changed nothing and recorded nothing
+- **THEN** the CLI exits 1 with `CONNECTION_IN_USE`, renders the hint, and the server has changed nothing
 
 #### Scenario: Selector listing as text
 - **WHEN** `connections list --selector env=prod --output text` runs

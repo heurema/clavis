@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Let current administrators manage local user accounts and the administrator role through audited, transactional operations that never lock the installation out or expose secrets.
+Let current administrators manage local user accounts and the administrator role through transactional operations that never lock the installation out or expose secrets.
 
 ## Requirements
 
@@ -31,7 +31,7 @@ Created users SHALL have the `member` role, a random stable UUID, the submitted 
 
 #### Scenario: A member attempts administration
 - **WHEN** a valid session whose current role is `member` invokes any user-administration operation, including listing
-- **THEN** the operation returns a forbidden result, records a denied event and performs no mutation
+- **THEN** the operation returns a forbidden result and performs no mutation
 
 #### Scenario: Role removed before the request
 - **WHEN** an administrator's role is changed to `member` by another administrator before their next administrative request is authorized
@@ -43,7 +43,7 @@ Created users SHALL have the `member` role, a random stable UUID, the submitted 
 
 ### Requirement: Blocking and password reset revoke sessions
 
-Blocking a user SHALL set the account disabled and revoke all of that user's existing browser and CLI sessions in the same transaction. Resetting a password SHALL replace the stored hash and revoke all existing sessions in the same transaction. Unblocking SHALL re-enable the account without restoring revoked sessions. Session issuance, revocation and these mutations SHALL serialize on the target user row so a login committed before the mutation is revoked and a login committed afterward is a new session evaluated against the new state. Blocking or unblocking an already blocked or enabled user SHALL succeed idempotently and still record an event. An administrator SHALL NOT block their own account; such a request SHALL fail with `SELF_TARGET` without mutation. An administrator MAY reset their own password.
+Blocking a user SHALL set the account disabled and revoke all of that user's existing browser and CLI sessions in the same transaction. Resetting a password SHALL replace the stored hash and revoke all existing sessions in the same transaction. Unblocking SHALL re-enable the account without restoring revoked sessions. Session issuance, revocation and these mutations SHALL serialize on the target user row so a login committed before the mutation is revoked and a login committed afterward is a new session evaluated against the new state. Blocking or unblocking an already blocked or enabled user SHALL succeed idempotently. An administrator SHALL NOT block their own account; such a request SHALL fail with `SELF_TARGET` without mutation. An administrator MAY reset their own password.
 
 #### Scenario: Block a signed-in user
 - **WHEN** an administrator blocks a user with active browser and CLI sessions
@@ -58,7 +58,7 @@ Blocking a user SHALL set the account disabled and revoke all of that user's exi
 #### Scenario: Reset a password
 - **WHEN** an administrator resets a user's password with a valid new password
 - **THEN** the old password no longer signs in, the new password does, and all sessions issued before the reset are denied
-- **AND** the hash is derived within the shared hashing concurrency budget and no plaintext or hash enters events, logs or responses
+- **AND** the hash is derived within the shared hashing concurrency budget and no plaintext or hash enters logs or responses
 
 #### Scenario: Administrator resets their own password
 - **WHEN** an administrator resets the password of their own account
@@ -66,11 +66,11 @@ Blocking a user SHALL set the account disabled and revoke all of that user's exi
 
 #### Scenario: Administrator blocks their own account
 - **WHEN** an administrator blocks their own account, even while other enabled administrators exist
-- **THEN** the operation fails with `SELF_TARGET`, records a denied event and performs no mutation
+- **THEN** the operation fails with `SELF_TARGET` and performs no mutation
 
 ### Requirement: Explicit administrator role assignment with a lockout guard
 
-Setting a role to `admin` SHALL grant administrator authority for that user's subsequent requests, including existing sessions, because authority is read from the current account state. Setting a role to `member` SHALL remove it likewise. Administrators are peers: any current administrator MAY block, unblock, reset or change the role of any other administrator, as in the GitLab group owner model. Two guards apply. An administrator SHALL NOT demote their own account; such a request SHALL fail with `SELF_TARGET`. The system SHALL refuse any block or demotion that would leave zero enabled administrators, returning `LAST_ADMINISTRATOR` without mutation; that check SHALL be serialized across concurrent administrators so two simultaneous operations cannot both pass it. The actor's current role SHALL be rechecked under the same serialization before either guard runs. Setting a role the user already has SHALL succeed idempotently and record an event.
+Setting a role to `admin` SHALL grant administrator authority for that user's subsequent requests, including existing sessions, because authority is read from the current account state. Setting a role to `member` SHALL remove it likewise. Administrators are peers: any current administrator MAY block, unblock, reset or change the role of any other administrator, as in the GitLab group owner model. Two guards apply. An administrator SHALL NOT demote their own account; such a request SHALL fail with `SELF_TARGET`. The system SHALL refuse any block or demotion that would leave zero enabled administrators, returning `LAST_ADMINISTRATOR` without mutation; that check SHALL be serialized across concurrent administrators so two simultaneous operations cannot both pass it. The actor's current role SHALL be rechecked under the same serialization before either guard runs. Setting a role the user already has SHALL succeed idempotently.
 
 #### Scenario: Promote a member
 - **WHEN** an administrator sets a member's role to `admin`
@@ -87,16 +87,16 @@ Setting a role to `admin` SHALL grant administrator authority for that user's su
 
 #### Scenario: Self-demotion
 - **WHEN** an administrator sets their own role to `member`
-- **THEN** the operation fails with `SELF_TARGET`, records a denied event and the role is unchanged
+- **THEN** the operation fails with `SELF_TARGET` and the role is unchanged
 
 #### Scenario: Concurrent mutual demotion or block
 - **WHEN** the only two enabled administrators demote or block each other at the same time
 - **THEN** exactly one operation succeeds and exactly one enabled administrator remains
-- **AND** the other request is denied because its actor's authority was re-read after the first committed: `FORBIDDEN` after a demotion, `UNAUTHENTICATED` after a block; no `LAST_ADMINISTRATOR` outcome is recorded
+- **AND** the other request is denied because its actor's authority was re-read after the first committed: `FORBIDDEN` after a demotion, `UNAUTHENTICATED` after a block; `LAST_ADMINISTRATOR` is not reached
 
 ### Requirement: Bounded user listing
 
-Listing SHALL return each user's UUID, username, role, disabled state and creation time, ordered by username, without password hashes or session data. The list SHALL be bounded to a documented maximum of 1,000 users and SHALL report a `truncated` flag when more exist rather than presenting a partial list as complete. Listing SHALL NOT mutate state or record a success event; denied attempts SHALL be recorded.
+Listing SHALL return each user's UUID, username, role, disabled state and creation time, ordered by username, without password hashes or session data. The list SHALL be bounded to a documented maximum of 1,000 users and SHALL report a `truncated` flag when more exist rather than presenting a partial list as complete. Listing SHALL NOT mutate state.
 
 #### Scenario: List users
 - **WHEN** a current administrator lists users
@@ -108,7 +108,7 @@ Listing SHALL return each user's UUID, username, role, disabled state and creati
 
 ### Requirement: JSON administration transport
 
-The server SHALL expose the operations as JSON routes under `/api/admin/users` for CLI bearer sessions only, using the route, body and status table in the design. They SHALL follow the existing JSON authentication transport rules: no cookie authentication, configured-origin checks, 8 KiB bounded credential bodies, strict content type, rejection of undocumented fields or trailing data, no redirects, `Cache-Control: no-store` and application-owned error bodies. Mutations SHALL be `POST`; listing SHALL be `GET` and SHALL NOT mutate. Rejections before service invocation SHALL be recorded through the existing adapter event boundary.
+The server SHALL expose the operations as JSON routes under `/api/admin/users` for CLI bearer sessions only, using the route, body and status table in the design. They SHALL follow the existing JSON authentication transport rules: no cookie authentication, configured-origin checks, 8 KiB bounded credential bodies, strict content type, rejection of undocumented fields or trailing data, no redirects, `Cache-Control: no-store` and application-owned error bodies. Mutations SHALL be `POST`; listing SHALL be `GET` and SHALL NOT mutate.
 
 #### Scenario: Create through the API
 - **WHEN** an administrator's CLI bearer request posts a valid create body

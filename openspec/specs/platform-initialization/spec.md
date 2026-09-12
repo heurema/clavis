@@ -29,14 +29,14 @@ The server SHALL embed ordered, checksummed Goose SQL migrations and apply them 
 
 ### Requirement: sqlc-backed application persistence
 
-Application SQL for users, sessions, installation, audit events, readiness schema checks and login limits SHALL live in named SQL files. The pinned sqlc tool SHALL generate typed native pgx v5 methods using the Goose SQL migrations as schema input. Handwritten persistence code SHALL use those methods with the existing transaction/context boundaries, not inline application SQL, generic raw-query helpers or manual application-row scanning.
+Application SQL for users, sessions, installation, connections, grants, readiness schema checks and login limits SHALL live in named SQL files. The pinned sqlc tool SHALL generate typed native pgx v5 methods using the Goose SQL migrations as schema input. Handwritten persistence code SHALL use those methods with the existing transaction/context boundaries, not inline application SQL, generic raw-query helpers or manual application-row scanning.
 
 Goose's narrowly scoped ledger/checksum/advisory-lock adapter SHALL remain separate from application queries and SHALL NOT access application tables or provide an unrestricted query interface. Test fixture SQL SHALL remain isolated from production data-access paths.
 
 #### Scenario: Bootstrap and authentication share generated transaction queries
-- **WHEN** bootstrap, authentication, revocation, audit or throttle persistence runs
+- **WHEN** bootstrap, authentication, revocation or throttle persistence runs
 - **THEN** application queries execute through sqlc-generated methods bound to the intended pgx transaction
-- **AND** rollback, deadlines, authorization and atomic audit behavior remain intact
+- **AND** rollback, deadlines and authorization behavior remain intact
 
 #### Scenario: Handwritten application queries are reintroduced
 - **WHEN** maintained application persistence code adds a direct query/scan path outside generated code
@@ -61,7 +61,7 @@ The repository SHALL pin sqlc and commit generated Go with its SQL/configuration
 
 ### Requirement: Atomic unattended administrator bootstrap
 
-On an uninitialized installation, normal server startup SHALL accept `CLAVIS_BOOTSTRAP_USERNAME` and `CLAVIS_BOOTSTRAP_PASSWORD_FILE` as deployment inputs. It SHALL create one personal administrator account, a safe creation event and a durable initialization marker in one transaction after validating both inputs. Initialization SHALL require neither an interactive prompt, a separate bootstrap command nor an HTTP administrator-creation endpoint. Existing user rows without a valid installation marker SHALL cause a safe failure rather than automatic adoption.
+On an uninitialized installation, normal server startup SHALL accept `CLAVIS_BOOTSTRAP_USERNAME` and `CLAVIS_BOOTSTRAP_PASSWORD_FILE` as deployment inputs. It SHALL create one personal administrator account and a durable initialization marker in one transaction after validating both inputs. Invalid inputs or unexpected users SHALL fail safely without writing anything. Initialization SHALL require neither an interactive prompt, a separate bootstrap command nor an HTTP administrator-creation endpoint. Existing user rows without a valid installation marker SHALL cause a safe failure rather than automatic adoption.
 
 #### Scenario: Automation supplies initial credentials
 - **WHEN** automation starts a fresh installation with a valid username and password file
@@ -75,7 +75,7 @@ On an uninitialized installation, normal server startup SHALL accept `CLAVIS_BOO
 
 #### Scenario: Bootstrap transaction is interrupted
 - **WHEN** the process or database fails before bootstrap commits
-- **THEN** no partial administrator/marker/event combination is committed
+- **THEN** no partial administrator/marker combination is committed
 - **AND** a subsequent attempt can complete initialization once
 
 #### Scenario: Unexpected users exist before initialization
