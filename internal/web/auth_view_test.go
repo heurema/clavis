@@ -10,6 +10,7 @@ import (
 	"github.com/a-h/templ"
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/platform"
+	"github.com/heurema/clavis/internal/web/ui/badge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,7 +80,7 @@ func adminBody(t *testing.T, model AdminModel) string {
 	assert.NotContains(t, body, "hx-")
 	assert.Equal(t, 1, strings.Count(body, "<script"), "only the shared appearance script belongs on this page")
 	assert.Contains(t, body, `<script src="/assets/appearance.js">`)
-	assert.Contains(t, body, "Manage users through the CLI")
+	assert.Contains(t, body, "Manage users and connections through the CLI")
 	assert.NotContains(t, body, "User and connection management are not available")
 	return body
 }
@@ -164,4 +165,108 @@ func TestInitializationFragments(t *testing.T) {
 	require.NoError(t, Render(response, httptest.NewRequest("GET", "/", nil), 503, Readiness(platform.Readiness{State: "SENTINEL_SECRET"})))
 	assert.NotContains(t, response.Body.String(), "SENTINEL_SECRET")
 	assert.Contains(t, response.Body.String(), "Database unavailable")
+}
+
+// sentinelTarget holds everything a connection record carries that the page
+// must never display: hosts, ports, roles, databases and URLs.
+var sentinelTarget = map[string]string{
+	"host":     "sentinel-host.invalid",
+	"port":     "5432",
+	"user":     "sentinel-role",
+	"database": "sentinel-db",
+	"url":      "postgres://sentinel-role@sentinel-host.invalid:5432/sentinel-db",
+}
+
+func connectionFixtures() []auth.Connection {
+	return []auth.Connection{
+		{
+			ID: "12345678-1234-4234-8234-1234567890c1", Name: "warehouse-primary", Title: "Warehouse primary",
+			Description: "sentinel-description", Scope: "sentinel-scope",
+			Provider: auth.ProviderPostgreSQL, Target: sentinelTarget,
+			Labels: map[string]string{"zone": "eu-west", "env": "prod"}, Enabled: true,
+			LastCheck: &auth.CheckResult{
+				Outcome:   auth.CheckReachable,
+				CheckedAt: time.Date(2026, 4, 5, 8, 9, 10, 0, time.FixedZone("ahead", 2*60*60)),
+			},
+		},
+		{
+			ID: "12345678-1234-4234-8234-1234567890c2", Name: "metrics-eu", Title: "Metrics EU",
+			Provider: auth.ProviderVictoriaMetrics, Target: sentinelTarget, Enabled: false,
+			LastCheck: &auth.CheckResult{
+				Outcome: auth.CheckAuthRejected, CheckedAt: time.Date(2026, 5, 6, 7, 8, 9, 0, time.UTC),
+			},
+		},
+		{
+			ID: "12345678-1234-4234-8234-1234567890c3", Name: "metrics-us", Title: "Metrics US",
+			Provider: auth.ProviderVictoriaMetrics, Target: sentinelTarget,
+			Labels: map[string]string{"env": "staging"}, Enabled: true,
+		},
+	}
+}
+
+func TestAdminConnectionListRendering(t *testing.T) {
+	identity := auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}
+	body := adminBody(t, AdminModel{
+		User:        identity,
+		Users:       []auth.UserRecord{{Username: "personal-admin", Role: auth.Admin}},
+		Connections: connectionFixtures(),
+	})
+	assert.Contains(t, body, ">Connections<")
+	assert.Less(t, strings.Index(body, ">Users<"), strings.Index(body, ">Connections<"), "connections render below the users table")
+	assert.Equal(t, 2, strings.Count(body, "overflow-x-auto"), "both tables scroll instead of widening the page")
+	for _, fragment := range []string{
+		">Name<", ">Title<", ">Provider<", ">Labels<", ">Status<", ">Last check<",
+		"warehouse-primary", "Warehouse primary", "metrics-eu", "Metrics EU", "metrics-us", "Metrics US",
+		">postgresql<", ">victoriametrics<", ">env=prod<", ">zone=eu-west<", ">env=staging<",
+		">Enabled<", ">Disabled<", ">reachable<", ">auth_rejected<", ">Unchecked<",
+		"2026-04-05 06:09 UTC", "2026-05-06 07:08 UTC",
+	} {
+		assert.Contains(t, body, fragment)
+	}
+	assert.Less(t, strings.Index(body, ">env=prod<"), strings.Index(body, ">zone=eu-west<"), "labels render in a stable order")
+	assert.Equal(t, []string{"env=prod", "zone=eu-west"}, labelPairs(map[string]string{"zone": "eu-west", "env": "prod"}))
+	assert.Empty(t, labelPairs(nil))
+	// Nothing a connection knows about its target, its credentials or its
+	// identifiers may reach the page.
+	for _, forbidden := range []string{
+		"postgres://", "sentinel-host.invalid", "sentinel-role", "sentinel-db", "5432",
+		"secret", "sentinel-description", "sentinel-scope", "1234567890c1",
+	} {
+		assert.NotContains(t, body, forbidden)
+	}
+	assert.NotContains(t, body, `href="/admin/connections`)
+	assert.NotContains(t, body, "the list is limited")
+}
+
+func TestAdminConnectionListEmptyTruncatedAndEscaped(t *testing.T) {
+	identity := auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}
+
+	empty := adminBody(t, AdminModel{User: identity})
+	assert.Contains(t, empty, "No connections are registered.")
+	assert.NotContains(t, empty, "<table")
+
+	truncated := adminBody(t, AdminModel{User: identity, Connections: connectionFixtures(), ConnectionsTruncated: true})
+	assert.Contains(t, truncated, "Showing the first 1000 connections; the list is limited.")
+	assert.Equal(t, "Showing the first "+strconv.Itoa(auth.MaxConnectionListing)+" connections; the list is limited.", connectionsTruncationNotice())
+
+	escaped := adminBody(t, AdminModel{User: identity, Connections: []auth.Connection{{
+		Name: "hostile", Title: `<script>alert("title")</script>`, Provider: auth.ProviderPostgreSQL,
+		Labels:    map[string]string{"env": `prod"><script>alert(1)</script>`},
+		LastCheck: &auth.CheckResult{Outcome: auth.CheckOutcome("<unreachable>"), CheckedAt: time.Unix(0, 0)},
+	}}})
+
+	assert.NotContains(t, escaped, "<script>alert")
+	assert.Contains(t, escaped, "&lt;script&gt;alert(&#34;title&#34;)&lt;/script&gt;")
+	assert.Contains(t, escaped, "&lt;script&gt;alert(1)&lt;/script&gt;")
+	assert.Contains(t, escaped, "&lt;unreachable&gt;")
+	assert.Contains(t, escaped, "1970-01-01 00:00 UTC")
+
+	assert.Equal(t, "Enabled", connectionStatusLabel(true))
+	assert.Equal(t, "Disabled", connectionStatusLabel(false))
+	assert.Equal(t, badge.VariantSecondary, connectionStatusVariant(true))
+	assert.Equal(t, badge.VariantDestructive, connectionStatusVariant(false))
+	assert.Equal(t, badge.VariantSecondary, checkOutcomeVariant(auth.CheckReachable))
+	for _, outcome := range []auth.CheckOutcome{auth.CheckAuthRejected, auth.CheckUnreachable, auth.CheckCredentialsUnavailable} {
+		assert.Equal(t, badge.VariantDestructive, checkOutcomeVariant(outcome))
+	}
 }

@@ -11,14 +11,26 @@ import (
 )
 
 func TestLoad(t *testing.T) {
-	base := map[string]string{"CLAVIS_DATABASE_URL": "postgres://local:secret@127.0.0.1:5432/clavis"}
+	base := map[string]string{"CLAVIS_DATABASE_URL": "postgres://local:secret@127.0.0.1:5432/clavis", "CLAVIS_ENCRYPTION_KEY_FILE": "/private/secret-key"}
 	cfg, err := Load(base)
+	require.NoError(t, err)
+	assert.Equal(t, "/private/secret-key", cfg.EncryptionKeyFile)
+	assert.Nil(t, cfg.Keys, "Load validates the setting; the entry point loads the key")
+	// The key file is required and must be absolute; Load never opens it.
+	for _, tc := range []struct{ value, category string }{{"", "REQUIRED"}, {"relative/secret-key", "INVALID_PATH"}} {
+		_, err := Load(map[string]string{"CLAVIS_DATABASE_URL": base["CLAVIS_DATABASE_URL"], "CLAVIS_ENCRYPTION_KEY_FILE": tc.value})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "CLAVIS_ENCRYPTION_KEY_FILE")
+		assert.Contains(t, err.Error(), tc.category)
+		assert.NotContains(t, err.Error(), "secret")
+	}
+	cfg, err = Load(base)
 	require.NoError(t, err)
 	assert.Equal(t, "127.0.0.1:8080", cfg.HTTPAddr)
 	assert.Equal(t, 2*time.Second, cfg.DBCheckTimeout)
 	assert.Equal(t, 10*time.Second, cfg.ShutdownTimeout)
 	assert.Equal(t, slog.LevelInfo, cfg.Level())
-	_, err = Load(map[string]string{"CLAVIS_DATABASE_URL": "postgresql://local:secret@127.0.0.1/clavis", "CLAVIS_HTTP_ADDR": "127.0.0.1:65535"})
+	_, err = Load(map[string]string{"CLAVIS_DATABASE_URL": "postgresql://local:secret@127.0.0.1/clavis", "CLAVIS_HTTP_ADDR": "127.0.0.1:65535", "CLAVIS_ENCRYPTION_KEY_FILE": "/private/secret-key"})
 	require.NoError(t, err, "postgresql URLs and the highest valid TCP port are accepted")
 	for _, tc := range []struct{ field, value, category string }{
 		{"CLAVIS_DATABASE_URL", "", "REQUIRED"},
@@ -40,7 +52,7 @@ func TestLoad(t *testing.T) {
 		{"CLAVIS_LOG_LEVEL", "secret", "INVALID_LEVEL"},
 	} {
 		t.Run(tc.field+"/"+tc.value, func(t *testing.T) {
-			input := map[string]string{"CLAVIS_DATABASE_URL": base["CLAVIS_DATABASE_URL"], tc.field: tc.value}
+			input := map[string]string{"CLAVIS_DATABASE_URL": base["CLAVIS_DATABASE_URL"], "CLAVIS_ENCRYPTION_KEY_FILE": base["CLAVIS_ENCRYPTION_KEY_FILE"], tc.field: tc.value}
 			_, err := Load(input)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.field)
@@ -51,7 +63,7 @@ func TestLoad(t *testing.T) {
 	_, err = Load(map[string]string{})
 	require.ErrorContains(t, err, "CLAVIS_DATABASE_URL")
 	for level, expected := range map[string]slog.Level{"debug": slog.LevelDebug, "info": slog.LevelInfo, "warn": slog.LevelWarn, "error": slog.LevelError} {
-		input := map[string]string{"CLAVIS_DATABASE_URL": base["CLAVIS_DATABASE_URL"], "CLAVIS_LOG_LEVEL": level, "CLAVIS_HTTP_ADDR": "127.0.0.1:0"}
+		input := map[string]string{"CLAVIS_DATABASE_URL": base["CLAVIS_DATABASE_URL"], "CLAVIS_ENCRYPTION_KEY_FILE": base["CLAVIS_ENCRYPTION_KEY_FILE"], "CLAVIS_LOG_LEVEL": level, "CLAVIS_HTTP_ADDR": "127.0.0.1:0"}
 		cfg, err := Load(input)
 		require.NoError(t, err)
 		assert.Equal(t, expected, cfg.Level())
@@ -60,6 +72,7 @@ func TestLoad(t *testing.T) {
 
 func TestAuthenticationConfigurationAndLazyBootstrap(t *testing.T) {
 	base := map[string]string{"CLAVIS_DATABASE_URL": "postgres://local@127.0.0.1/clavis",
+		"CLAVIS_ENCRYPTION_KEY_FILE":     "/private/secret-key",
 		"CLAVIS_BOOTSTRAP_USERNAME":      "OBSOLETE INVALID USER",
 		"CLAVIS_BOOTSTRAP_PASSWORD_FILE": "/obsolete/unreadable"}
 	cfg, err := Load(base)
@@ -137,9 +150,10 @@ func TestPublicOriginConfiguration(t *testing.T) {
 	} {
 		t.Run(tc.address+"/"+tc.publicURL, func(t *testing.T) {
 			input := map[string]string{
-				"CLAVIS_DATABASE_URL": "postgres://local@127.0.0.1/clavis",
-				"CLAVIS_HTTP_ADDR":    tc.address,
-				"CLAVIS_PUBLIC_URL":   tc.publicURL,
+				"CLAVIS_DATABASE_URL":        "postgres://local@127.0.0.1/clavis",
+				"CLAVIS_ENCRYPTION_KEY_FILE": "/private/secret-key",
+				"CLAVIS_HTTP_ADDR":           tc.address,
+				"CLAVIS_PUBLIC_URL":          tc.publicURL,
 			}
 			cfg, err := Load(input)
 			if tc.code != "" {
@@ -161,8 +175,9 @@ func TestEphemeralLoopbackOriginAfterBind(t *testing.T) {
 	for _, address := range []string{"127.0.0.1:0", "[::1]:0", "[::ffff:127.0.0.1]:0"} {
 		t.Run(address, func(t *testing.T) {
 			cfg, err := Load(map[string]string{
-				"CLAVIS_DATABASE_URL": "postgres://local@127.0.0.1/clavis",
-				"CLAVIS_HTTP_ADDR":    address,
+				"CLAVIS_DATABASE_URL":        "postgres://local@127.0.0.1/clavis",
+				"CLAVIS_ENCRYPTION_KEY_FILE": "/private/secret-key",
+				"CLAVIS_HTTP_ADDR":           address,
 			})
 			require.NoError(t, err, "port zero must be accepted before binding")
 			_, err = cfg.ResolvePublicOrigin(address)

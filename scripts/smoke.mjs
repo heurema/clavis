@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs"
+import { createServer as createHTTPServer } from "node:http"
 import { createConnection, createServer } from "node:net"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
@@ -232,6 +233,12 @@ try {
   const password = randomBytes(32).toString("hex")
   secrets.add(password)
   writeFileSync(passwordFile, password, { mode: 0o600 })
+  // Connection credentials are encrypted under this key; it is a private
+  // input like the password file and is removed during cleanup.
+  const keyFile = join(privateDirectory, "encryption-key")
+  writeFileSync(keyFile, randomBytes(32).toString("hex") + "\n", {
+    mode: 0o600,
+  })
   const homes = new Map()
   function clientEnv(name) {
     if (!homes.has(name)) {
@@ -309,6 +316,7 @@ try {
     CLAVIS_LOG_LEVEL: "info",
     CLAVIS_BOOTSTRAP_USERNAME: "smoke-admin",
     CLAVIS_BOOTSTRAP_PASSWORD_FILE: passwordFile,
+    CLAVIS_ENCRYPTION_KEY_FILE: keyFile,
   }
   summary.origin = apiURL
   function startAPI(overrides = {}) {
@@ -587,6 +595,309 @@ try {
   summary.userAdministration = "passed"
   console.log(
     "[smoke] Real CLI user creation, listing, blocking, password reset, role changes and self-protection passed",
+  )
+
+  // Connections are registered through the product CLI with encrypted secrets
+  // and probed against the smoke database itself and a local VictoriaMetrics
+  // health stub. Only event counts come from fixture SQL.
+  const databasePassword = "clavis-local-only"
+  secrets.add(databasePassword)
+  const databasePasswordFile = join(privateDirectory, "database-password")
+  writeFileSync(databasePasswordFile, databasePassword + "\n", { mode: 0o600 })
+  const databaseURL = (port) =>
+    `postgres://clavis@127.0.0.1:${port}/clavis?sslmode=disable`
+  const registered = await cli("admin-one", [
+    "connections",
+    "create",
+    "--name",
+    "smoke-postgres",
+    "--provider",
+    "postgresql",
+    "--url",
+    databaseURL(env.CLAVIS_DB_PORT),
+    "--label",
+    "env=smoke",
+    "--label",
+    "service=platform",
+    "--title",
+    "Smoke database",
+    "--password-file",
+    databasePasswordFile,
+  ])
+  const pgConnection = registered.data
+  assert.equal(pgConnection.name, "smoke-postgres")
+  assert.equal(pgConnection.enabled, true)
+  assert.equal(pgConnection.lastCheck, null)
+  assert(
+    !JSON.stringify(registered).includes("envelope"),
+    "no ciphertext leaves the server",
+  )
+  const check = async (name, expected, code = 0) => {
+    const result = await cli(
+      "admin-one",
+      ["connections", "check", "--connection", name],
+      code,
+    )
+    if (code === 0) assert.equal(result.data.check.outcome, expected, name)
+    return result
+  }
+  await check("smoke-postgres", "reachable")
+  await cli(
+    "admin-one",
+    [
+      "connections",
+      "set-credentials",
+      "--connection",
+      pgConnection.id,
+      "--password-stdin",
+    ],
+    0,
+    "wrong-password-value\n",
+  )
+  assert.equal(
+    (
+      await cli("admin-one", [
+        "connections",
+        "get",
+        "--connection",
+        "smoke-postgres",
+      ])
+    ).data.lastCheck,
+    null,
+    "replacing credentials clears the last check",
+  )
+  await check("smoke-postgres", "auth_rejected")
+  await cli("admin-one", [
+    "connections",
+    "set-credentials",
+    "--connection",
+    "smoke-postgres",
+    "--password-file",
+    databasePasswordFile,
+  ])
+  const closedPort = await freePort()
+  await cli("admin-one", [
+    "connections",
+    "update",
+    "--connection",
+    "smoke-postgres",
+    "--url",
+    databaseURL(closedPort),
+  ])
+  await check("smoke-postgres", "unreachable")
+  const updated = await cli("admin-one", [
+    "connections",
+    "update",
+    "--connection",
+    "smoke-postgres",
+    "--url",
+    databaseURL(env.CLAVIS_DB_PORT),
+    "--statement-timeout",
+    "45s",
+  ])
+  assert.equal(updated.data.connection.statementTimeoutMs, 45000)
+  assert.equal(updated.data.connection.id, pgConnection.id)
+  await check("smoke-postgres", "reachable")
+
+  const metricsToken = randomBytes(16).toString("hex")
+  secrets.add(metricsToken)
+  const metricsPort = await freePort()
+  const metrics = createHTTPServer((request, response) => {
+    const authorized =
+      request.url === "/health" &&
+      request.headers.authorization === `Bearer ${metricsToken}`
+    response.writeHead(authorized ? 200 : 401, { "content-type": "text/plain" })
+    response.end(authorized ? "OK" : "unauthorized")
+  })
+  await new Promise((resolve) =>
+    metrics.listen(metricsPort, "127.0.0.1", resolve),
+  )
+  metrics.unref()
+  await cli(
+    "admin-one",
+    [
+      "connections",
+      "create",
+      "--name",
+      "smoke-metrics",
+      "--provider",
+      "victoriametrics",
+      "--url",
+      `http://127.0.0.1:${metricsPort}`,
+      "--auth",
+      "bearer",
+      "--label",
+      "env=smoke",
+      "--password-stdin",
+    ],
+    0,
+    metricsToken + "\n",
+  )
+  await check("smoke-metrics", "reachable")
+  await cli(
+    "admin-one",
+    [
+      "connections",
+      "set-credentials",
+      "--connection",
+      "smoke-metrics",
+      "--password-stdin",
+    ],
+    0,
+    "not-the-token\n",
+  )
+  await check("smoke-metrics", "auth_rejected")
+  metrics.close()
+
+  const selected = await cli("admin-one", [
+    "connections",
+    "list",
+    "--selector",
+    "env=smoke,service",
+  ])
+  assert.deepEqual(
+    selected.data.connections.map((connection) => connection.name),
+    ["smoke-postgres"],
+  )
+  assert.equal(selected.data.truncated, false)
+  const everything = await cli("admin-one", ["connections", "list"])
+  assert.deepEqual(
+    everything.data.connections.map((connection) => connection.name),
+    ["smoke-metrics", "smoke-postgres"],
+  )
+  assert.equal(
+    (await cli("member", ["connections", "list"], 1)).error.code,
+    "FORBIDDEN",
+  )
+  const guarded = await cli(
+    "admin-one",
+    ["connections", "delete", "--connection", "smoke-metrics", "--dry-run"],
+    1,
+  )
+  assert.equal(guarded.error.code, "CONNECTION_IN_USE")
+  assert(guarded.error.hint, "guard failures carry a hint")
+  await cli("admin-one", [
+    "connections",
+    "disable",
+    "--connection",
+    "smoke-metrics",
+  ])
+  const rehearsal = await cli("admin-one", [
+    "connections",
+    "delete",
+    "--connection",
+    "smoke-metrics",
+    "--dry-run",
+  ])
+  assert.equal(rehearsal.data.dryRun, true)
+  assert.equal(rehearsal.data.deleted, true)
+  assert.equal(
+    (
+      await cli("admin-one", [
+        "connections",
+        "get",
+        "--connection",
+        "smoke-metrics",
+      ])
+    ).data.enabled,
+    false,
+    "a dry run changes nothing",
+  )
+  assert.equal(
+    (
+      await cli("admin-one", [
+        "connections",
+        "delete",
+        "--connection",
+        "smoke-metrics",
+      ])
+    ).data.deleted,
+    true,
+  )
+  assert.equal(
+    (
+      await cli(
+        "admin-one",
+        ["connections", "get", "--connection", "smoke-metrics"],
+        1,
+      )
+    ).error.code,
+    "CONNECTION_NOT_FOUND",
+  )
+  const connectionsText = await execute(
+    join(root, "bin/clavis"),
+    ["connections", "list", "--output", "text", "--server", apiURL],
+    "auth-admin-one-connections-text",
+    { env: clientEnv("admin-one") },
+  )
+  assert(
+    connectionsText.includes(
+      `${pgConnection.id} smoke-postgres postgresql enabled reachable`,
+    ),
+  )
+  for (const [filter, expected] of [
+    ["action='connection.create' AND outcome='success'", "2"],
+    ["action='connection.check' AND outcome='success'", "3"],
+    ["action='connection.check' AND outcome='check_failed'", "3"],
+    ["action='connection.set_credentials' AND outcome='success'", "3"],
+    ["action='connection.update' AND outcome='success'", "2"],
+    ["action='connection.disable' AND outcome='success'", "1"],
+    ["action='connection.delete' AND outcome='success'", "1"],
+    ["action='connection.delete' AND outcome='connection_in_use'", "0"],
+    ["action='connections.list' AND outcome='forbidden'", "1"],
+    ["action='connections.list' AND outcome='success'", "0"],
+  ])
+    assert.equal(
+      await sql(
+        `SELECT count(*) FROM auth_events WHERE ${filter}`,
+        `events-${filter.replace(/[^a-z_]+/g, "-")}`,
+      ),
+      expected,
+      filter,
+    )
+  assert.equal(
+    await sql(
+      "SELECT count(*) FROM connections WHERE secret_envelope NOT LIKE 'v1:%'",
+      "envelopes-versioned",
+    ),
+    "0",
+  )
+
+  // The key is a required startup input: no key fails closed before listening,
+  // a different key makes stored credentials unusable, the original key restores them.
+  await stop(api)
+  const withoutKey = startAPI({ CLAVIS_ENCRYPTION_KEY_FILE: "" })
+  const missingKey = await withoutKey.finished
+  assert.notEqual(missingKey.code, 0)
+  assert(missingKey.output.includes("CLAVIS_ENCRYPTION_KEY_FILE"))
+  assert(!missingKey.output.includes("server_started"))
+  const otherKeyFile = join(privateDirectory, "other-encryption-key")
+  writeFileSync(otherKeyFile, randomBytes(32).toString("hex") + "\n", {
+    mode: 0o600,
+  })
+  api = startAPI({ CLAVIS_ENCRYPTION_KEY_FILE: otherKeyFile })
+  await waitHTTP(`${apiURL}/health/ready`, 200)
+  const undecryptable = await check("smoke-postgres", "", 1)
+  assert.equal(undecryptable.error.code, "CREDENTIALS_UNAVAILABLE")
+  assert(undecryptable.error.hint)
+  assert.equal(
+    (
+      await cli("admin-one", [
+        "connections",
+        "get",
+        "--connection",
+        "smoke-postgres",
+      ])
+    ).data.lastCheck.outcome,
+    "credentials_unavailable",
+  )
+  await stop(api)
+  api = startAPI()
+  await waitHTTP(`${apiURL}/health/ready`, 200)
+  await check("smoke-postgres", "reachable")
+  summary.connectionManagement = "passed"
+  console.log(
+    "[smoke] Real CLI connection registration, probes, updates, dry runs, deletion and key handling passed",
   )
 
   await sql(

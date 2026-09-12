@@ -42,8 +42,8 @@ func HandlerWithReadiness(checkTimeout time.Duration, checker platform.Checker, 
 }
 
 // HandlerWithAuth is the explicit runtime/test composition boundary.
-func HandlerWithAuth(checkTimeout time.Duration, checker platform.Checker, service auth.Service, recorder auth.EventRecorder, admin auth.Administration, origin string, views AuthViews, logger *slog.Logger) (http.Handler, error) {
-	if service == nil || recorder == nil || admin == nil || checker == nil {
+func HandlerWithAuth(checkTimeout time.Duration, checker platform.Checker, service auth.Service, recorder auth.EventRecorder, admin auth.Administration, connections auth.Connections, origin string, views AuthViews, logger *slog.Logger) (http.Handler, error) {
+	if service == nil || recorder == nil || admin == nil || connections == nil || checker == nil {
 		return nil, &auth.Error{Code: auth.InvalidArgument}
 	}
 	adapter, err := newAuthHTTP(origin, service, views)
@@ -52,6 +52,7 @@ func HandlerWithAuth(checkTimeout time.Duration, checker platform.Checker, servi
 	}
 	adapter.recorder = recorder
 	adapter.admin = admin
+	adapter.connections = connections
 	return handler(checkTimeout, checker, logger, adapter), nil
 }
 
@@ -136,13 +137,16 @@ func Serve(ctx context.Context, listener net.Listener, cfg config.Config, databa
 	var httpHandler http.Handler
 	if pool, ok := database.(*pgxpool.Pool); ok {
 		initializer := store.NewInitializer(pool, cfg.BootstrapUsername, cfg.BootstrapPasswordFile)
-		service, err := store.NewLocalAuth(pool, initializer, cfg.SessionTTL)
+		local, err := store.NewLocalAuth(pool, initializer, cfg.SessionTTL)
 		if err != nil {
 			_ = listener.Close()
 			database.Close()
 			return err
 		}
-		httpHandler, err = HandlerWithAuth(cfg.DBCheckTimeout, initializer, service, service, service, origin, AuthViews{}, logger)
+		// The keyring is loaded before the listener exists; connection
+		// operations fail closed while it is absent.
+		service := local.WithKeyring(cfg.Keys)
+		httpHandler, err = HandlerWithAuth(cfg.DBCheckTimeout, initializer, service, service, service, service, origin, AuthViews{}, logger)
 		if err != nil {
 			_ = listener.Close()
 			database.Close()

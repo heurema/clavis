@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/heurema/clavis/internal/auth"
+	"github.com/heurema/clavis/internal/secrets"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -25,6 +27,13 @@ type Config struct {
 	BootstrapPasswordFile string        `env:"CLAVIS_BOOTSTRAP_PASSWORD_FILE"`
 	PublicURL             string        `env:"CLAVIS_PUBLIC_URL"`
 	SessionTTL            time.Duration `env:"CLAVIS_SESSION_TTL" envDefault:"8h"`
+	// EncryptionKeyFile is required: connection credentials are encrypted at
+	// rest under this key. The file is read once at startup by the server
+	// entry point; Load only validates the setting.
+	EncryptionKeyFile string `env:"CLAVIS_ENCRYPTION_KEY_FILE"`
+	// Keys is the loaded keyring, set by the server entry point after Load.
+	// It is process state, not an environment value.
+	Keys *secrets.Keyring `env:"-"`
 }
 
 // Error contains only application-owned field names and categories, never input.
@@ -36,6 +45,12 @@ func Load(environment map[string]string) (Config, error) {
 	var cfg Config
 	if environment["CLAVIS_DATABASE_URL"] == "" {
 		return cfg, &Error{"CLAVIS_DATABASE_URL", "REQUIRED"}
+	}
+	if environment["CLAVIS_ENCRYPTION_KEY_FILE"] == "" {
+		return cfg, &Error{"CLAVIS_ENCRYPTION_KEY_FILE", "REQUIRED"}
+	}
+	if !filepath.IsAbs(environment["CLAVIS_ENCRYPTION_KEY_FILE"]) {
+		return cfg, &Error{"CLAVIS_ENCRYPTION_KEY_FILE", "INVALID_PATH"}
 	}
 	if err := env.ParseWithOptions(&cfg, env.Options{Environment: environment}); err != nil {
 		var parse env.ParseError

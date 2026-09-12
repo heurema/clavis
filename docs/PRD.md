@@ -90,8 +90,9 @@ A connection is a specific configured means of accessing an external system:
 - The provider and target system configuration.
 - Credentials for the external system.
 - A description of its purpose and preconfigured access scope.
-- Environment, service, and additional tags.
-- Status: enabled or disabled, plus the result of the latest connectivity check.
+- Labels (`key=value` pairs such as `env=prod` or `service=payments`) for discovery and filtering; they replace separate environment, service and tag fields.
+- Per-connection resource bounds: statement timeout (default 30 s, ceiling 120 s) and result cap (default 1,000 rows and 1 MiB, ceilings 100,000 rows and 10 MiB).
+- Status: enabled or disabled, plus the outcome and time of the latest explicit connectivity check.
 
 Multiple connections may point to the same system using different credentials.
 
@@ -102,7 +103,7 @@ Multiple connections may point to the same system using different credentials.
 | `payments-stage` | A preconfigured role for the staging database | Payments team |
 | `payments-prod-metrics` | Preconfigured access to Payments metrics | Payments team |
 
-Environments, services, and tags help users find and organize connections. They describe access but do not filter external data themselves. In the MVP, permissions are granted to specific connections; changing a tag must not silently change access assignments.
+Labels help users find and organize connections with kubectl-style selectors. They describe access but do not filter external data themselves. In the MVP, permissions are granted to specific connections; changing a label must not silently change access assignments.
 
 ### Permission
 
@@ -171,8 +172,8 @@ Effective access is the union of active direct grants and group-based grants. Re
 | ID | Requirement | Acceptance Criteria |
 |---|---|---|
 | CONN-01 | Connection creation and updates | An administrator specifies the provider, target, credentials, and description |
-| CONN-02 | Organization by environment, service, and tags | Connections can be discovered using these attributes |
-| CONN-03 | Connectivity checks | The result shows whether the connection and the defined check succeeded; it does not claim that all external permissions have been verified |
+| CONN-02 | Organization by labels | Connections can be discovered with label selectors (`env=prod`, `service!=legacy`, `team`) |
+| CONN-03 | Connectivity checks | An explicit check records `reachable`, `auth_rejected`, `unreachable` or `credentials_unavailable` with its time; creation never contacts the source, and the result does not claim that external permissions have been verified |
 | CONN-04 | Enabling and disabling connections | A disabled connection rejects subsequent operations |
 | CONN-05 | Credential updates | An administrator can replace credentials; the change is audited without exposing secrets |
 | CONN-06 | Protected credential handling | Secrets are encrypted at rest with a deployment-supplied key, are not returned to members or agents when viewing connections, and are excluded from audit records and error messages |
@@ -395,7 +396,10 @@ Decided on September 11, 2026 (applied throughout this document):
 | Initial administrator | Created once at startup from deployment configuration and a mounted password file |
 | Management permission | The administrator role; grants mean "may use" only |
 | Administrator model | Administrators are peers (GitLab group-owner style): any administrator manages any other, nobody can block or demote themself, and the installation always keeps at least one enabled administrator; there is no root tier |
-| Credential storage | Encrypted at rest with a mounted deployment key; rotation deferred |
+| Credential storage | Encrypted at rest (AES-256-GCM) under a 32-byte key mounted through `CLAVIS_ENCRYPTION_KEY_FILE`, required at startup; rotation deferred |
+| Connection organization | Labels and selectors replace environment, service and tags |
+| Resource bound defaults | 30 s statement timeout, 1,000 rows and 1 MiB result cap; ceilings 120 s, 100,000 rows, 10 MiB; enforced by the provider changes |
+| Agent-first CLI | One verb vocabulary, names or UUIDs accepted and both returned, `--dry-run` on mutations, error hints, secrets only through prompt, stdin, file or named environment variable |
 | PostgreSQL operations | Pass-through of any submitted SQL; the external role is the only access boundary |
 | Resource bounds | Per-connection timeout and result cap with explicit truncation |
 | Audit content | Query text is never stored |
@@ -407,10 +411,9 @@ Decided on September 11, 2026 (applied throughout this document):
 
 Still open, to be settled with the pilot team:
 
-- Default values for per-connection timeouts and result caps.
 - The first real questions from managers and developers used to evaluate the pilot.
 
-The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. Implemented so far: automated initial administrator setup, local browser/CLI sign-in, revocable sessions, administrator-managed local users with the peer administrator model and self-protection, and a protected admin page with a read-only user list. Planned next: groups and connection grants, providers and connections with encrypted credentials, PostgreSQL and VictoriaMetrics pass-through with resource bounds, request auditing and inspection, and the agent skill.
+The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. Implemented so far: automated initial administrator setup, local browser/CLI sign-in, revocable sessions, administrator-managed local users with the peer administrator model and self-protection, registered connections with encrypted credentials, labels, resource bounds and connectivity checks for both providers, and a protected admin page with read-only user and connection lists. Planned next: connection grants, PostgreSQL and VictoriaMetrics pass-through with resource bounds, groups, request auditing and inspection, the CLI `describe` schema, and the agent skill.
 
 ## 13. Sources and Context
 

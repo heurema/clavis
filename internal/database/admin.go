@@ -55,19 +55,23 @@ func denial(err error) (string, bool) {
 		return "", false
 	}
 	switch failure.Code {
-	case auth.UserNotFound, auth.UsernameTaken, auth.SelfTarget, auth.LastAdministrator:
+	case auth.UserNotFound, auth.UsernameTaken, auth.SelfTarget, auth.LastAdministrator,
+		auth.ConnectionExists, auth.ConnectionNotFound, auth.ConnectionInUse, auth.CredentialsUnavailable:
 		return failure.Code, true
 	}
 	return "", false
 }
 
 // administer runs one mutation in the design's transaction shape: deadline,
-// readiness, pre-transaction work (hashing), advisory key, ordered row locks,
-// session and role recheck, body, success event and commit. The body receives
-// the rechecked actor and returns the event target; a denial commits exactly
-// one deny event.
-func (s *LocalAuth) administer(ctx context.Context, previous auth.Session, target, action string,
-	prepare func(context.Context) error, body func(context.Context, pgx.Tx, auth.Session) (string, error)) error {
+// readiness, pre-transaction work (hashing), the caller's advisory key, ordered
+// row locks, session and role recheck, body, success event and commit. Each
+// family of mutations passes its own key, so connections do not serialize
+// behind user administration. The body receives the rechecked actor and returns
+// the event target and the success outcome, an empty outcome meaning "success";
+// a denial commits exactly one deny event. A dry run runs the whole operation
+// and then rolls it back, leaving no trace.
+func (s *LocalAuth) administer(ctx context.Context, previous auth.Session, lock int64, target, action string, dryRun bool,
+	prepare func(context.Context) error, body func(context.Context, pgx.Tx, auth.Session) (string, string, error)) error {
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
 	defer cancel()
 	if !validSession(previous) {
@@ -94,7 +98,7 @@ func (s *LocalAuth) administer(ctx context.Context, previous auth.Session, targe
 	}
 	defer rollback(ctx, tx)
 	queries := sqlc.New(tx)
-	if err := queries.LockTransaction(ctx, adminMutationLock); err != nil {
+	if err := queries.LockTransaction(ctx, lock); err != nil {
 		return unavailable()
 	}
 	if err := queries.LockMutationUsers(ctx, sqlc.LockMutationUsersParams{
@@ -102,18 +106,42 @@ func (s *LocalAuth) administer(ctx context.Context, previous auth.Session, targe
 	}); err != nil {
 		return unavailable()
 	}
-	current, err := authorize(ctx, tx, previous, action)
+	// A dry run is a question, not an attempt. It runs the whole operation,
+	// including any denial event, inside a savepoint of a transaction that is
+	// never committed, so even the denial leaves no trace.
+	work := tx
+	if dryRun {
+		nested, err := tx.Begin(ctx)
+		if err != nil {
+			return unavailable()
+		}
+		work = nested
+	}
+	current, err := authorize(ctx, work, previous, action)
 	if err != nil {
 		return err
 	}
-	eventTarget, err := body(ctx, tx, current)
+	eventTarget, outcome, err := body(ctx, work, current)
 	if err != nil {
 		if code, ok := denial(err); ok {
-			return deny(ctx, tx, current.User.ID, eventTarget, current.ID, action, code)
+			return deny(ctx, work, current.User.ID, eventTarget, current.ID, action, code)
+		}
+		// Input a body can only reject once it has read the row, such as a
+		// provider-specific target: a rejection, recorded like the validators
+		// that run before the transaction, which is to say not at all.
+		var failure *auth.Error
+		if errors.As(err, &failure) && failure.Code == auth.InvalidArgument {
+			return failure
 		}
 		return unavailable()
 	}
-	if err := audit(ctx, tx, current.User.ID, eventTarget, current.ID, action, "success"); err != nil {
+	if dryRun {
+		return nil
+	}
+	if outcome == "" {
+		outcome = "success"
+	}
+	if err := audit(ctx, tx, current.User.ID, eventTarget, current.ID, action, outcome); err != nil {
 		return unavailable()
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -228,26 +256,26 @@ func (s *LocalAuth) CreateUser(ctx context.Context, session auth.Session, reques
 		return record, &auth.Error{Code: auth.InvalidArgument}
 	}
 	var hash string
-	err := s.administer(ctx, session, "", string(auth.EventUserCreate), hashInto(&hash, request.Password),
-		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (string, error) {
+	err := s.administer(ctx, session, adminMutationLock, "", string(auth.EventUserCreate), false, hashInto(&hash, request.Password),
+		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (string, string, error) {
 			queries := sqlc.New(tx)
 			exists, err := queries.UsernameExists(ctx, request.Username)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			if exists {
-				return "", &auth.Error{Code: auth.UsernameTaken}
+				return "", "", &auth.Error{Code: auth.UsernameTaken}
 			}
 			id, err := bootstrapID()
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			// A row committed outside the advisory lock can still win the
 			// unique index; the savepoint keeps this transaction usable for
 			// the deny event.
 			savepoint, err := tx.Begin(ctx)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			row, err := sqlc.New(savepoint).InsertUser(ctx, sqlc.InsertUserParams{
 				ID: id, Username: request.Username, PasswordHash: hash,
@@ -255,18 +283,18 @@ func (s *LocalAuth) CreateUser(ctx context.Context, session auth.Session, reques
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				if err := savepoint.Rollback(ctx); err != nil {
-					return "", err
+					return "", "", err
 				}
-				return "", &auth.Error{Code: auth.UsernameTaken}
+				return "", "", &auth.Error{Code: auth.UsernameTaken}
 			}
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			if err := savepoint.Commit(ctx); err != nil {
-				return "", err
+				return "", "", err
 			}
 			record = userRecord(sqlc.FindUserRow(row))
-			return row.ID, nil
+			return row.ID, "", nil
 		})
 	if err != nil {
 		return auth.UserRecord{}, err
@@ -283,29 +311,29 @@ func (s *LocalAuth) SetUserDisabled(ctx context.Context, session auth.Session, u
 	if disabled {
 		action = auth.EventUserBlock
 	}
-	err := s.administer(ctx, session, userID, string(action), nil,
-		func(ctx context.Context, tx pgx.Tx, actor auth.Session) (string, error) {
+	err := s.administer(ctx, session, adminMutationLock, userID, string(action), false, nil,
+		func(ctx context.Context, tx pgx.Tx, actor auth.Session) (string, string, error) {
 			queries := sqlc.New(tx)
 			found, err := findTarget(ctx, queries, userID)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			if disabled {
 				if err := guardRemoval(ctx, queries, actor, found); err != nil {
-					return userID, err
+					return userID, "", err
 				}
 			}
 			row, err := queries.SetUserDisabled(ctx, sqlc.SetUserDisabledParams{Disabled: disabled, ID: userID})
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			if disabled {
 				if err := queries.RevokeUserSessions(ctx, userID); err != nil {
-					return "", err
+					return "", "", err
 				}
 			}
 			result = auth.UserMutation{User: userRecord(sqlc.FindUserRow(row)), SessionsRevoked: disabled}
-			return userID, nil
+			return userID, "", nil
 		})
 	if err != nil {
 		return auth.UserMutation{}, err
@@ -319,21 +347,21 @@ func (s *LocalAuth) ResetPassword(ctx context.Context, session auth.Session, use
 		return result, &auth.Error{Code: auth.InvalidArgument}
 	}
 	var hash string
-	err := s.administer(ctx, session, userID, string(auth.EventUserResetPassword), hashInto(&hash, password),
-		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (string, error) {
+	err := s.administer(ctx, session, adminMutationLock, userID, string(auth.EventUserResetPassword), false, hashInto(&hash, password),
+		func(ctx context.Context, tx pgx.Tx, _ auth.Session) (string, string, error) {
 			queries := sqlc.New(tx)
 			found, err := findTarget(ctx, queries, userID)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			if err := queries.SetUserPasswordHash(ctx, sqlc.SetUserPasswordHashParams{PasswordHash: hash, ID: userID}); err != nil {
-				return "", err
+				return "", "", err
 			}
 			if err := queries.RevokeUserSessions(ctx, userID); err != nil {
-				return "", err
+				return "", "", err
 			}
 			result = auth.UserMutation{User: userRecord(found), SessionsRevoked: true}
-			return userID, nil
+			return userID, "", nil
 		})
 	if err != nil {
 		return auth.UserMutation{}, err
@@ -350,24 +378,24 @@ func (s *LocalAuth) SetRole(ctx context.Context, session auth.Session, userID st
 	if role == auth.Member {
 		action = auth.EventUserDemote
 	}
-	err := s.administer(ctx, session, userID, string(action), nil,
-		func(ctx context.Context, tx pgx.Tx, actor auth.Session) (string, error) {
+	err := s.administer(ctx, session, adminMutationLock, userID, string(action), false, nil,
+		func(ctx context.Context, tx pgx.Tx, actor auth.Session) (string, string, error) {
 			queries := sqlc.New(tx)
 			found, err := findTarget(ctx, queries, userID)
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			if role == auth.Member {
 				if err := guardRemoval(ctx, queries, actor, found); err != nil {
-					return userID, err
+					return userID, "", err
 				}
 			}
 			row, err := queries.SetUserRole(ctx, sqlc.SetUserRoleParams{Role: string(role), ID: userID})
 			if err != nil {
-				return "", err
+				return "", "", err
 			}
 			result = auth.UserMutation{User: userRecord(sqlc.FindUserRow(row)), SessionsRevoked: false}
-			return userID, nil
+			return userID, "", nil
 		})
 	if err != nil {
 		return auth.UserMutation{}, err

@@ -71,6 +71,11 @@ func RunWithIO(ctx context.Context, args []string, streams IO) int {
 	command.Commands = append(command.Commands, authCommands(streams, check, func(value Result) { result = &value })...)
 	if err := command.Run(ctx, args); err != nil {
 		value := failure("INVALID_ARGUMENT", "Invalid arguments or configuration; run clavis help", nil)
+		if secretValueFlag(args) {
+			// There is deliberately no flag that carries a secret value; say
+			// which channels exist instead of the generic usage message.
+			value = failureWithHint("INVALID_ARGUMENT", "A secret is never accepted as a flag value", secretInputHint)
+		}
 		result = &value
 	}
 	if result == nil {
