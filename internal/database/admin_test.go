@@ -613,7 +613,14 @@ func TestAdministrationHonorsHashingBudget(t *testing.T) {
 		require.Less(t, elapsed, time.Second, name)
 	}
 	require.Equal(t, users, countRows(t, pool, "users"))
-	require.Equal(t, events, countRows(t, pool, "auth_events"))
+	// A rejected budget is a denied attempt: one rate_limited event per call,
+	// attributed to the caller's session, with no target and no mutation.
+	require.Equal(t, events+2, countRows(t, pool, "auth_events"))
+	var recorded int
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM auth_events
+		WHERE outcome='rate_limited' AND actor_id=$1 AND session_id=$2 AND target_id IS NULL
+		AND action IN ('user.create','user.reset_password')`, admin.User.ID, admin.ID).Scan(&recorded))
+	require.Equal(t, 2, recorded)
 	login(t, s, input)
 	// A canceled context never commits, even though hashing is not cancelable.
 	ctx, cancel := context.WithCancel(t.Context())

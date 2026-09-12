@@ -220,8 +220,9 @@ password. New users are members. Blocking and password reset revoke all of the
 target's sessions; unblocking does not restore them. Administrators are peers:
 any administrator can manage any other, an administrator cannot block or demote
 their own account (`SELF_TARGET`), and the installation always keeps at least
-one enabled administrator. Every operation is recorded as a safe audit event
-without passwords or query text. Listing is bounded to 1,000 users and reports
+one enabled administrator. Every mutation and every denied attempt is recorded
+as a safe audit event without passwords or query text; a successful listing
+records none. Listing is bounded to 1,000 users and reports
 `truncated` when more exist.
 
 The MVP has no self-service password change and no account recovery: a lost

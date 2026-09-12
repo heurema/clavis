@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/database/sqlc"
@@ -80,6 +81,10 @@ func (s *LocalAuth) administer(ctx context.Context, previous auth.Session, targe
 	// being denied, by design.
 	if prepare != nil {
 		if err := prepare(ctx); err != nil {
+			var failure *auth.Error
+			if errors.As(err, &failure) && failure.Code == auth.RateLimited {
+				return s.recordRateLimited(ctx, previous, action, failure.RetryAfter)
+			}
 			return err
 		}
 	}
@@ -115,6 +120,23 @@ func (s *LocalAuth) administer(ctx context.Context, previous auth.Session, targe
 		return unavailable()
 	}
 	return nil
+}
+
+// A rejected hashing budget is a denied attempt and is recorded like a
+// rate-limited login: one event with the caller's claimed identifiers, no
+// account lookup and no mutation. The retry hint survives the recorded denial.
+func (s *LocalAuth) recordRateLimited(ctx context.Context, previous auth.Session, action string, retry time.Duration) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return unavailable()
+	}
+	defer rollback(ctx, tx)
+	err = deny(ctx, tx, previous.User.ID, "", previous.ID, action, auth.RateLimited)
+	var failure *auth.Error
+	if errors.As(err, &failure) && failure.Code == auth.RateLimited {
+		failure.RetryAfter = retry
+	}
+	return err
 }
 
 func hashInto(hash *string, password auth.Secret) func(context.Context) error {

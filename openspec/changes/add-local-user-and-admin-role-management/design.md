@@ -102,8 +102,9 @@ ALTER TABLE auth_events DROP CONSTRAINT auth_events_outcome_check;
 ALTER TABLE auth_events ADD CONSTRAINT auth_events_outcome_check CHECK (outcome IN (
   'success','invalid_argument','invalid_credentials','unauthenticated','forbidden','user_not_found','rate_limited',
   'username_taken','last_administrator','self_target'));
-CREATE INDEX users_username_order ON users (username);
 ```
+
+The optional `users_username_order` index from the first draft was dropped after review: the unique constraint on `username` already provides the ordered index, confirmed with `EXPLAIN`.
 
 Constraint names are PostgreSQL's defaults for the inline checks in `001`; the migration names the replacements explicitly so `003` need not guess. Existing rows satisfy the wider constraint, so the migration is metadata-only and transactional. No down migration (forward-only policy). `internal/database/migration_manifest_test.go` and the checksum ledger cover it; `CheckAuthEventsColumns` is unchanged since columns do not change. The `users_username_order` index supports ordered listing; the existing unique index already covers it in practice, so the index is optional and dropped from scope if the planner uses the unique index (verify with `EXPLAIN` during implementation and delete the line rather than keep a redundant index).
 
