@@ -25,6 +25,7 @@ const (
 	EventConnectionDisable EventAction  = "connection.disable"
 	EventConnectionDelete  EventAction  = "connection.delete"
 	EventConnectionCheck   EventAction  = "connection.check"
+	EventConnectionGet     EventAction  = "connection.get"
 	EventConnectionsList   EventAction  = "connections.list"
 	OutcomeInvalidArgument EventOutcome = "invalid_argument"
 	OutcomeUnauthenticated EventOutcome = "unauthenticated"
@@ -52,7 +53,7 @@ func ValidEventAction(action EventAction) bool {
 		EventUserCreate, EventUserBlock, EventUserUnblock, EventUserResetPassword,
 		EventUserPromote, EventUserDemote, EventUsersList,
 		EventConnectionCreate, EventConnectionUpdate, EventConnectionSecrets, EventConnectionEnable,
-		EventConnectionDisable, EventConnectionDelete, EventConnectionCheck, EventConnectionsList:
+		EventConnectionDisable, EventConnectionDelete, EventConnectionCheck, EventConnectionGet, EventConnectionsList:
 		return true
 	}
 	return false

@@ -367,7 +367,7 @@ func TestGeneratedConnectionQueriesAndEventAllowlist(t *testing.T) {
 
 	for _, action := range []string{
 		"connection.create", "connection.update", "connection.set_credentials", "connection.enable",
-		"connection.disable", "connection.delete", "connection.check", "connections.list",
+		"connection.disable", "connection.delete", "connection.check", "connection.get", "connections.list",
 	} {
 		for _, outcome := range []string{"success", "forbidden", "connection_exists", "connection_not_found", "connection_in_use", "credentials_unavailable", "check_failed"} {
 			require.NoError(t, qtx.InsertAuthEvent(t.Context(), sqlc.InsertAuthEventParams{

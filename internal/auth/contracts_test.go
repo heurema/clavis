@@ -130,7 +130,7 @@ func TestConnectionContracts(t *testing.T) {
 	require.NotContains(t, string(encoded), "hint")
 	for _, action := range []auth.EventAction{
 		auth.EventConnectionCreate, auth.EventConnectionUpdate, auth.EventConnectionSecrets, auth.EventConnectionEnable,
-		auth.EventConnectionDisable, auth.EventConnectionDelete, auth.EventConnectionCheck, auth.EventConnectionsList,
+		auth.EventConnectionDisable, auth.EventConnectionDelete, auth.EventConnectionCheck, auth.EventConnectionGet, auth.EventConnectionsList,
 	} {
 		require.True(t, auth.ValidEventAction(action), string(action))
 	}

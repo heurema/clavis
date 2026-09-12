@@ -32,7 +32,7 @@ ALTER TABLE auth_events ADD CONSTRAINT auth_events_action_check CHECK (action IN
     'user.promote', 'user.demote', 'users.list',
     'connection.create', 'connection.update', 'connection.set_credentials',
     'connection.enable', 'connection.disable', 'connection.delete',
-    'connection.check', 'connections.list'
+    'connection.check', 'connection.get', 'connections.list'
 ));
 ALTER TABLE auth_events DROP CONSTRAINT auth_events_outcome_check;
 ALTER TABLE auth_events ADD CONSTRAINT auth_events_outcome_check CHECK (outcome IN (
