@@ -73,12 +73,21 @@ type cliAuthFixture struct {
 	connCalls     int
 	connMutations int
 	connOutcome   auth.CheckOutcome
-	requests      int
-	login         int
-	logout        int
-	whoami        int
-	revoke        int
-	admin         int
+	// grants is the grant store. A member's reads are scoped through it, and
+	// the raw query and request bodies are recorded so tests can pin the wire
+	// shape exactly as they do for connections.
+	grants         []auth.Grant
+	grantTruncated bool
+	grantBody      []byte
+	grantQuery     string
+	grantCalls     int
+	grantMutations int
+	requests       int
+	login          int
+	logout         int
+	whoami         int
+	revoke         int
+	admin          int
 }
 
 func newCLIFixture(t *testing.T, password auth.Secret) (*cliAuthFixture, *httptest.Server) {
@@ -107,10 +116,11 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(auth.ErrorResponse{Error: safe})
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, auth.MaxCredentialBody+1))
-	// Only the connection routes document query parameters.
+	// Only the connection and grant routes document query parameters.
 	connections := r.URL.Path == auth.ConnectionsPath || strings.HasPrefix(r.URL.Path, auth.ConnectionsPath+"/")
+	grants := r.URL.Path == auth.GrantsPath || r.URL.Path == auth.GrantRevokePath
 	if err != nil || len(body) > auth.MaxCredentialBody || r.Header.Get("Cookie") != "" ||
-		(r.URL.RawQuery != "" && !connections) || r.Header.Get("Accept") != "application/json" {
+		(r.URL.RawQuery != "" && !connections && !grants) || r.Header.Get("Accept") != "application/json" {
 		fail(auth.InvalidArgument)
 		return
 	}
@@ -145,6 +155,10 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 		f.serveConnections(w, r, identity, body, fail)
 		return
 	}
+	if grants {
+		f.serveGrants(w, r, identity, body, fail)
+		return
+	}
 	if len(body) != 0 {
 		fail(auth.InvalidArgument)
 		return
@@ -152,15 +166,30 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == auth.WhoAmIPath && r.Method == http.MethodGet:
 		f.whoami++
+		// Only whoami names the caller's granted connections, and only for a
+		// member; an administrator needs no grant, so the list stays empty.
+		if i := f.userIndex(identity.User.ID); i >= 0 && f.users[i].Role != auth.Admin {
+			for _, connection := range f.grantedConnections(identity.User.ID) {
+				identity.Connections = append(identity.Connections, connection.Name)
+			}
+			identity.ConnectionsTruncated = f.connTruncated
+		}
 		_ = json.NewEncoder(w).Encode(identity)
 	case r.URL.Path == auth.LogoutPath && r.Method == http.MethodPost:
 		f.logout++
 		delete(f.sessions, token)
 		_ = json.NewEncoder(w).Encode(auth.Revocation{Revoked: true})
-	case r.URL.Path == strings.Replace(auth.RevokePath, "{userID}", identity.User.ID, 1) && r.Method == http.MethodPost:
+	case strings.HasPrefix(r.URL.Path, auth.UsersPath+"/") && strings.HasSuffix(r.URL.Path, "/sessions/revoke") && r.Method == http.MethodPost:
 		f.revoke++
 		if identity.User.Role != auth.Admin {
 			fail(auth.Forbidden)
+			return
+		}
+		// The target is a reference: a UUID or a username, resolved here as
+		// the service resolves it.
+		reference := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, auth.UsersPath+"/"), "/sessions/revoke")
+		if f.userRefIndex(reference) < 0 {
+			fail(auth.UserNotFound)
 			return
 		}
 		clear(f.sessions)
@@ -173,6 +202,18 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 func (f *cliAuthFixture) userIndex(id string) int {
 	for i, user := range f.users {
 		if user.ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+// userRefIndex resolves a user reference the way the service does: the UUID
+// form first, then the username. A username is never UUID-shaped, so the two
+// cannot collide.
+func (f *cliAuthFixture) userRefIndex(reference string) int {
+	for i, user := range f.users {
+		if user.ID == strings.ToLower(reference) || user.Username == reference {
 			return i
 		}
 	}
@@ -251,7 +292,7 @@ func (f *cliAuthFixture) serveUsers(w http.ResponseWriter, r *http.Request, acto
 		encode(http.StatusCreated, record)
 	default:
 		id, action, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, auth.UsersPath+"/"), "/")
-		i := f.userIndex(id)
+		i := f.userRefIndex(id)
 		if i < 0 {
 			fail(auth.UserNotFound)
 			return
@@ -413,7 +454,7 @@ func TestAuthArgumentsAndInput(t *testing.T) {
 		{"login", "--password=value"}, {"login", "--token=value"}, {"whoami", "extra"},
 		{"logout", "--timeout=0"}, {"whoami", "--timeout=-1s"}, {"whoami", "--timeout=invalid"},
 		{"whoami", "--output=yaml"}, {"whoami", "--server=http://localhost:8080"},
-		{"sessions", "unknown"}, {"sessions", "revoke", "--user=invalid"}, {"sessions", "revoke"},
+		{"sessions", "unknown"}, {"sessions", "revoke", "--user=INVALID"}, {"sessions", "revoke"},
 		{"sessions", "revoke", "--user", testIdentity().User.ID, "extra"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {

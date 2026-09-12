@@ -633,26 +633,43 @@ func TestBoundedListingDropsTrailingRecordsToFitTheBudget(t *testing.T) {
 	for index := 0; index < auth.MaxConnectionListing; index++ {
 		records = append(records, maximalConnection())
 	}
-	bounded, err := boundedListing(auth.ConnectionList{Connections: records})
+	kept, truncated, err := boundedListing("connections", records, false)
 	require.NoError(t, err)
-	require.True(t, bounded.Truncated)
-	require.Greater(t, len(bounded.Connections), 0)
-	require.Less(t, len(bounded.Connections), auth.MaxConnectionListing)
-	encoded, err := json.Marshal(bounded)
+	require.True(t, truncated)
+	require.Greater(t, len(kept), 0)
+	require.Less(t, len(kept), auth.MaxConnectionListing)
+	encoded, err := json.Marshal(auth.ConnectionList{Connections: kept, Truncated: truncated})
 	require.NoError(t, err)
 	require.LessOrEqual(t, len(encoded)+1, auth.MaxListingBody, "the encoder's newline is part of the body")
 	// One more record would have exceeded the budget.
-	over, err := json.Marshal(auth.ConnectionList{Connections: records[:len(bounded.Connections)+1], Truncated: true})
+	over, err := json.Marshal(auth.ConnectionList{Connections: records[:len(kept)+1], Truncated: true})
 	require.NoError(t, err)
 	require.Greater(t, len(over)+1, auth.MaxListingBody)
 	// A listing that already fits is passed through untouched, flag included.
-	small := auth.ConnectionList{Connections: []auth.Connection{connectionRecord}, Truncated: true}
-	bounded, err = boundedListing(small)
+	small := []auth.Connection{connectionRecord}
+	kept, truncated, err = boundedListing("connections", small, true)
 	require.NoError(t, err)
-	require.Equal(t, small, bounded)
-	empty, err := boundedListing(auth.ConnectionList{Connections: []auth.Connection{}})
+	require.Equal(t, small, kept)
+	require.True(t, truncated)
+	empty, truncated, err := boundedListing("connections", []auth.Connection{}, false)
 	require.NoError(t, err)
-	require.Equal(t, auth.ConnectionList{Connections: []auth.Connection{}}, empty)
+	require.Equal(t, []auth.Connection{}, empty)
+	require.False(t, truncated)
+	// The grant listing shares the budget under its own, shorter envelope.
+	grants := make([]auth.Grant, 0, auth.MaxGrantListing)
+	for index := 0; index < auth.MaxGrantListing; index++ {
+		grants = append(grants, maximalGrant())
+	}
+	keptGrants, truncated, err := boundedListing("grants", grants, false)
+	require.NoError(t, err)
+	require.True(t, truncated)
+	require.Less(t, len(keptGrants), auth.MaxGrantListing)
+	encoded, err = json.Marshal(auth.GrantList{Grants: keptGrants, Truncated: truncated})
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(encoded)+1, auth.MaxListingBody)
+	overGrants, err := json.Marshal(auth.GrantList{Grants: grants[:len(keptGrants)+1], Truncated: true})
+	require.NoError(t, err)
+	require.Greater(t, len(overGrants)+1, auth.MaxListingBody)
 }
 
 func TestConnectionListingResponseStaysWithinTheDocumentedBodyLimit(t *testing.T) {
@@ -712,7 +729,7 @@ func TestRealHTTPConnectionRoutesRoundTrip(t *testing.T) {
 	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
 	require.NoError(t, err)
 	service := local.WithKeyring(serverTestKeyring(t))
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service,
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service,
 		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})

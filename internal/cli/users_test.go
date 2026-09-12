@@ -186,9 +186,9 @@ func TestUsersArgumentsRejectedBeforeIO(t *testing.T) {
 		args           []string
 		noninteractive bool
 	}{
-		{args: []string{"users", "block", "--user=invalid"}},
+		{args: []string{"users", "block", "--user=INVALID"}},
 		{args: []string{"users", "unblock", "--user=7fde7ce1-cc8d-4de8-a9c0"}},
-		{args: []string{"users", "reset-password", "--user=invalid", "--password-stdin"}},
+		{args: []string{"users", "reset-password", "--user=INVALID", "--password-stdin"}},
 		{args: []string{"users", "reset-password"}},
 		{args: []string{"users", "set-role", "--user", id, "--role=owner"}},
 		{args: []string{"users", "set-role", "--user", id}},

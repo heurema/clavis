@@ -326,7 +326,9 @@ func TestAdministrationRejectsInvalidTargetsAfterIdentifyingTheActor(t *testing.
 	const sessionID = "12345678-1234-4234-8234-123456789aaa"
 	for _, pattern := range []string{auth.UserBlockPath, auth.UserUnblockPath, auth.UserPasswordPath, auth.UserRolePath} {
 		// An empty segment (doubled slash) still matches the route and must be rejected here.
-		for _, target := range []string{"", "not-a-uuid", "12345678-1234-4234-8234-123456789ab", "12345678123442348234123456789abc"} {
+		// A username is a valid reference now, so the refused shapes are the ones
+		// that can be neither a UUID nor a username.
+		for _, target := range []string{"", "NOT-A-UUID", "12345678-1234-4234-8234-123456789ab", "12345678123442348234123456789abc"} {
 			f, handler := adminFixture(t)
 			path := strings.Replace(pattern, "{userID}", target, 1)
 			body := ""
@@ -425,7 +427,8 @@ func TestRealHTTPAdministrationRoutesRecordAndFailClosed(t *testing.T) {
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
 	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
 	require.NoError(t, err)
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service,
+		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
 	require.NoError(t, err)

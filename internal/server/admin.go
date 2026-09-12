@@ -35,7 +35,7 @@ func (a *authHTTP) administration(w http.ResponseWriter, r *http.Request, target
 		session, err = a.cliSession(r)
 	}
 	target := chi.URLParam(r, "userID")
-	if err == nil && targeted && !auth.ValidUserID(target) {
+	if err == nil && targeted && !auth.ValidUserRef(target) {
 		err = &auth.Error{Code: auth.InvalidArgument}
 	}
 	if err == nil {
@@ -74,7 +74,13 @@ func (a *authHTTP) createUserJSON(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if !auth.ValidUsername(request.Username) || !auth.ValidPassword(request.Password) {
+		// The username rule, including the UUID-shape exclusion that keeps a
+		// user reference unambiguous, is explained by a hint; the password
+		// branch stays hint-free so no guidance is attached to a credential.
+		if !auth.ValidUsername(request.Username) {
+			return &auth.Error{Code: auth.InvalidArgument, Hint: auth.UsernameHint}
+		}
+		if !auth.ValidPassword(request.Password) {
 			return &auth.Error{Code: auth.InvalidArgument}
 		}
 		return nil

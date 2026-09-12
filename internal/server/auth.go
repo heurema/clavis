@@ -39,6 +39,8 @@ type authHTTP struct {
 	service     auth.Service
 	admin       auth.Administration
 	connections auth.Connections
+	grants      auth.Grants
+	members     MemberConnections
 	recorder    auth.EventRecorder
 	origin      string
 	secure      bool
@@ -71,6 +73,9 @@ func (a *authHTTP) mount(router chi.Router) {
 	router.With(a.operation).Post(auth.ConnectionDisablePath, a.disableConnectionJSON)
 	router.With(a.operation).Post(auth.ConnectionDeletePath, a.deleteConnectionJSON)
 	router.With(a.operation).Post(auth.ConnectionCheckPath, a.checkConnectionJSON)
+	router.With(a.operation).Get(auth.GrantsPath, a.listGrantsJSON)
+	router.With(a.operation).Post(auth.GrantsPath, a.createGrantJSON)
+	router.With(a.operation).Post(auth.GrantRevokePath, a.revokeGrantJSON)
 }
 
 type responseBuffer struct {
@@ -138,6 +143,13 @@ func rejectionAction(r *http.Request) (auth.EventAction, bool) {
 		return auth.EventConnectionDelete, true
 	case auth.ConnectionCheckPath:
 		return auth.EventConnectionCheck, true
+	case auth.GrantsPath:
+		if r.Method == http.MethodGet {
+			return auth.EventGrantsList, true
+		}
+		return auth.EventGrantCreate, true
+	case auth.GrantRevokePath:
+		return auth.EventGrantRevoke, true
 	}
 	return "", false
 }
@@ -583,8 +595,19 @@ func (a *authHTTP) cliSession(r *http.Request) (auth.Session, error) {
 	return a.authenticate(r, token, auth.CLI)
 }
 
+// identityJSON answers the caller's own identity and, for a member, the names
+// of the connections they may use, so an agent's first call already says what
+// is available. Administrators need no grant, so their list stays empty rather
+// than enumerating every connection. Login responses are untouched: only this
+// route fills the names.
 func (a *authHTTP) identityJSON(w http.ResponseWriter, r *http.Request) {
 	session, err := a.cliSession(r)
+	if err == nil && session.User.Role != auth.Admin {
+		if err = a.requireMembers(); err == nil {
+			session.Connections, session.ConnectionsTruncated, err =
+				a.members.ListGrantedConnectionNames(r.Context(), session, auth.MaxConnectionListing)
+		}
+	}
 	if err != nil {
 		jsonFailure(w, err)
 		return
@@ -623,7 +646,10 @@ func (a *authHTTP) revokeJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session, err := a.cliSession(r)
-	if err == nil && !auth.ValidUserID(chi.URLParam(r, "userID")) {
+	// The target is a reference: a UUID or a username. The service resolves it
+	// inside its transaction; the adapter only refuses a shape that can be
+	// neither, including the empty segment of a doubled slash.
+	if err == nil && !auth.ValidUserRef(chi.URLParam(r, "userID")) {
 		err = &auth.Error{Code: auth.InvalidArgument}
 	}
 	if err == nil {

@@ -50,9 +50,10 @@ func authCommands(streams IO, check func(*urfave.Command) error, set func(Result
 		makeCommand("whoami", "Check current identity with the server"),
 		group("sessions", "Manage sessions",
 			makeCommand("revoke", "Revoke all current sessions for a user (administrator only)",
-				&urfave.StringFlag{Name: "user", Usage: "Target user UUID"})),
+				&urfave.StringFlag{Name: "user", Usage: "Target user UUID or username"})),
 		group("users", "Manage local users (administrator only)", usersCommands(makeCommand)...),
-		group("connections", "Manage data-source connections (administrator only)", connectionsCommands(makeCommand)...),
+		group("connections", "Manage data-source connections (members see the ones granted to them)", connectionsCommands(makeCommand)...),
+		group("grants", "Manage which users may use which connections", grantsCommands(makeCommand)...),
 	}
 }
 
@@ -66,15 +67,26 @@ func validateAuthArguments(operation string, command *urfave.Command) *Result {
 	if connectionCommand(operation) {
 		return validateConnectionArguments(operation, command)
 	}
-	var message string
+	if grantCommand(operation) {
+		return validateGrantArguments(operation, command)
+	}
+	var message, hint string
 	switch operation {
-	case "login", "users.create":
+	case "login":
 		if !auth.ValidUsername(command.String("username")) {
 			message = "Provide a valid username"
 		}
+	case "users.create":
+		// Creation is the one place a username is chosen rather than resolved,
+		// so the rule, including the UUID-shape exclusion, is spelled out.
+		if !auth.ValidUsername(command.String("username")) {
+			message, hint = "Provide a valid username", auth.UsernameHint
+		}
 	case "revoke", "users.block", "users.unblock", "users.reset-password", "users.set-role":
-		if !auth.ValidUserID(command.String("user")) {
-			message = "Provide a valid user UUID"
+		// A target is a reference: a UUID or a username, sent unchanged for the
+		// server to resolve.
+		if !auth.ValidUserRef(command.String("user")) {
+			message, hint = "Provide a valid user UUID or username", userRefHint
 		}
 	}
 	if message == "" && operation == "users.set-role" && !validRole(auth.Role(command.String("role"))) {
@@ -83,7 +95,7 @@ func validateAuthArguments(operation string, command *urfave.Command) *Result {
 	if message == "" {
 		return nil
 	}
-	r := failure("INVALID_ARGUMENT", message, nil)
+	r := failureWithHint("INVALID_ARGUMENT", message, hint)
 	return &r
 }
 
@@ -202,6 +214,9 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 	default:
 		if connectionCommand(operation) {
 			return runConnections(ctx, operation, command, api, previous.Token, secret)
+		}
+		if grantCommand(operation) {
+			return runGrants(ctx, operation, command, api, previous.Token)
 		}
 		return runUsers(ctx, operation, command, api, previous.Token, password)
 	}

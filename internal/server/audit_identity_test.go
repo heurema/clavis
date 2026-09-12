@@ -29,7 +29,7 @@ func TestEarlyRevocationAuditRetainsOnlyVerifiedIdentity(t *testing.T) {
 			if tc.bearer != "" {
 				headers.Set("Authorization", tc.bearer)
 			}
-			response := requestAuth(handler, http.MethodPost, "/api/admin/users/not-a-uuid/sessions/revoke", "", headers)
+			response := requestAuth(handler, http.MethodPost, "/api/admin/users/NOT-A-UUID/sessions/revoke", "", headers)
 			require.Equal(t, tc.status, response.Code)
 			require.Zero(t, f.revokeCalls)
 			require.Len(t, f.events, 1)

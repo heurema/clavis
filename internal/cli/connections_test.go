@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -116,6 +117,13 @@ func (f *cliAuthFixture) serveConnections(w http.ResponseWriter, r *http.Request
 		role = f.users[i].Role
 	}
 	if role != auth.Admin {
+		// The two read routes are the only ones a member may call, and they
+		// answer with the reduced projection of the caller's granted
+		// connections; every other connection route stays administrator-only.
+		if list || record {
+			f.serveMemberConnections(actor, query, reference, list, encode, failHint)
+			return
+		}
 		fail(auth.Forbidden)
 		return
 	}
@@ -291,6 +299,60 @@ func (f *cliAuthFixture) serveConnections(w http.ResponseWriter, r *http.Request
 	default:
 		fail(auth.InvalidArgument)
 	}
+}
+
+// grantedConnections is the set a member may see, in name order.
+func (f *cliAuthFixture) grantedConnections(userID string) []auth.Connection {
+	granted := []auth.Connection{}
+	for _, connection := range f.connections {
+		for _, grant := range f.grants {
+			if grant.User.ID == userID && grant.Connection.ID == connection.ID {
+				granted = append(granted, connection)
+			}
+		}
+	}
+	sort.Slice(granted, func(i, j int) bool { return granted[i].Name < granted[j].Name })
+	return granted
+}
+
+// serveMemberConnections is the member half of the two read routes: only
+// granted connections, only the reduced projection, and an ungranted
+// connection is absent rather than disclosed.
+func (f *cliAuthFixture) serveMemberConnections(actor auth.Identity, query url.Values, reference string,
+	list bool, encode func(int, any), failHint func(code, hint string)) {
+	granted := f.grantedConnections(actor.User.ID)
+	if !list {
+		for _, connection := range granted {
+			if connection.ID == strings.ToLower(reference) || connection.Name == reference {
+				encode(http.StatusOK, connection.Summary())
+				return
+			}
+		}
+		failHint(auth.ConnectionNotFound, notFoundHint)
+		return
+	}
+	terms, ok := auth.ParseSelector(query.Get("selector"))
+	limit := auth.MaxConnectionListing
+	if raw := query.Get("limit"); ok && raw != "" {
+		value, err := strconv.Atoi(raw)
+		ok = err == nil && value >= 1 && value <= auth.MaxConnectionListing
+		limit = value
+	}
+	if !ok {
+		failHint(auth.InvalidArgument, invalidHint)
+		return
+	}
+	matched := []auth.ConnectionSummary{}
+	for _, connection := range granted {
+		if matchesSelector(connection, terms) {
+			matched = append(matched, connection.Summary())
+		}
+	}
+	truncated := f.connTruncated
+	if len(matched) > limit {
+		matched, truncated = matched[:limit], true
+	}
+	encode(http.StatusOK, auth.ConnectionSummaryList{Connections: matched, Truncated: truncated})
 }
 
 func secretFile(t *testing.T, home, name, value string, mode os.FileMode) string {

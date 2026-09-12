@@ -98,7 +98,9 @@ func connectionSecretRequired(operation string, command *urfave.Command) bool {
 	return command.String("provider") != string(auth.ProviderVictoriaMetrics) || command.String("auth") != "none"
 }
 
-func connectionFailure(message, hint string) *Result {
+// argumentFailure is the shared local-validation refusal of the connection and
+// grant groups: exit 2, INVALID_ARGUMENT and a hint naming the valid form.
+func argumentFailure(message, hint string) *Result {
 	r := failureWithHint(auth.InvalidArgument, message, hint)
 	return &r
 }
@@ -127,29 +129,28 @@ func validateConnectionArguments(operation string, command *urfave.Command) *Res
 	switch operation {
 	case "connections.list":
 		if _, ok := auth.ParseSelector(command.String("selector")); !ok {
-			return connectionFailure("Provide a valid label selector",
+			return argumentFailure("Provide a valid label selector",
 				"Use up to 8 comma-separated terms of key=value, key!=value or key")
 		}
 		if limit := command.Int("limit"); command.IsSet("limit") && (limit < 1 || limit > auth.MaxConnectionListing) {
-			return connectionFailure("Provide a positive limit within the listing bound",
+			return argumentFailure("Provide a positive limit within the listing bound",
 				"--limit accepts 1 to "+strconv.Itoa(auth.MaxConnectionListing))
 		}
 		return nil
 	case "connections.create":
 		if !auth.ValidConnectionName(command.String("name")) {
-			return connectionFailure("Provide a valid connection name",
+			return argumentFailure("Provide a valid connection name",
 				"A name matches [a-z][a-z0-9._-]{2,63} and is never shaped like a UUID")
 		}
 		if !auth.ValidProvider(auth.ProviderType(command.String("provider"))) {
-			return connectionFailure("Provide a registered provider", "--provider accepts postgresql or victoriametrics")
+			return argumentFailure("Provide a registered provider", "--provider accepts postgresql or victoriametrics")
 		}
 		if !printableSetting(command.String("url")) {
-			return connectionFailure("Provide a target URL", "--url takes the source URL without credentials")
+			return argumentFailure("Provide a target URL", "--url takes the source URL without credentials")
 		}
 	default:
 		if !auth.ValidConnectionRef(command.String("connection")) {
-			return connectionFailure("Provide a connection UUID or name",
-				"A name matches [a-z][a-z0-9._-]{2,63}; a UUID is the 36-character form")
+			return argumentFailure("Provide a connection UUID or name", connectionRefHint)
 		}
 	}
 	if operation != "connections.create" && operation != "connections.update" {
@@ -163,7 +164,7 @@ func validateConnectionArguments(operation string, command *urfave.Command) *Res
 func validateConnectionSettings(operation string, command *urfave.Command) *Result {
 	if command.IsSet("label") {
 		if _, ok := auth.ParseLabels(command.StringSlice("label")); !ok {
-			return connectionFailure("Provide valid, distinct labels",
+			return argumentFailure("Provide valid, distinct labels",
 				"Use up to 16 distinct --label key=value pairs matching [a-z0-9][a-z0-9._-]{0,62}")
 		}
 	}
@@ -172,23 +173,23 @@ func validateConnectionSettings(operation string, command *urfave.Command) *Resu
 		limit int
 	}{{"title", auth.MaxTitleLength}, {"description", auth.MaxDescriptionLength}, {"scope", auth.MaxDescriptionLength}} {
 		if value := command.String(field.flag); command.IsSet(field.flag) && (len(value) > field.limit || !printableSetting(value)) {
-			return connectionFailure("Provide a valid "+field.flag,
+			return argumentFailure("Provide a valid "+field.flag,
 				"--"+field.flag+" takes printable text of up to "+strconv.Itoa(field.limit)+" bytes")
 		}
 	}
 	for _, flag := range []string{"url", "auth-user", "auth-header"} {
 		if command.IsSet(flag) && !printableSetting(command.String(flag)) {
-			return connectionFailure("Provide a valid --"+flag+" value", "The value must be printable and non-empty")
+			return argumentFailure("Provide a valid --"+flag+" value", "The value must be printable and non-empty")
 		}
 	}
 	if command.IsSet("auth") && !slices.Contains(connectionAuthMethods, command.String("auth")) {
-		return connectionFailure("Provide a supported authentication method",
+		return argumentFailure("Provide a supported authentication method",
 			"--auth accepts "+strings.Join(connectionAuthMethods, ", "))
 	}
 	if timeout := command.Duration("statement-timeout"); command.IsSet("statement-timeout") &&
 		(timeout < auth.MinStatementTimeout || timeout > auth.MaxStatementTimeout ||
 			timeout%time.Millisecond != 0) {
-		return connectionFailure("Provide a statement timeout within the allowed range",
+		return argumentFailure("Provide a statement timeout within the allowed range",
 			"--statement-timeout accepts whole milliseconds from "+auth.MinStatementTimeout.String()+" to "+auth.MaxStatementTimeout.String())
 	}
 	for _, bound := range []struct {
@@ -196,12 +197,12 @@ func validateConnectionSettings(operation string, command *urfave.Command) *Resu
 		low, max int
 	}{{"max-rows", 1, auth.MaxMaxRows}, {"max-bytes", auth.MinMaxBytes, auth.MaxMaxBytes}} {
 		if value := command.Int(bound.flag); command.IsSet(bound.flag) && (value < bound.low || value > bound.max) {
-			return connectionFailure("Provide a "+bound.flag+" value within the allowed range",
+			return argumentFailure("Provide a "+bound.flag+" value within the allowed range",
 				"--"+bound.flag+" accepts "+strconv.Itoa(bound.low)+" to "+strconv.Itoa(bound.max))
 		}
 	}
 	if operation == "connections.update" && !updateRequested(command) {
-		return connectionFailure("Provide at least one field to update",
+		return argumentFailure("Provide at least one field to update",
 			"Pass any of --name, --url, --auth, --auth-user, --auth-header, --label, --title, --description, --scope, --statement-timeout, --max-rows or --max-bytes")
 	}
 	if operation == "connections.update" && !command.IsSet("url") {
@@ -209,7 +210,7 @@ func validateConnectionSettings(operation string, command *urfave.Command) *Resu
 		// applied; require the URL alongside any authentication flag.
 		for _, mapping := range targetFlags {
 			if mapping.flag != "url" && command.IsSet(mapping.flag) {
-				return connectionFailure("Provide --url together with any target flag",
+				return argumentFailure("Provide --url together with any target flag",
 					"The target is replaced as a whole on update; pass --url with --auth, --auth-user or --auth-header")
 			}
 		}
@@ -271,22 +272,22 @@ func runConnections(ctx context.Context, operation string, command *urfave.Comma
 		if command.IsSet("limit") {
 			values.Set("limit", strconv.Itoa(command.Int("limit")))
 		}
-		var list auth.ConnectionList
+		// The two read routes answer with the projection the caller's role
+		// earns: the full record for an administrator, the summary for a
+		// member. Either is accepted, strictly; a mixture is not.
+		var list connectionListing
 		route := apiCall{http.MethodGet, auth.ConnectionsPath, values.Encode(), http.StatusOK}
 		if failed := api.send(ctx, route, token, nil, &list); failed != nil {
 			return *failed
 		}
-		if list.Connections == nil {
-			list.Connections = []auth.Connection{}
-		}
-		return success(list)
+		return success(list.data())
 	case "connections.get":
-		var record auth.Connection
+		var record connectionRecord
 		route := apiCall{http.MethodGet, connectionPath(auth.ConnectionPath, reference), "", http.StatusOK}
 		if failed := api.send(ctx, route, token, nil, &record); failed != nil {
 			return *failed
 		}
-		return success(record)
+		return success(record.data())
 	case "connections.create":
 		labels, _ := auth.ParseLabels(command.StringSlice("label"))
 		input := auth.CreateConnectionRequest{

@@ -34,6 +34,7 @@ type backendFixture struct {
 	block                                                func(context.Context)
 	fakeAdministration
 	fakeConnections
+	fakeGrants
 }
 
 var fixtureToken = auth.Secret(strings.Repeat("A", 43))
@@ -110,7 +111,7 @@ func authHandler(t *testing.T, f *backendFixture, checker platform.Checker, orig
 	}
 	// The fixture supplies every dependency, so the tests exercise the same
 	// composition boundary the production entry point uses.
-	handler, err := HandlerWithAuth(time.Second, checker, f, f, f, f, origin, fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, checker, f, f, f, f, f, f, origin, fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	return handler
 }
@@ -146,7 +147,7 @@ func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
 				healthCalls++
 				return checker.Check(ctx)
 			})
-			handler, err := HandlerWithAuth(time.Second, health, service, recorder, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			handler, err := HandlerWithAuth(time.Second, health, service, recorder, service, service, recorder, recorder, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 			require.NoError(t, err)
 			code := (platform.Readiness{State: state}).Response().Error.Code
 			for _, tc := range []struct {
@@ -216,14 +217,18 @@ func TestHandlerWithAuthRequiresCompleteComposition(t *testing.T) {
 		recorder    auth.EventRecorder
 		admin       auth.Administration
 		connections auth.Connections
+		grants      auth.Grants
+		members     MemberConnections
 	}{
-		{nil, fixture, fixture, fixture, fixture},
-		{checker, nil, fixture, fixture, fixture},
-		{checker, fixture, nil, fixture, fixture},
-		{checker, fixture, fixture, nil, fixture},
-		{checker, fixture, fixture, fixture, nil},
+		{nil, fixture, fixture, fixture, fixture, fixture, fixture},
+		{checker, nil, fixture, fixture, fixture, fixture, fixture},
+		{checker, fixture, nil, fixture, fixture, fixture, fixture},
+		{checker, fixture, fixture, nil, fixture, fixture, fixture},
+		{checker, fixture, fixture, fixture, nil, fixture, fixture},
+		{checker, fixture, fixture, fixture, fixture, nil, fixture},
+		{checker, fixture, fixture, fixture, fixture, fixture, nil},
 	} {
-		handler, err := HandlerWithAuth(time.Second, tc.checker, tc.service, tc.recorder, tc.admin, tc.connections, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+		handler, err := HandlerWithAuth(time.Second, tc.checker, tc.service, tc.recorder, tc.admin, tc.connections, tc.grants, tc.members, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 		require.Nil(t, handler)
 		require.Error(t, err)
 		status, failure := auth.FailureFor(err)

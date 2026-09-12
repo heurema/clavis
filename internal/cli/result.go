@@ -59,8 +59,18 @@ func render(w io.Writer, result Result, format string) error {
 	}
 	switch data := result.Data.(type) {
 	case auth.Identity:
-		_, err := fmt.Fprintf(w, "User: %s (%s)\nRole: %s\nExpires: %s\n", data.User.Username, data.User.ID, data.User.Role, data.ExpiresAt.UTC().Format("2006-01-02T15:04:05Z"))
-		return err
+		if _, err := fmt.Fprintf(w, "User: %s (%s)\nRole: %s\nExpires: %s\n", data.User.Username, data.User.ID, data.User.Role, timestamp(data.ExpiresAt)); err != nil {
+			return err
+		}
+		// Only whoami fills the names, and only for a member: an administrator
+		// needs no grant, so the line is absent rather than listing everything.
+		if len(data.Connections) == 0 {
+			return nil
+		}
+		if _, err := fmt.Fprintf(w, "Connections: %s\n", strings.Join(data.Connections, ", ")); err != nil {
+			return err
+		}
+		return renderTruncation(w, data.ConnectionsTruncated, auth.MaxConnectionListing, "connections")
 	case auth.Revocation:
 		_, err := fmt.Fprintf(w, "Revoked: %t\n", data.Revoked)
 		return err
@@ -78,25 +88,44 @@ func render(w io.Writer, result Result, format string) error {
 				return err
 			}
 		}
-		if data.Truncated {
-			_, err := fmt.Fprintf(w, "Truncated: list is limited to %d users\n", auth.MaxUserListing)
-			return err
-		}
-		return nil
+		return renderTruncation(w, data.Truncated, auth.MaxUserListing, "users")
 	case auth.Connection:
 		return renderConnection(w, data)
+	case auth.ConnectionSummary:
+		return renderConnectionSummary(w, data)
 	case auth.ConnectionList:
 		for _, connection := range data.Connections {
-			if _, err := fmt.Fprintf(w, "%s %s %s %s %s\n", connection.ID, connection.Name,
-				connection.Provider, connectionStatus(connection), lastCheckOutcome(connection.LastCheck)); err != nil {
+			if err := renderConnectionLine(w, connection.Summary()); err != nil {
 				return err
 			}
 		}
-		if data.Truncated {
-			_, err := fmt.Fprintf(w, "Truncated: list is limited to %d connections\n", auth.MaxConnectionListing)
+		return renderTruncation(w, data.Truncated, auth.MaxConnectionListing, "connections")
+	case auth.ConnectionSummaryList:
+		for _, connection := range data.Connections {
+			if err := renderConnectionLine(w, connection); err != nil {
+				return err
+			}
+		}
+		return renderTruncation(w, data.Truncated, auth.MaxConnectionListing, "connections")
+	case auth.GrantList:
+		for _, grant := range data.Grants {
+			if _, err := fmt.Fprintf(w, "%s %s %s\n", grant.User.Name, grant.Connection.Name, timestamp(grant.CreatedAt)); err != nil {
+				return err
+			}
+		}
+		return renderTruncation(w, data.Truncated, auth.MaxGrantListing, "grants")
+	case auth.GrantMutation:
+		if _, err := fmt.Fprintf(w, "Grant: %s → %s\nGranted: %s by %s\nCreated: %t\n",
+			data.Grant.User.Name, data.Grant.Connection.Name, timestamp(data.Grant.CreatedAt),
+			data.Grant.CreatedBy.Name, data.Created); err != nil {
 			return err
 		}
-		return nil
+		return renderDryRun(w, data.DryRun)
+	case auth.GrantRevocation:
+		if _, err := fmt.Fprintf(w, "Revoked: %t\n", data.Revoked); err != nil {
+			return err
+		}
+		return renderDryRun(w, data.DryRun)
 	case auth.ConnectionMutation:
 		if err := renderConnection(w, data.Connection); err != nil {
 			return err
@@ -132,8 +161,18 @@ func userStatus(user auth.UserRecord) string {
 
 func timestamp(value time.Time) string { return value.UTC().Format("2006-01-02T15:04:05Z") }
 
-func connectionStatus(connection auth.Connection) string {
-	if connection.Enabled {
+// renderTruncation prints the one bounded-listing notice every group shares,
+// and only when the server actually reported truncation.
+func renderTruncation(w io.Writer, truncated bool, limit int, noun string) error {
+	if !truncated {
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "Truncated: list is limited to %d %s\n", limit, noun)
+	return err
+}
+
+func connectionStatus(enabled bool) string {
+	if enabled {
 		return "enabled"
 	}
 	return "disabled"
@@ -169,20 +208,42 @@ func renderDryRun(w io.Writer, dryRun bool) error {
 	return err
 }
 
+// renderConnectionLine prints one listing row. Both listings share it: the
+// columns a member sees are exactly the ones an administrator's row leads with.
+func renderConnectionLine(w io.Writer, connection auth.ConnectionSummary) error {
+	_, err := fmt.Fprintf(w, "%s %s %s %s %s\n", connection.ID, connection.Name,
+		connection.Provider, connectionStatus(connection.Enabled), lastCheckOutcome(connection.LastCheck))
+	return err
+}
+
+func lastCheckDetail(check *auth.CheckResult) string {
+	if check == nil {
+		return "never"
+	}
+	return string(check.Outcome) + " at " + timestamp(check.CheckedAt)
+}
+
+// renderConnectionSummary prints the member projection: identity, descriptive
+// text, labels, state and the last check. It has no target or bound line
+// because the shape carries neither.
+func renderConnectionSummary(w io.Writer, connection auth.ConnectionSummary) error {
+	_, err := fmt.Fprintf(w,
+		"Connection: %s\nID: %s\nTitle: %s\nProvider: %s\nLabels: %s\nStatus: %s\nLast check: %s\n",
+		connection.Name, connection.ID, connection.Title, connection.Provider,
+		settingPairs(connection.Labels), connectionStatus(connection.Enabled), lastCheckDetail(connection.LastCheck))
+	return err
+}
+
 // renderConnection prints the safe record projection only; a credential never
 // reaches a result type.
 func renderConnection(w io.Writer, connection auth.Connection) error {
-	lastCheck := "never"
-	if connection.LastCheck != nil {
-		lastCheck = string(connection.LastCheck.Outcome) + " at " + timestamp(connection.LastCheck.CheckedAt)
-	}
 	_, err := fmt.Fprintf(w,
 		"Connection: %s\nID: %s\nTitle: %s\nProvider: %s\nTarget: %s\nLabels: %s\nStatus: %s\n"+
 			"Timeout: %s\nMax rows: %d\nMax bytes: %d\nLast check: %s\nCreated: %s\nUpdated: %s\n",
 		connection.Name, connection.ID, connection.Title, connection.Provider,
-		settingPairs(connection.Target), settingPairs(connection.Labels), connectionStatus(connection),
+		settingPairs(connection.Target), settingPairs(connection.Labels), connectionStatus(connection.Enabled),
 		(time.Duration(connection.StatementTimeoutMS) * time.Millisecond).String(),
-		connection.MaxRows, connection.MaxBytes, lastCheck,
+		connection.MaxRows, connection.MaxBytes, lastCheckDetail(connection.LastCheck),
 		timestamp(connection.CreatedAt), timestamp(connection.UpdatedAt))
 	return err
 }
