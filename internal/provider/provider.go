@@ -28,6 +28,12 @@ type Provider interface {
 	ParseTarget(raw map[string]string) (map[string]string, error)
 	ValidateSecret(target map[string]string, secret auth.Secret) error
 	Probe(ctx context.Context, target map[string]string, secret auth.Secret) auth.CheckOutcome
+}
+
+// Executor is the optional execution capability. A provider that lacks it is
+// refused with PROVIDER_UNSUPPORTED before any credential is opened, decided
+// by a type assertion rather than by calling anything.
+type Executor interface {
 	Execute(ctx context.Context, target map[string]string, secret auth.Secret, request ExecuteRequest) (ExecuteResult, error)
 }
 

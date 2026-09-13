@@ -202,7 +202,10 @@ func (postgreSQL) Execute(ctx context.Context, target map[string]string, secret 
 	if !ok {
 		return ExecuteResult{}, ErrUnreachable
 	}
-	config, err := postgresConfig(target, secret, timeout)
+	// Dialling gets the probe's budget at most: a black-holed host must fail
+	// within seconds, not within the hung-connection backstop that bounds the
+	// whole request.
+	config, err := postgresConfig(target, secret, min(timeout, auth.OperationTimeout))
 	if err != nil {
 		return ExecuteResult{}, ErrUnreachable
 	}
