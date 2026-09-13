@@ -295,8 +295,8 @@ Delete requires a disabled connection with no grants; the `CONNECTION_IN_USE`
 hint names what still blocks it, including the number of remaining grants.
 Listing is bounded to 1,000 connections and to the response body limit, always
 with an explicit `truncated` flag. Statement timeout and result caps default to 30 s, 1,000 rows and 1 MiB
-with ceilings of 120 s, 100,000 rows and 10 MiB; they are enforced once query
-execution ships. A dry run commits nothing.
+with ceilings of 120 s, 100,000 rows and 10 MiB; query execution enforces them.
+A dry run commits nothing.
 
 ## Grants
 
@@ -325,6 +325,56 @@ attempt by a member is refused with `FORBIDDEN`. Revocation takes
 effect on the member's next request, and grants survive blocking and renames.
 Listing is bounded to 1,000 grants with an explicit `truncated` flag. The
 browser admin page lists grants read-only below the connections.
+
+## Queries
+
+`clavis query` runs SQL on a PostgreSQL connection the caller may use:
+administrators on any enabled connection, members on the ones they hold a grant
+on. The SQL is forwarded unchanged under the connection's credentials; the
+platform does not parse, filter or wrap it, so the external role decides what
+succeeds, and a script with several statements runs in order inside
+PostgreSQL's implicit transaction (all or nothing unless the script has its own
+transaction control).
+
+```sh
+clavis query --connection payments-prod-reporting --sql 'select count(*) from orders'
+clavis query --connection payments-prod-reporting --sql-stdin <<'SQL'
+create temp table recent as select * from orders where created_at > now() - interval '1 day';
+select status, count(*) from recent group by 1 order by 2 desc;
+SQL
+clavis query --connection payments-prod-reporting --sql-file /tmp/report.sql --max-rows 50 --output text
+```
+
+Exactly one of `--sql`, `--sql-stdin` or `--sql-file <absolute path>` supplies
+the SQL, bounded to 256 KiB. The result is always a list, one entry per
+statement, each with `command`, `columns` (name and PostgreSQL type), `rows` as
+arrays of strings exactly as PostgreSQL renders them (`null` for NULL, never a
+JSON number), `rowCount` and `truncated`; the response also carries `truncated`
+and `durationMs`. Text output prints one aligned table per result with `∅` for
+NULL. The connection's statement timeout is set on the source session and
+aborts the statement (`SOURCE_TIMEOUT`); the row and byte caps limit what comes
+back, never what the database does: past the cap the remaining rows are read and
+dropped, the response is marked truncated and the exit code stays 0.
+`--max-rows` may lower the cap for one request. PostgreSQL applies the timeout to
+each statement of a script separately, so `query` waits up to ten times the
+connection's timeout plus five seconds before treating the connection as hung;
+its `--timeout` therefore defaults to that budget at the 120 s ceiling rather
+than the five seconds of the other commands. Failures are distinct codes:
+`SOURCE_ERROR` (422) with the source's `sqlstate`, `message`, `detail`, `hint`,
+`position` and the index of the failing statement under `error.source`,
+`SOURCE_TIMEOUT` (504), `SOURCE_UNREACHABLE` and `SOURCE_AUTH_REJECTED` (502),
+`CREDENTIALS_UNAVAILABLE`, `PROVIDER_UNSUPPORTED` (VictoriaMetrics queries are a
+later change), and the authorization codes `CONNECTION_NOT_FOUND`,
+`CONNECTION_DISABLED`, `FORBIDDEN` and `UNAUTHENTICATED`. The source's message
+may contain values from your own SQL; it is returned to you and never logged.
+
+Each request opens one connection to the source and closes it afterwards; the
+platform keeps no pool and imposes no concurrency limit, so a runaway agent is
+throttled where it belongs: give the role a `CONNECTION LIMIT` in PostgreSQL. To
+learn a database's structure, query its catalog through the same command, for
+example `select table_schema, table_name, column_name, data_type from
+information_schema.columns where table_schema not in ('pg_catalog',
+'information_schema') order by 1, 2, ordinal_position`.
 
 For a custom API address, add `--server <url>` or export `CLAVIS_SERVER_URL`; the
 CLI does not load `.env`. Authentication requires a root-origin HTTPS URL except
