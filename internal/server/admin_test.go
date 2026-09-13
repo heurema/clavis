@@ -396,7 +396,7 @@ func TestRealHTTPAdministrationRoutesMutateAndFailClosed(t *testing.T) {
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
 	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
 	require.NoError(t, err)
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service,
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service,
 		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})

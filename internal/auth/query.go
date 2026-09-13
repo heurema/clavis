@@ -1,6 +1,17 @@
 package auth
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// QueryRequestBudget is the whole-request deadline an execution runs under, on
+// the route, in the CLI and as the service's own backstop. The service bounds
+// a hung connection at ten times the connection's statement timeout plus five
+// seconds, so this is the largest request any connection can produce plus
+// headroom; the shared five-second operation bound would cut a perfectly
+// ordinary query long before its own statement timeout expired.
+const QueryRequestBudget = 10*MaxStatementTimeout + 10*time.Second
 
 // QueryPath is the one execution route. It is not an administration route: a
 // member with a grant uses it, so it sits outside /api/admin.
