@@ -25,6 +25,8 @@ const (
 	queryDisabledHint    = "Ask an administrator to enable the connection"
 	queryUnsupportedHint = "Only postgresql connections execute SQL"
 	querySourceHint      = "Correct the statement and try again"
+	queryWantsSQLHint    = "This connection is postgresql: send sql"
+	queryWantsPromQLHint = "This connection is victoriametrics: send promql, labels, labelValues or series"
 )
 
 // serveQuery implements the design's execution route over the fixture's
@@ -40,9 +42,17 @@ func (f *cliAuthFixture) serveQuery(w http.ResponseWriter, r *http.Request, acto
 		_ = json.NewEncoder(w).Encode(auth.ErrorResponse{Error: safe, Source: failure.Source})
 	}
 	var input auth.QueryRequest
+	inputs := 0
+	strict := strictJSON(body, &input)
+	for _, set := range []bool{input.SQL != "", input.PromQL != "", input.Labels,
+		input.LabelValues != "", input.Series != ""} {
+		if set {
+			inputs++
+		}
+	}
 	if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" ||
-		!strictJSON(body, &input) || !auth.ValidConnectionRef(input.Connection) ||
-		input.SQL == "" || len(input.SQL) > auth.MaxSQLBytes || input.MaxRows < 0 {
+		!strict || !auth.ValidConnectionRef(input.Connection) || inputs != 1 ||
+		len(input.SQL)+len(input.PromQL) > auth.MaxSQLBytes || input.MaxRows < 0 {
 		fail(auth.InvalidArgument)
 		return
 	}
@@ -66,8 +76,18 @@ func (f *cliAuthFixture) serveQuery(w http.ResponseWriter, r *http.Request, acto
 		failWith(&auth.Error{Code: auth.ConnectionDisabled, Hint: queryDisabledHint})
 		return
 	}
-	if connection.Provider != auth.ProviderPostgreSQL {
-		failWith(&auth.Error{Code: auth.ProviderUnsupported, Hint: queryUnsupportedHint})
+	// The input must fit the connection's provider, exactly as the service
+	// decides it on the record.
+	if connection.Provider == auth.ProviderVictoriaMetrics {
+		if input.SQL != "" {
+			failWith(&auth.Error{Code: auth.InvalidArgument, Hint: queryWantsPromQLHint})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(f.queryResponse)
+		return
+	}
+	if input.SQL == "" {
+		failWith(&auth.Error{Code: auth.InvalidArgument, Hint: queryWantsSQLHint})
 		return
 	}
 	_ = json.NewEncoder(w).Encode(lowerRows(f.queryResponse, input.MaxRows))
@@ -105,6 +125,7 @@ func value(text string) *string { return &text }
 // and a second statement without rows.
 func queryRows() auth.QueryResponse {
 	return auth.QueryResponse{
+		Provider: auth.ProviderPostgreSQL,
 		Results: []auth.QueryResult{{
 			Command: "SELECT",
 			Columns: []auth.QueryColumn{{Name: "id", Type: "int8"}, {Name: "label", Type: "text"}},
@@ -310,12 +331,12 @@ func TestQueryArgumentsRejectedBeforeIO(t *testing.T) {
 		args []string
 		hint string
 	}{
-		{"no input", []string{"query", "--connection", "payments-prod-reporting"}, sqlInputHint},
-		{"two inputs", []string{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "--sql-file", path}, sqlInputHint},
-		{"stdin and inline", []string{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "--sql-stdin"}, sqlInputHint},
-		{"relative file", []string{"query", "--connection", "payments-prod-reporting", "--sql-file", "script.sql"}, sqlInputHint},
-		{"missing file", []string{"query", "--connection", "payments-prod-reporting", "--sql-file", filepath.Join(t.TempDir(), "absent.sql")}, sqlInputHint},
-		{"directory", []string{"query", "--connection", "payments-prod-reporting", "--sql-file", t.TempDir()}, sqlInputHint},
+		{"no input", []string{"query", "--connection", "payments-prod-reporting"}, queryInputHint},
+		{"two inputs", []string{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "--sql-file", path}, queryInputHint},
+		{"stdin and inline", []string{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "--sql-stdin"}, queryInputHint},
+		{"relative file", []string{"query", "--connection", "payments-prod-reporting", "--sql-file", "script.sql"}, queryInputHint},
+		{"missing file", []string{"query", "--connection", "payments-prod-reporting", "--sql-file", filepath.Join(t.TempDir(), "absent.sql")}, queryInputHint},
+		{"directory", []string{"query", "--connection", "payments-prod-reporting", "--sql-file", t.TempDir()}, queryInputHint},
 		{"empty sql", []string{"query", "--connection", "payments-prod-reporting", "--sql", ""}, sqlBoundHint},
 		{"oversized sql", []string{"query", "--connection", "payments-prod-reporting", "--sql", strings.Repeat("x", auth.MaxSQLBytes+1)}, sqlBoundHint},
 		{"no connection", []string{"query", "--sql", "select 1"}, connectionRefHint},
@@ -389,7 +410,6 @@ func TestQueryDocumentedFailures(t *testing.T) {
 	}{
 		{"absent", "no-such-connection", auth.ConnectionNotFound, queryNotFoundHint},
 		{"disabled", "warehouse-primary", auth.ConnectionDisabled, queryDisabledHint},
-		{"unsupported", "metrics-prod", auth.ProviderUnsupported, queryUnsupportedHint},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exit, result, _ := queryRun(t, server, "query", "--connection", tc.connection, "--sql", "select 1")
@@ -405,6 +425,7 @@ func TestQueryDocumentedFailures(t *testing.T) {
 		{&auth.Error{Code: auth.SourceError, Hint: querySourceHint, Source: &auth.SourceFailure{
 			SQLState: "42601", Message: `syntax error at or near "selec"`, Position: 1,
 			Statement: auth.StatementIndex(0)}}, true},
+		{&auth.Error{Code: auth.ProviderUnsupported, Hint: queryUnsupportedHint}, false},
 		{&auth.Error{Code: auth.SourceTimeout, Hint: "The bound is 1000 ms"}, false},
 		{&auth.Error{Code: auth.SourceUnreachable, Hint: "Run connections check"}, false},
 		{&auth.Error{Code: auth.SourceAuthRejected, Hint: "Run connections check"}, false},
@@ -487,7 +508,7 @@ func sendQuery(t *testing.T, server *httptest.Server, output *auth.QueryResponse
 // A results document that is not the documented shape is refused rather than
 // rendered with missing, extra or mismatched members.
 func TestQueryTransportStrictResponses(t *testing.T) {
-	valid := `{"results":[{"command":"SELECT","columns":[{"name":"id","type":"int8"}],` +
+	valid := `{"provider":"postgresql","results":[{"command":"SELECT","columns":[{"name":"id","type":"int8"}],` +
 		`"rows":[["1"],[null]],"rowCount":2,"truncated":false}],"truncated":false,"durationMs":4}`
 	for name, tc := range map[string]struct {
 		body  string
@@ -536,7 +557,7 @@ func TestQueryResponseBoundIsTheRouteBound(t *testing.T) {
 	require.Equal(t, auth.MaxSQLBytes+queryBodyAllowance, requestLimit(auth.QueryPath))
 	require.Equal(t, auth.MaxCredentialBody, requestLimit(auth.GrantsPath))
 
-	large := `{"results":[{"command":"SELECT","columns":[{"name":"v","type":"text"}],"rows":[["` +
+	large := `{"provider":"postgresql","results":[{"command":"SELECT","columns":[{"name":"v","type":"text"}],"rows":[["` +
 		strings.Repeat("x", auth.MaxResponseBody*2) + `"]],"rowCount":1,"truncated":false}],` +
 		`"truncated":false,"durationMs":4}`
 	server := hostileQuery(t, http.StatusOK, "application/json", large)
@@ -544,7 +565,7 @@ func TestQueryResponseBoundIsTheRouteBound(t *testing.T) {
 	require.Nil(t, sendQuery(t, server, &response))
 	require.Len(t, *response.Results[0].Rows[0][0], auth.MaxResponseBody*2)
 
-	oversized := `{"results":[{"command":"SELECT","columns":[{"name":"v","type":"text"}],"rows":[["` +
+	oversized := `{"provider":"postgresql","results":[{"command":"SELECT","columns":[{"name":"v","type":"text"}],"rows":[["` +
 		strings.Repeat("x", responseLimit(http.MethodPost, auth.QueryPath)) + `"]],"rowCount":1,"truncated":false}],` +
 		`"truncated":false,"durationMs":4}`
 	server = hostileQuery(t, http.StatusOK, "application/json", oversized)
@@ -556,7 +577,7 @@ func TestQueryResponseBoundIsTheRouteBound(t *testing.T) {
 // A request above the route's own bound is refused locally: the CLI never
 // uploads a body the route would reject.
 func TestQueryRequestBoundIsLocal(t *testing.T) {
-	server := hostileQuery(t, http.StatusOK, "application/json", `{"results":[],"truncated":false,"durationMs":1}`)
+	server := hostileQuery(t, http.StatusOK, "application/json", `{"provider":"postgresql","results":[],"truncated":false,"durationMs":1}`)
 	var response auth.QueryResponse
 	route := apiCall{http.MethodPost, auth.QueryPath, "", http.StatusOK}
 	input := auth.QueryRequest{Connection: "payments-prod-reporting", SQL: strings.Repeat("x", auth.MaxSQLBytes+queryBodyAllowance)}
@@ -701,4 +722,354 @@ func TestQueryIsScopedToGrantsForMembers(t *testing.T) {
 	exit, result, _ = queryRun(t, server, "query", "--connection", "warehouse-primary", "--sql", "select 1")
 	require.Equal(t, 1, exit)
 	require.Equal(t, auth.ConnectionNotFound, result.Error.Code)
+}
+
+// metricsRows is the other documented document: the source's own vector under
+// the provider that named it, with the source's warning beside it.
+func metricsRows() auth.QueryResponse {
+	return auth.QueryResponse{
+		Provider:   auth.ProviderVictoriaMetrics,
+		ResultType: "vector",
+		Result: json.RawMessage(`[{"metric":{"__name__":"up","job":"api","instance":"a:9090"},"value":[1700000000,"1"]},` +
+			`{"metric":{"__name__":"up","job":"db"},"value":[1700000001,"0"]}]`),
+		Warnings:   []string{"the range is long"},
+		DurationMS: 9,
+	}
+}
+
+func metricsAnswer(resultType, result string) auth.QueryResponse {
+	return auth.QueryResponse{Provider: auth.ProviderVictoriaMetrics, ResultType: resultType,
+		Result: json.RawMessage(result), DurationMS: 9}
+}
+
+func metricsFixture(t *testing.T) (*cliAuthFixture, *httptest.Server) {
+	t.Helper()
+	fixture, server := queryFixture(t)
+	fixture.mu.Lock()
+	fixture.queryResponse = metricsRows()
+	fixture.mu.Unlock()
+	return fixture, server
+}
+
+// Every metrics input is sent as one request carrying only the fields that
+// were given: the expression, the times, the step and the selectors travel
+// exactly as typed, because the source parses them and the platform does not.
+func TestQueryMetricsInputsAreSentAsTyped(t *testing.T) {
+	for name, tc := range map[string]struct {
+		args    []string
+		request auth.QueryRequest
+	}{
+		"instant": {[]string{"--promql", "up"}, auth.QueryRequest{PromQL: "up"}},
+		"pinned instant": {[]string{"--promql", "up", "--at", "2026-09-13T00:00:00Z"},
+			auth.QueryRequest{PromQL: "up", At: "2026-09-13T00:00:00Z"}},
+		"range": {[]string{"--promql", "rate(errors_total[5m])", "--start", "-1h", "--step", "1m"},
+			auth.QueryRequest{PromQL: "rate(errors_total[5m])", Start: "-1h", Step: "1m"}},
+		"bounded range": {[]string{"--promql", "up", "--start", "-1h", "--end", "now", "--step", "1m", "--max-rows", "10"},
+			auth.QueryRequest{PromQL: "up", Start: "-1h", End: "now", Step: "1m", MaxRows: 10}},
+		"labels": {[]string{"--labels", "--match", `{job="api"}`},
+			auth.QueryRequest{Labels: true, Match: `{job="api"}`}},
+		"label values": {[]string{"--label-values", "__name__", "--start", "-1h", "--end", "now"},
+			auth.QueryRequest{LabelValues: "__name__", Start: "-1h", End: "now"}},
+		"series": {[]string{"--series", `{__name__=~"up"}`, "--match", `{job="api"}`},
+			auth.QueryRequest{Series: `{__name__=~"up"}`, Match: `{job="api"}`}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture, server := metricsFixture(t)
+			exit, result, _ := queryRun(t, server, append([]string{"query", "--connection", "metrics-prod"}, tc.args...)...)
+			require.Equal(t, 0, exit, "%+v", result.Error)
+			tc.request.Connection = "metrics-prod"
+			expected, err := json.Marshal(tc.request)
+			require.NoError(t, err)
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			require.Equal(t, string(expected), string(fixture.queryBody))
+		})
+	}
+}
+
+// The expression inputs take the same three channels the SQL inputs take, and
+// the expression is bounded on all of them before anything is sent.
+func TestQueryReadsPromQLFromEveryChannel(t *testing.T) {
+	fixture, server := metricsFixture(t)
+	expression := "sum(rate(http_requests_total[5m])) by (job)"
+	exit, output := queryText(t, server, expression, "query", "--connection", "metrics-prod", "--promql-stdin")
+	require.Equal(t, 0, exit, output)
+	fixture.mu.Lock()
+	var sent auth.QueryRequest
+	require.NoError(t, json.Unmarshal(fixture.queryBody, &sent))
+	fixture.mu.Unlock()
+	require.Equal(t, expression, sent.PromQL)
+	require.Empty(t, sent.SQL)
+
+	path := filepath.Join(t.TempDir(), "expression.promql")
+	require.NoError(t, os.WriteFile(path, []byte(expression), 0o644))
+	exit, result, _ := queryRun(t, server, "query", "--connection", "metrics-prod", "--promql-file", path)
+	require.Equal(t, 0, exit, "%+v", result.Error)
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	require.NoError(t, json.Unmarshal(fixture.queryBody, &sent))
+	require.Equal(t, expression, sent.PromQL)
+}
+
+// The metrics document reaches the caller as the source rendered it: the
+// provider names the shape and the result is passed through unchanged.
+func TestQueryMetricsDocumentAsJSON(t *testing.T) {
+	_, server := metricsFixture(t)
+	exit, result, _ := queryRun(t, server, "query", "--connection", "metrics-prod", "--promql", "up")
+	require.Equal(t, 0, exit, "%+v", result.Error)
+	document := result.Data.(map[string]any)
+	require.Equal(t, "victoriametrics", document["provider"])
+	require.Equal(t, "vector", document["resultType"])
+	require.Equal(t, []any{"the range is long"}, document["warnings"])
+	samples := document["result"].([]any)
+	require.Len(t, samples, 2)
+	require.Equal(t, map[string]any{"__name__": "up", "job": "api", "instance": "a:9090"},
+		samples[0].(map[string]any)["metric"])
+	require.Equal(t, []any{float64(1700000000), "1"}, samples[0].(map[string]any)["value"])
+	require.Nil(t, document["results"], "a metrics answer carries no results list")
+}
+
+// The text rendering is the agent-facing one: the source's warnings first,
+// then one line per sample with sorted labels, a block per matrix series, one
+// line per discovery item, and the platform's own notices last.
+func TestQueryMetricsTextRendering(t *testing.T) {
+	partial := metricsRows()
+	partial.Truncated, partial.IsPartial = true, true
+	for name, tc := range map[string]struct {
+		result Result
+		want   string
+	}{
+		"vector": {success(metricsRows()),
+			"Warning: the range is long\n" +
+				"up{instance=\"a:9090\",job=\"api\"} 1 @1700000000\n" +
+				"up{job=\"db\"} 0 @1700000001\n" +
+				"Duration: 9 ms\n"},
+		"truncated vector": {success(partial),
+			"Warning: the range is long\n" +
+				"up{instance=\"a:9090\",job=\"api\"} 1 @1700000000\n" +
+				"up{job=\"db\"} 0 @1700000001\n" +
+				"Truncated: true\nPartial: true\nDuration: 9 ms\n"},
+		"matrix": {success(metricsAnswer("matrix",
+			`[{"metric":{"__name__":"up","job":"api"},"values":[[1700000000,"1"],[1700000060,"2"]]},`+
+				`{"metric":{},"values":[]}]`)),
+			"up{job=\"api\"}\n1700000000 1\n1700000060 2\n{}\nDuration: 9 ms\n"},
+		"scalar":  {success(metricsAnswer("scalar", `[1700000000,"42"]`)), "42 @1700000000\nDuration: 9 ms\n"},
+		"string":  {success(metricsAnswer("string", `[1700000000,"hello"]`)), "hello @1700000000\nDuration: 9 ms\n"},
+		"labels":  {success(metricsAnswer("labels", `["__name__","job"]`)), "__name__\njob\nDuration: 9 ms\n"},
+		"metrics": {success(metricsAnswer("labelValues", `["up","go_info"]`)), "up\ngo_info\nDuration: 9 ms\n"},
+		"series": {success(metricsAnswer("series", `[{"__name__":"up","job":"api"},{"job":"db"}]`)),
+			"up{job=\"api\"}\n{job=\"db\"}\nDuration: 9 ms\n"},
+		"promql-error": {failureWithSource(auth.SourceError, "The source rejected the SQL", querySourceHint,
+			&auth.SourceFailure{ErrorType: "bad_data", Message: `unsupported expression`}),
+			"SOURCE_ERROR: The source rejected the SQL\nHint: " + querySourceHint + "\n" +
+				"ERROR: bad_data unsupported expression\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			require.NoError(t, render(&out, tc.result, "text"))
+			require.Equal(t, tc.want, out.String())
+		})
+	}
+}
+
+// A discovery listing as text is one item per line, and the truncation notice
+// appears only when the server reported it.
+func TestQueryMetricNamesAsText(t *testing.T) {
+	fixture, server := metricsFixture(t)
+	fixture.mu.Lock()
+	fixture.queryResponse = metricsAnswer("labelValues", `["up","go_info"]`)
+	fixture.mu.Unlock()
+	exit, output := queryText(t, server, "", "query", "--connection", "metrics-prod", "--label-values", "__name__")
+	require.Equal(t, 0, exit, output)
+	require.Equal(t, "up\ngo_info\nDuration: 9 ms\n", output)
+
+	truncated := metricsAnswer("labelValues", `["up"]`)
+	truncated.Truncated = true
+	fixture.mu.Lock()
+	fixture.queryResponse = truncated
+	fixture.mu.Unlock()
+	exit, output = queryText(t, server, "", "query", "--connection", "metrics-prod", "--label-values", "__name__")
+	require.Equal(t, 0, exit, output)
+	require.Equal(t, "up\nTruncated: true\nDuration: 9 ms\n", output)
+}
+
+// A PromQL failure prints the source's own classification and message, with no
+// position and no statement line, and never repeats the expression.
+func TestQueryPromQLSourceErrorAsText(t *testing.T) {
+	fixture, server := metricsFixture(t)
+	fixture.mu.Lock()
+	fixture.queryFailure = &auth.Error{Code: auth.SourceError, Hint: querySourceHint,
+		Source: &auth.SourceFailure{ErrorType: "bad_data", Message: "cannot parse the expression"}}
+	fixture.mu.Unlock()
+	exit, output := queryText(t, server, "", "query", "--connection", "metrics-prod", "--promql", "up ~~ sentinel")
+	require.Equal(t, 1, exit)
+	require.Equal(t, "SOURCE_ERROR: The source rejected the SQL\nHint: "+querySourceHint+"\n"+
+		"ERROR: bad_data cannot parse the expression\n", output)
+	require.NotContains(t, output, "sentinel")
+}
+
+// A mismatch the server decides on the record passes through as the invalid
+// argument it is, with the hint naming the input that connection takes.
+func TestQueryProviderMismatchPassesThrough(t *testing.T) {
+	_, server := metricsFixture(t)
+	exit, result, output := queryRun(t, server, "query", "--connection", "metrics-prod", "--sql", "select 1")
+	require.Equal(t, 2, exit)
+	require.Equal(t, auth.InvalidArgument, result.Error.Code)
+	require.Equal(t, queryWantsPromQLHint, result.Error.Hint)
+	require.NotContains(t, output, "select 1")
+
+	fixture, server := queryFixture(t)
+	fixture.mu.Lock()
+	fixture.queryResponse = queryRows()
+	fixture.mu.Unlock()
+	exit, result, _ = queryRun(t, server, "query", "--connection", "payments-prod-reporting", "--promql", "up")
+	require.Equal(t, 2, exit)
+	require.Equal(t, auth.InvalidArgument, result.Error.Code)
+	require.Equal(t, queryWantsSQLHint, result.Error.Hint)
+}
+
+// Every metrics argument rule is decided locally, exits 2 and reaches no
+// request at all.
+func TestQueryMetricsArgumentsRejectedBeforeIO(t *testing.T) {
+	fixture, server := metricsFixture(t)
+	fixture.mu.Lock()
+	before := fixture.queryCalls
+	fixture.mu.Unlock()
+	for _, tc := range []struct {
+		name string
+		args []string
+		hint string
+	}{
+		{"two inputs", []string{"--promql", "up", "--labels"}, queryInputHint},
+		{"expression and sql", []string{"--sql", "select 1", "--promql", "up"}, queryInputHint},
+		{"two expression channels", []string{"--promql", "up", "--promql-stdin"}, queryInputHint},
+		{"two discovery inputs", []string{"--labels", "--series", "up"}, queryInputHint},
+		{"relative expression file", []string{"--promql-file", "expression.promql"}, queryInputHint},
+		{"empty expression", []string{"--promql", ""}, sqlBoundHint},
+		{"oversized expression", []string{"--promql", strings.Repeat("u", auth.MaxSQLBytes+1)}, sqlBoundHint},
+		{"oversized selector", []string{"--series", strings.Repeat("u", auth.MaxSQLBytes+1)}, sqlBoundHint},
+		{"oversized match", []string{"--labels", "--match", strings.Repeat("u", auth.MaxSQLBytes+1)}, sqlBoundHint},
+		{"at with start", []string{"--promql", "up", "--at", "now", "--start", "-1h"}, queryTimeHint},
+		{"at with discovery", []string{"--labels", "--at", "now"}, queryTimeHint},
+		{"at with sql", []string{"--sql", "select 1", "--at", "now"}, queryTimeHint},
+		{"step without start", []string{"--promql", "up", "--step", "1m"}, queryTimeHint},
+		{"step on discovery", []string{"--labels", "--start", "-1h", "--step", "1m"}, queryTimeHint},
+		{"match with promql", []string{"--promql", "up", "--match", "up"}, queryTimeHint},
+		{"end without start", []string{"--promql", "up", "--end", "now"}, queryTimeHint},
+		{"start with sql", []string{"--sql", "select 1", "--start", "-1h"}, queryTimeHint},
+		{"end with sql", []string{"--sql", "select 1", "--end", "now"}, queryTimeHint},
+		{"match with sql", []string{"--sql", "select 1", "--match", "up"}, queryTimeHint},
+		{"invalid label name", []string{"--label-values", "9metric"}, queryLabelHint},
+		{"pathy label name", []string{"--label-values", "../admin"}, queryLabelHint},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exit, result, output := queryRun(t, server,
+				append([]string{"query", "--connection", "metrics-prod"}, tc.args...)...)
+			require.Equal(t, 2, exit)
+			require.Equal(t, auth.InvalidArgument, result.Error.Code)
+			require.Equal(t, tc.hint, result.Error.Hint)
+			require.True(t, json.Valid([]byte(output)), "exit 2 forces JSON")
+		})
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	require.Equal(t, before, fixture.queryCalls, "no request may be made")
+}
+
+// A metrics document that is not the documented shape is refused rather than
+// rendered, and neither provider's document may carry the other's members.
+func TestQueryMetricsTransportStrictResponses(t *testing.T) {
+	valid := `{"provider":"victoriametrics","resultType":"vector",` +
+		`"result":[{"metric":{"job":"a"},"value":[1,"1"]}],"truncated":false,"durationMs":4}`
+	for name, tc := range map[string]struct {
+		body  string
+		valid bool
+	}{
+		"vector":  {valid, true},
+		"partial": {strings.Replace(valid, `"truncated":false`, `"isPartial":true,"truncated":false`, 1), true},
+		"warned":  {strings.Replace(valid, `"truncated":false`, `"warnings":["long range"],"truncated":false`, 1), true},
+		"matrix": {strings.Replace(valid, `"vector","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`,
+			`"matrix","result":[{"metric":{"job":"a"},"values":[[1,"1"]],"truncated":true}]`, 1), true},
+		"empty matrix series": {strings.Replace(valid, `"vector","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`,
+			`"matrix","result":[{"metric":{"job":"a"},"values":[],"truncated":true}]`, 1), true},
+		"source member":  {strings.Replace(valid, `"value":[1,"1"]`, `"value":[1,"1"],"histogram":{}`, 1), true},
+		"scalar":         {strings.Replace(valid, `"vector","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`, `"scalar","result":[1,"1"]`, 1), true},
+		"string":         {strings.Replace(valid, `"vector","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`, `"string","result":[1,"text"]`, 1), true},
+		"labels":         {strings.Replace(valid, `"vector","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`, `"labels","result":["job"]`, 1), true},
+		"empty labels":   {strings.Replace(valid, `"vector","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`, `"labelValues","result":[]`, 1), true},
+		"series":         {strings.Replace(valid, `"vector","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`, `"series","result":[{"job":"a"}]`, 1), true},
+		"unknown type":   {strings.Replace(valid, `"vector"`, `"histogram"`, 1), false},
+		"missing type":   {strings.Replace(valid, `"resultType":"vector",`, ``, 1), false},
+		"missing result": {strings.Replace(valid, `"result":[{"metric":{"job":"a"},"value":[1,"1"]}],`, ``, 1), false},
+		"null result":    {strings.Replace(valid, `[{"metric":{"job":"a"},"value":[1,"1"]}]`, `null`, 1), false},
+		"vector samples": {strings.Replace(valid, `"value":[1,"1"]`, `"values":[[1,"1"]]`, 1), false},
+		"matrix sample": {strings.Replace(valid, `"vector","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`,
+			`"matrix","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`, 1), false},
+		"missing metric":   {strings.Replace(valid, `"metric":{"job":"a"},`, ``, 1), false},
+		"numeric label":    {strings.Replace(valid, `{"job":"a"}`, `{"job":1}`, 1), false},
+		"numeric value":    {strings.Replace(valid, `[1,"1"]`, `[1,1]`, 1), false},
+		"quoted timestamp": {strings.Replace(valid, `[1,"1"]`, `["1","1"]`, 1), false},
+		"long sample":      {strings.Replace(valid, `[1,"1"]`, `[1,"1",true]`, 1), false},
+		"short sample":     {strings.Replace(valid, `[1,"1"]`, `[1]`, 1), false},
+		"labels of numbers": {strings.Replace(valid, `"vector","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`,
+			`"labels","result":[1]`, 1), false},
+		"series of strings": {strings.Replace(valid, `"vector","result":[{"metric":{"job":"a"},"value":[1,"1"]}]`,
+			`"series","result":["up"]`, 1), false},
+		"control warning": {strings.Replace(valid, `"truncated":false`, "\"warnings\":[\"a\ab\"],\"truncated\":false", 1), false},
+		"results list":    {strings.Replace(valid, `"truncated":false`, `"results":[],"truncated":false`, 1), false},
+		"no provider":     {strings.Replace(valid, `"provider":"victoriametrics",`, ``, 1), false},
+		"other provider":  {strings.Replace(valid, `"victoriametrics"`, `"mysql"`, 1), false},
+		"metrics members on a SQL answer": {`{"provider":"postgresql","results":[],"resultType":"vector",` +
+			`"result":[],"truncated":false,"durationMs":4}`, false},
+		"partial on a SQL answer": {`{"provider":"postgresql","results":[],"isPartial":true,"truncated":false,"durationMs":4}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := hostileQuery(t, http.StatusOK, "application/json", tc.body)
+			var response auth.QueryResponse
+			failed := sendQuery(t, server, &response)
+			if tc.valid {
+				require.Nil(t, failed)
+				require.Equal(t, auth.ProviderVictoriaMetrics, response.Provider)
+				return
+			}
+			require.NotNil(t, failed)
+			require.Equal(t, "INVALID_RESPONSE", failed.Error.Code)
+		})
+	}
+}
+
+// A metrics source classifies its own failure; a block carrying both words, or
+// one carrying an unrenderable classification, is not the documented shape.
+func TestQueryMetricsSourceBlockIsStrict(t *testing.T) {
+	envelope := func(source string) string {
+		_, safe, _ := auth.LookupFailure(auth.SourceError)
+		return `{"error":{"code":"` + safe.Code + `","message":"` + safe.Message + `","source":` + source + `}}`
+	}
+	for name, tc := range map[string]struct {
+		source string
+		valid  bool
+	}{
+		"errorType":          {`{"errorType":"bad_data","message":"cannot parse"}`, true},
+		"http status":        {`{"errorType":"http_500","message":"cannot parse"}`, true},
+		"both words":         {`{"errorType":"bad_data","sqlstate":"42601","message":"cannot parse"}`, false},
+		"control errorType":  {"{\"errorType\":\"a\ab\",\"message\":\"cannot parse\"}", false},
+		"no message":         {`{"errorType":"bad_data"}`, false},
+		"statement absent":   {`{"errorType":"bad_data","message":"cannot parse"}`, true},
+		"statement provided": {`{"errorType":"bad_data","message":"cannot parse","statement":0}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, _, _ := auth.LookupFailure(auth.SourceError)
+			server := hostileQuery(t, status, "application/json", envelope(tc.source))
+			var response auth.QueryResponse
+			failed := sendQuery(t, server, &response)
+			require.NotNil(t, failed)
+			if !tc.valid {
+				require.Equal(t, "INVALID_RESPONSE", failed.Error.Code)
+				return
+			}
+			require.Equal(t, auth.SourceError, failed.Error.Code)
+			require.NotNil(t, failed.Error.Source)
+			require.Equal(t, "cannot parse", failed.Error.Source.Message)
+		})
+	}
 }

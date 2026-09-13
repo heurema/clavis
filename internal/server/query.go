@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -17,11 +18,28 @@ const queryBodyAllowance = 4096
 // never reaches the service, so the guidance has to be given here; none of
 // them echoes a submitted value, and none of them repeats the SQL.
 var (
-	hintQueryBody       = "Send a JSON object with connection, sql and an optional positive maxRows"
+	hintQueryBody       = "Send a JSON object with connection, one input and an optional positive maxRows"
 	hintQueryConnection = "Address the connection by its UUID or its name"
-	hintQuerySQL        = "sql is required, non-empty and at most " + strconv.Itoa(auth.MaxSQLBytes) + " bytes"
+	hintQueryInput      = "Send exactly one of sql, promql, labels, labelValues or series"
+	hintQueryText       = "sql, promql, series and match are each at most " + strconv.Itoa(auth.MaxSQLBytes) + " bytes"
+	hintQueryLabel      = "labelValues is one Prometheus label name"
 	hintQueryMaxRows    = "maxRows is optional and must be a positive integer at or below the connection's row cap"
 )
+
+// jsonBool reads the one boolean member the execution body carries. Like every
+// other member it has exactly one decoder, so a quoted or numeric value is a
+// rejection rather than a coercion.
+func jsonBool(assign func(bool)) jsonValue {
+	return func(decoder *json.Decoder) error {
+		token, err := decoder.Token()
+		value, ok := token.(bool)
+		if err != nil || !ok {
+			return &auth.Error{Code: auth.InvalidArgument}
+		}
+		assign(value)
+		return nil
+	}
+}
 
 // The executor owns authorization, the credential and the source call; a
 // composition without one must reject the route instead of invoking anything.
@@ -32,26 +50,53 @@ func (a *authHTTP) requireExecutor() error {
 	return nil
 }
 
-// queryRequest decodes and locally validates the one execution body. The SQL
-// is bounded but never inspected: the platform forwards it unchanged, so the
-// only judgements here are shape, size and the connection reference.
+// queryRequest decodes and locally validates the one execution body. The SQL,
+// the expression, the times and the selectors are bounded but never inspected:
+// the platform forwards them unchanged, so the only judgements here are shape,
+// size, the connection reference and the label name that forms a path segment
+// on the source. Which input fits the connection's provider, and which time
+// fields that input takes, are the service's to decide on the record.
 func queryRequest(r *http.Request, request *auth.QueryRequest) error {
 	if _, err := query(r); err != nil {
 		return err
 	}
 	var maxRows bool
 	if err := decodeFields(r, auth.MaxSQLBytes+queryBodyAllowance, map[string]jsonValue{
-		"connection": jsonString(func(value string) { request.Connection = value }),
-		"sql":        jsonString(func(value string) { request.SQL = value }),
-		"maxRows":    jsonInt(func(value int) { request.MaxRows, maxRows = value, true }),
+		"connection":  jsonString(func(value string) { request.Connection = value }),
+		"sql":         jsonString(func(value string) { request.SQL = value }),
+		"promql":      jsonString(func(value string) { request.PromQL = value }),
+		"at":          jsonString(func(value string) { request.At = value }),
+		"start":       jsonString(func(value string) { request.Start = value }),
+		"end":         jsonString(func(value string) { request.End = value }),
+		"step":        jsonString(func(value string) { request.Step = value }),
+		"labels":      jsonBool(func(value bool) { request.Labels = value }),
+		"labelValues": jsonString(func(value string) { request.LabelValues = value }),
+		"series":      jsonString(func(value string) { request.Series = value }),
+		"match":       jsonString(func(value string) { request.Match = value }),
+		"maxRows":     jsonInt(func(value int) { request.MaxRows, maxRows = value, true }),
 	}); err != nil {
 		return &auth.Error{Code: auth.InvalidArgument, Hint: hintQueryBody}
 	}
 	if !auth.ValidConnectionRef(request.Connection) {
 		return &auth.Error{Code: auth.InvalidArgument, Hint: hintQueryConnection}
 	}
-	if request.SQL == "" || len(request.SQL) > auth.MaxSQLBytes {
-		return &auth.Error{Code: auth.InvalidArgument, Hint: hintQuerySQL}
+	inputs := 0
+	for _, set := range []bool{request.SQL != "", request.PromQL != "", request.Labels,
+		request.LabelValues != "", request.Series != ""} {
+		if set {
+			inputs++
+		}
+	}
+	if inputs != 1 {
+		return &auth.Error{Code: auth.InvalidArgument, Hint: hintQueryInput}
+	}
+	for _, text := range []string{request.SQL, request.PromQL, request.Series, request.Match} {
+		if len(text) > auth.MaxSQLBytes {
+			return &auth.Error{Code: auth.InvalidArgument, Hint: hintQueryText}
+		}
+	}
+	if request.LabelValues != "" && !auth.ValidLabelName(request.LabelValues) {
+		return &auth.Error{Code: auth.InvalidArgument, Hint: hintQueryLabel}
 	}
 	// The connection's own cap is the service's to apply; only a value that can
 	// never lower anything is refused here.

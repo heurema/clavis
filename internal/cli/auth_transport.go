@@ -283,6 +283,13 @@ func validSourceFailure(value auth.SourceFailure) bool {
 	if value.SQLState != "" && !sqlState.MatchString(value.SQLState) {
 		return false
 	}
+	// A source classifies its own failure either way, never both: a SQLSTATE
+	// is PostgreSQL's word and an errorType is a metrics source's.
+	// A metrics failure carries no statement index either: the source ran one
+	// request, and the index belongs to a script.
+	if value.ErrorType != "" && (value.SQLState != "" || value.Statement != nil || !printableSetting(value.ErrorType)) {
+		return false
+	}
 	if value.Position < 0 || (value.Statement != nil && *value.Statement < 0) {
 		return false
 	}
@@ -330,12 +337,131 @@ func validQueryResult(value auth.QueryResult) bool {
 	return true
 }
 
-// validQueryResponse accepts the documented results document. The number of
-// results is bounded by the response body limit alone: one statement's outcome
-// is a few dozen bytes, and the SQL that produced them was bounded before it
-// was sent.
+// The result types a metrics answer may name: the source's own word for an
+// expression, and the platform's for each of the three discovery endpoints.
+var metricsResultTypes = []string{"vector", "matrix", "scalar", "string", "labels", "labelValues", "series"}
+
+// validQueryResponse accepts the document the named provider defines, and only
+// that one: a results list for PostgreSQL, a native metrics answer for
+// VictoriaMetrics, and nothing that mixes the two or names neither.
 func validQueryResponse(value auth.QueryResponse) bool {
 	if value.DurationMS < 0 {
+		return false
+	}
+	switch value.Provider {
+	case auth.ProviderPostgreSQL:
+		return validResultsDocument(value)
+	case auth.ProviderVictoriaMetrics:
+		return validMetricsDocument(value)
+	}
+	return false
+}
+
+// validMetricsDocument accepts the source's own answer: a known result type, a
+// result whose shape matches it, renderable notes and no results list, because
+// a metrics connection never produces one.
+func validMetricsDocument(value auth.QueryResponse) bool {
+	if value.Results != nil || !slices.Contains(metricsResultTypes, value.ResultType) {
+		return false
+	}
+	for _, note := range slices.Concat(value.Warnings, value.Infos) {
+		if note == "" || len(note) > maxSourceTextBytes || !printableText(note) {
+			return false
+		}
+	}
+	return validMetricsResult(value.ResultType, value.Result)
+}
+
+// metricsSeries is one vector or matrix entry as the platform re-encoded it: a
+// label set, one sample or a list of them, and the mark a cut series carries.
+// Members the source added of its own travel with it unchanged, so unknown
+// ones are accepted here rather than refused.
+type metricsSeries struct {
+	Metric    map[string]string   `json:"metric"`
+	Value     []json.RawMessage   `json:"value"`
+	Values    [][]json.RawMessage `json:"values"`
+	Truncated bool                `json:"truncated"`
+}
+
+// validMetricsResult checks that the result is the shape its type names. The
+// values inside are the source's own data and are accepted as they are; only
+// the frame around them is judged, exactly as a SQL row's values are.
+func validMetricsResult(resultType string, raw json.RawMessage) bool {
+	// An absent or null result is not an empty one: the source always sends
+	// the container its own result type promises.
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	switch resultType {
+	case "vector", "matrix":
+		var series []metricsSeries
+		if json.Unmarshal(raw, &series) != nil {
+			return false
+		}
+		for _, entry := range series {
+			if entry.Metric == nil {
+				return false
+			}
+			if resultType == "vector" {
+				if entry.Values != nil || !validMetricsPair(entry.Value) {
+					return false
+				}
+				continue
+			}
+			if entry.Value != nil || entry.Values == nil {
+				return false
+			}
+			for _, sample := range entry.Values {
+				if !validMetricsPair(sample) {
+					return false
+				}
+			}
+		}
+		return true
+	case "scalar", "string":
+		var sample []json.RawMessage
+		return json.Unmarshal(raw, &sample) == nil && validMetricsPair(sample)
+	case "labels", "labelValues":
+		var names []string
+		return json.Unmarshal(raw, &names) == nil && names != nil
+	default:
+		var sets []map[string]string
+		if json.Unmarshal(raw, &sets) != nil || sets == nil {
+			return false
+		}
+		for _, set := range sets {
+			if set == nil {
+				return false
+			}
+		}
+		return true
+	}
+}
+
+// validMetricsPair accepts one sample: the timestamp the source rendered as a
+// number and the value it rendered as a string, which is what keeps an exact
+// value exact.
+func validMetricsPair(pair []json.RawMessage) bool {
+	if len(pair) != 2 {
+		return false
+	}
+	var timestamp json.Number
+	if json.Unmarshal(pair[0], &timestamp) != nil ||
+		!bytes.Equal(bytes.TrimSpace(pair[0]), []byte(timestamp.String())) {
+		return false
+	}
+	var value string
+	return json.Unmarshal(pair[1], &value) == nil
+}
+
+// validResultsDocument accepts the documented results document. The number of
+// results is bounded by the response body limit alone: one statement's outcome
+// is a few dozen bytes, and the SQL that produced them was bounded before it
+// was sent. None of the metrics members may be set: one provider's document is
+// never readable as another's.
+func validResultsDocument(value auth.QueryResponse) bool {
+	if value.ResultType != "" || value.Result != nil || value.Warnings != nil ||
+		value.Infos != nil || value.IsPartial {
 		return false
 	}
 	truncated := false

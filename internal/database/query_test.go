@@ -3,7 +3,12 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -171,25 +176,31 @@ func TestExecuteQueryRefusesUngrantedDisabledAndRevokedCallers(t *testing.T) {
 	require.Equal(t, counts, platformCounts(t, pool))
 }
 
-func TestExecuteQueryRefusesUnsupportedProvidersBeforeOpeningTheSecret(t *testing.T) {
+func TestExecuteQueryRefusesMismatchedInputsBeforeOpeningTheSecret(t *testing.T) {
 	pool, s, admin, _ := connectionFixture(t)
-	metrics := createConnection(t, s, admin, auth.CreateConnectionRequest{
-		Name: "metrics-query", Title: "Metrics", Provider: auth.ProviderVictoriaMetrics,
-		Target: map[string]string{"url": "https://" + sentinelHost, "auth": "bearer"},
-		Secret: auth.Secret(sentinelSecret),
-	})
-	request := auth.QueryRequest{Connection: metrics.Name, SQL: "select 1"}
+	source := newMetricsSource(t)
+	metrics := metricsConnection(t, s, admin, "metrics-query", source.url, 0)
+	ledger := queryConnection(t, s, admin, "ledger-query")
 
-	failure := queryError(s.ExecuteQuery(t.Context(), admin, request))
-	code(t, failure, auth.ProviderUnsupported)
-	require.Equal(t, hintQueryUnsupported, hintOf(t, failure))
+	// SQL for a metrics connection and an expression for a SQL one are both
+	// refused with the input the connection's own provider takes.
+	failure := queryError(s.ExecuteQuery(t.Context(), admin,
+		auth.QueryRequest{Connection: metrics.Name, SQL: "select 1"}))
+	code(t, failure, auth.InvalidArgument)
+	require.Equal(t, hintQueryWantsMetrics, hintOf(t, failure))
+	failure = queryError(s.ExecuteQuery(t.Context(), admin,
+		auth.QueryRequest{Connection: ledger.Name, PromQL: "up"}))
+	code(t, failure, auth.InvalidArgument)
+	require.Equal(t, hintQueryWantsSQL, hintOf(t, failure))
+	require.Empty(t, source.seen(), "a mismatched input never reaches the source")
 
 	// An envelope nothing can open would answer CREDENTIALS_UNAVAILABLE if the
 	// secret were opened first; the refusal has to come before that.
-	execSQL(t, pool, `UPDATE connections SET secret_envelope=$1 WHERE id=$2`, "not-an-envelope", metrics.ID)
-	failure = queryError(s.ExecuteQuery(t.Context(), admin, request))
-	code(t, failure, auth.ProviderUnsupported)
-	require.Equal(t, hintQueryUnsupported, hintOf(t, failure))
+	execSQL(t, pool, `UPDATE connections SET secret_envelope=$1 WHERE id=$2`, "not-an-envelope", ledger.ID)
+	failure = queryError(s.ExecuteQuery(t.Context(), admin,
+		auth.QueryRequest{Connection: ledger.Name, Labels: true}))
+	code(t, failure, auth.InvalidArgument)
+	require.Equal(t, hintQueryWantsSQL, hintOf(t, failure))
 	require.NotContains(t, failure.Error(), sentinelSecret)
 	require.NotContains(t, failure.Error(), sentinelHost)
 }
@@ -221,10 +232,34 @@ func TestExecuteQueryValidatesLocallyWithoutContactingTheSource(t *testing.T) {
 		hint    string
 	}{
 		"malformed reference": {auth.QueryRequest{Connection: "Not A Reference", SQL: "select 1"}, hintConnectionNotFound},
-		"empty sql":           {auth.QueryRequest{Connection: record.Name}, hintQuerySQL},
+		"no input":            {auth.QueryRequest{Connection: record.Name}, hintQueryInput},
 		"blank sql":           {auth.QueryRequest{Connection: record.Name, SQL: " \n\t "}, hintQuerySQL},
 		"oversized sql": {auth.QueryRequest{Connection: record.Name,
 			SQL: "select " + strings.Repeat("1", auth.MaxSQLBytes)}, hintQuerySQL},
+		// The input rules are the platform's own and are decided before any
+		// record is read, so they hold for every connection.
+		"two inputs": {auth.QueryRequest{Connection: record.Name, SQL: "select 1", PromQL: "up"}, hintQueryInput},
+		"two metrics inputs": {auth.QueryRequest{Connection: record.Name, Labels: true,
+			Series: `{job="api"}`}, hintQueryInput},
+		"oversized time": {auth.QueryRequest{Connection: record.Name, PromQL: "up",
+			Start: strings.Repeat("1", maxQueryTimeBytes+1)}, hintQueryTime},
+		"at with start":      {auth.QueryRequest{Connection: record.Name, PromQL: "up", At: "now", Start: "-1h"}, hintQueryTime},
+		"at with sql":        {auth.QueryRequest{Connection: record.Name, SQL: "select 1", At: "now"}, hintQueryTime},
+		"at on discovery":    {auth.QueryRequest{Connection: record.Name, Labels: true, At: "now"}, hintQueryTime},
+		"step without start": {auth.QueryRequest{Connection: record.Name, PromQL: "up", Step: "1m"}, hintQueryTime},
+		"step on discovery": {auth.QueryRequest{Connection: record.Name, LabelValues: "__name__",
+			Start: "-1h", Step: "1m"}, hintQueryTime},
+		"match with promql":  {auth.QueryRequest{Connection: record.Name, PromQL: "up", Match: `{job="api"}`}, hintQueryTime},
+		"end without start":  {auth.QueryRequest{Connection: record.Name, PromQL: "up", End: "now"}, hintQueryTime},
+		"start with sql":     {auth.QueryRequest{Connection: record.Name, SQL: "select 1", Start: "-1h"}, hintQueryTime},
+		"end with sql":       {auth.QueryRequest{Connection: record.Name, SQL: "select 1", End: "now"}, hintQueryTime},
+		"match with sql":     {auth.QueryRequest{Connection: record.Name, SQL: "select 1", Match: "up"}, hintQueryTime},
+		"invalid label name": {auth.QueryRequest{Connection: record.Name, LabelValues: "1bad"}, hintQueryLabel},
+		"blank expression":   {auth.QueryRequest{Connection: record.Name, PromQL: "  "}, hintQueryExpression},
+		"oversized expression": {auth.QueryRequest{Connection: record.Name,
+			PromQL: strings.Repeat("u", auth.MaxSQLBytes+1)}, hintQueryExpression},
+		"oversized selector": {auth.QueryRequest{Connection: record.Name, Labels: true,
+			Match: strings.Repeat("u", auth.MaxSQLBytes+1)}, hintQueryExpression},
 		"negative rows": {auth.QueryRequest{Connection: record.Name, SQL: "select 1", MaxRows: -1}, hintQueryRows},
 		"rows above the cap": {auth.QueryRequest{Connection: record.Name, SQL: "select 1",
 			MaxRows: record.MaxRows + 1}, hintQueryCap(record.MaxRows)},
@@ -300,7 +335,8 @@ func TestExecuteQueryReportsSourceRejections(t *testing.T) {
 	code(t, failure, auth.SourceError)
 	rejection := sourceOf(t, failure)
 	require.Equal(t, "42703", rejection.SQLState)
-	require.Equal(t, 1, rejection.Statement)
+	require.NotNil(t, rejection.Statement)
+	require.Equal(t, 1, *rejection.Statement)
 	require.Contains(t, rejection.Message, sentinelColumn, "the source's own message reaches the caller unchanged")
 	require.NotContains(t, failure.Error(), sentinelColumn, "the platform's error text stays fixed")
 	require.NotContains(t, failure.Error(), sentinelSecret)
@@ -314,7 +350,8 @@ func TestExecuteQueryReportsSourceRejections(t *testing.T) {
 	code(t, failure, auth.SourceError)
 	rejection = sourceOf(t, failure)
 	require.Equal(t, "42601", rejection.SQLState)
-	require.Equal(t, 0, rejection.Statement)
+	require.NotNil(t, rejection.Statement)
+	require.Equal(t, 0, *rejection.Statement)
 	require.NotZero(t, rejection.Position)
 
 	// A privilege the role lacks is the source's rejection too, not ours.
@@ -429,4 +466,253 @@ func TestExecuteQueryNamesTheApplicationForTheSource(t *testing.T) {
 	}))
 	code(t, failure, auth.SourceError)
 	require.Equal(t, "42P01", sourceOf(t, failure).SQLState)
+}
+
+// metricsRequest is one request as the fake source received it: the method,
+// the path and every parameter, whether it arrived in the query string or in a
+// form body, so a test can prove what the platform forwarded.
+type metricsRequest struct {
+	method string
+	path   string
+	values url.Values
+}
+
+// metricsSource is a fake VictoriaMetrics. It is the metrics half of what the
+// test instance is for SQL: an external source the platform reaches over the
+// wire, with nothing of the platform's in it.
+type metricsSource struct {
+	url    string
+	mu     sync.Mutex
+	calls  []metricsRequest
+	answer func(http.ResponseWriter, *http.Request)
+}
+
+func newMetricsSource(t *testing.T) *metricsSource {
+	t.Helper()
+	source := &metricsSource{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		source.mu.Lock()
+		source.calls = append(source.calls, metricsRequest{r.Method, r.URL.Path, r.Form})
+		answer := source.answer
+		source.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if answer != nil {
+			answer(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"status":"success","data":{"resultType":"vector","result":[]}}`)
+	}))
+	t.Cleanup(server.Close)
+	source.url = server.URL
+	return source
+}
+
+func (m *metricsSource) reply(answer func(http.ResponseWriter, *http.Request)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.answer = answer
+}
+
+func (m *metricsSource) seen() []metricsRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]metricsRequest(nil), m.calls...)
+}
+
+func (m *metricsSource) last(t *testing.T) metricsRequest {
+	t.Helper()
+	calls := m.seen()
+	require.NotEmpty(t, calls)
+	return calls[len(calls)-1]
+}
+
+// jsonAnswer replies with one fixed envelope, which is how every shape and
+// every source failure is exercised without a real source.
+func jsonAnswer(body string) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, body) }
+}
+
+func metricsConnection(t *testing.T, s *LocalAuth, admin auth.Session, name, url string, maxRows int) auth.Connection {
+	t.Helper()
+	return createConnection(t, s, admin, auth.CreateConnectionRequest{
+		Name: name, Title: "Metrics", Provider: auth.ProviderVictoriaMetrics,
+		Target: map[string]string{"url": url, "auth": "none"}, Labels: map[string]string{}, MaxRows: maxRows,
+	})
+}
+
+func TestExecuteQueryForwardsMetricsInputsAndReturnsTheSourceAnswer(t *testing.T) {
+	pool, s, admin, _ := connectionFixture(t)
+	source := newMetricsSource(t)
+	record := metricsConnection(t, s, admin, "metrics-query", source.url, 0)
+	member, memberInput := createMember(t, s, admin, "metrics-member")
+	grantConnection(t, s, admin, member.ID, record.ID)
+	memberSession := session(t, s, login(t, s, memberInput), auth.CLI)
+	counts := platformCounts(t, pool)
+
+	// A granted member's instant query reaches the query endpoint with the
+	// expression and the pinned time exactly as submitted, and the source's
+	// own answer comes back beside its own warning and partial flag.
+	source.reply(jsonAnswer(`{"status":"success","warnings":["the range is long"],"isPartial":true,` +
+		`"data":{"resultType":"vector","result":[{"metric":{"__name__":"up","job":"api"},"value":[1700000000,"1"]}]}}`))
+	expression := "sum(rate(http_requests_total[5m])) by (job)"
+	response, err := s.ExecuteQuery(t.Context(), memberSession, auth.QueryRequest{
+		Connection: record.Name, PromQL: expression, At: "2026-09-13T00:00:00Z",
+	})
+	require.NoError(t, err)
+	require.Equal(t, auth.ProviderVictoriaMetrics, response.Provider)
+	require.Equal(t, "vector", response.ResultType)
+	require.JSONEq(t, `[{"metric":{"__name__":"up","job":"api"},"value":[1700000000,"1"]}]`, string(response.Result))
+	require.Equal(t, []string{"the range is long"}, response.Warnings)
+	require.Nil(t, response.Infos)
+	require.True(t, response.IsPartial)
+	require.False(t, response.Truncated)
+	require.Empty(t, response.Results, "a metrics answer carries no results list")
+	require.GreaterOrEqual(t, response.DurationMS, int64(0))
+	call := source.last(t)
+	require.Equal(t, "/api/v1/query", call.path)
+	require.Equal(t, expression, call.values.Get("query"))
+	require.Equal(t, "2026-09-13T00:00:00Z", call.values.Get("time"))
+	require.Empty(t, call.values.Get("start"))
+
+	for name, tc := range map[string]struct {
+		request    auth.QueryRequest
+		body       string
+		path       string
+		resultType string
+		values     map[string]string
+	}{
+		"range query": {
+			auth.QueryRequest{Connection: record.Name, PromQL: "up", Start: "-1h", End: "now", Step: "1m"},
+			`{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"api"},"values":[[1,"1"]]}]}}`,
+			"/api/v1/query_range", "matrix",
+			map[string]string{"query": "up", "start": "-1h", "end": "now", "step": "1m"},
+		},
+		"labels": {
+			auth.QueryRequest{Connection: record.Name, Labels: true, Match: `{job="api"}`},
+			`{"status":"success","data":["__name__","job"]}`,
+			"/api/v1/labels", "labels",
+			map[string]string{"match[]": `{job="api"}`},
+		},
+		"label values": {
+			auth.QueryRequest{Connection: record.Name, LabelValues: "__name__", Start: "-1h", End: "now"},
+			`{"status":"success","data":["up","go_info"]}`,
+			"/api/v1/label/__name__/values", "labelValues",
+			map[string]string{"start": "-1h", "end": "now"},
+		},
+		"series": {
+			auth.QueryRequest{Connection: record.Name, Series: `{__name__=~"up"}`, Match: `{job="api"}`},
+			`{"status":"success","data":[{"__name__":"up","job":"api"}]}`,
+			"/api/v1/series", "series",
+			map[string]string{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			source.reply(jsonAnswer(tc.body))
+			answer, err := s.ExecuteQuery(t.Context(), memberSession, tc.request)
+			require.NoError(t, err)
+			require.Equal(t, tc.resultType, answer.ResultType)
+			require.False(t, answer.Truncated)
+			require.Nil(t, answer.Warnings)
+			require.False(t, answer.IsPartial)
+			call := source.last(t)
+			require.Equal(t, tc.path, call.path)
+			for key, want := range tc.values {
+				require.Equal(t, want, call.values.Get(key), key)
+			}
+		})
+	}
+	// A series request carries its selector and the optional match as the two
+	// match[] parameters the source documents, in that order.
+	selectors := []string(nil)
+	for _, call := range source.seen() {
+		if call.path == "/api/v1/series" {
+			selectors = call.values["match[]"]
+		}
+	}
+	require.Equal(t, []string{`{__name__=~"up"}`, `{job="api"}`}, selectors)
+	require.Equal(t, counts, platformCounts(t, pool), "an execution writes no platform row")
+}
+
+func TestExecuteQueryBoundsMetricsSamplesAndReportsSourceFailures(t *testing.T) {
+	_, s, admin, _ := connectionFixture(t)
+	source := newMetricsSource(t)
+	record := metricsConnection(t, s, admin, "metrics-query", source.url, 3)
+	matrix := `{"status":"success","data":{"resultType":"matrix","result":[` +
+		`{"metric":{"job":"a"},"values":[[1,"1"],[2,"2"],[3,"3"],[4,"4"]]},` +
+		`{"metric":{"job":"b"},"values":[[5,"5"]]}]}}`
+
+	// The row cap is a sample cap: the first series keeps what fits, the one
+	// after it keeps nothing, and both say so inside the answer.
+	source.reply(jsonAnswer(matrix))
+	response, err := s.ExecuteQuery(t.Context(), admin, auth.QueryRequest{
+		Connection: record.Name, PromQL: "up", Start: "-1h", Step: "1m",
+	})
+	require.NoError(t, err)
+	require.True(t, response.Truncated)
+	require.JSONEq(t, `[{"metric":{"job":"a"},"values":[[1,"1"],[2,"2"],[3,"3"]],"truncated":true},`+
+		`{"metric":{"job":"b"},"values":[],"truncated":true}]`, string(response.Result))
+
+	// A request may lower that cap further, never raise it.
+	response, err = s.ExecuteQuery(t.Context(), admin, auth.QueryRequest{
+		Connection: record.Name, PromQL: "up", Start: "-1h", Step: "1m", MaxRows: 1,
+	})
+	require.NoError(t, err)
+	require.True(t, response.Truncated)
+	require.JSONEq(t, `[{"metric":{"job":"a"},"values":[[1,"1"]],"truncated":true},`+
+		`{"metric":{"job":"b"},"values":[],"truncated":true}]`, string(response.Result))
+	failure := queryError(s.ExecuteQuery(t.Context(), admin, auth.QueryRequest{
+		Connection: record.Name, PromQL: "up", MaxRows: 4,
+	}))
+	code(t, failure, auth.InvalidArgument)
+	require.Equal(t, hintQueryCap(3), hintOf(t, failure))
+
+	// The source's own rejection is passed through with its own classification
+	// and no statement index, because a metrics source has no statements.
+	source.reply(jsonAnswer(`{"status":"error","errorType":"bad_data","error":"unparsed data in query"}`))
+	failure = queryError(s.ExecuteQuery(t.Context(), admin, auth.QueryRequest{Connection: record.Name, PromQL: "up ~~"}))
+	code(t, failure, auth.SourceError)
+	rejection := sourceOf(t, failure)
+	require.Equal(t, "bad_data", rejection.ErrorType)
+	require.Equal(t, "unparsed data in query", rejection.Message)
+	require.Empty(t, rejection.SQLState)
+	require.Nil(t, rejection.Statement)
+	require.NotContains(t, failure.Error(), "unparsed data")
+
+	// A source that stops answering is cut at the connection's own bound plus
+	// the documented grace, and reported as the timeout it looks like.
+	bound := 1000
+	_, err = s.UpdateConnection(t.Context(), admin, record.ID,
+		auth.UpdateConnectionRequest{StatementTimeoutMS: &bound}, false)
+	require.NoError(t, err)
+	source.reply(func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	started := time.Now()
+	failure = queryError(s.ExecuteQuery(t.Context(), admin, auth.QueryRequest{Connection: record.Name, PromQL: "up"}))
+	code(t, failure, auth.SourceTimeout)
+	require.Equal(t, hintQueryTimeout(bound), hintOf(t, failure))
+	elapsed := time.Since(started)
+	require.Greater(t, elapsed, time.Second, "the bound is the connection's, not an instant refusal")
+	require.Less(t, elapsed, auth.MetricsGrace+5*time.Second)
+	// The bound the source was asked to apply to itself is the same one.
+	require.Equal(t, "1s", source.last(t).values.Get("timeout"))
+}
+
+func TestExecuteQueryRefusesMetricsCallersWithoutAccess(t *testing.T) {
+	_, s, admin, input := connectionFixture(t)
+	source := newMetricsSource(t)
+	record := metricsConnection(t, s, admin, "metrics-query", source.url, 0)
+	_, plainInput := createMember(t, s, admin, "plain-member")
+	plain := session(t, s, login(t, s, plainInput), auth.CLI)
+	revoked := session(t, s, login(t, s, input), auth.CLI)
+	require.NoError(t, s.Logout(t.Context(), revoked))
+	request := auth.QueryRequest{Connection: record.Name, PromQL: "up"}
+
+	code(t, queryError(s.ExecuteQuery(t.Context(), plain, request)), auth.ConnectionNotFound)
+	_, err := s.SetConnectionEnabled(t.Context(), admin, record.ID, false, false)
+	require.NoError(t, err)
+	failure := queryError(s.ExecuteQuery(t.Context(), admin, request))
+	code(t, failure, auth.ConnectionDisabled)
+	require.Equal(t, hintConnectionDisabled, hintOf(t, failure))
+	code(t, queryError(s.ExecuteQuery(t.Context(), revoked, request)), auth.Unauthenticated)
+	require.Empty(t, source.seen(), "a refused request never reaches the source")
 }

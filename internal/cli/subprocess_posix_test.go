@@ -172,6 +172,25 @@ func TestCLIProcesses(t *testing.T) {
 		require.NotContains(t, output, "selec 1")
 		fixture.mu.Lock()
 		fixture.queryFailure = nil
+		// A metrics connection is driven by the same verb, and the source's own
+		// answer is rendered as lines rather than as a table.
+		metrics := testConnection("metrics-prod")
+		metrics.ID, metrics.Name, metrics.Provider = testUserID(), "metrics-prod", auth.ProviderVictoriaMetrics
+		fixture.connections = append(fixture.connections, metrics)
+		fixture.queryResponse = metricsRows()
+		fixture.mu.Unlock()
+		exit, output, _ = processCLI(t, binary, "", "query", "--connection", "metrics-prod",
+			"--promql", "up", "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Equal(t, "Warning: the range is long\n"+
+			"up{instance=\"a:9090\",job=\"api\"} 1 @1700000000\nup{job=\"db\"} 0 @1700000001\n"+
+			"Duration: 9 ms\n", output)
+		exit, output, _ = processCLI(t, binary, "", "query", "--connection", "metrics-prod",
+			"--label-values", "__name__", "--match", `{job="api"}`)
+		require.Equal(t, 0, exit, output)
+		require.True(t, decode(t, output).OK)
+		fixture.mu.Lock()
+		fixture.queryResponse = queryRows()
 		fixture.mu.Unlock()
 
 		// A user command takes the username as readily as the UUID.
@@ -227,6 +246,11 @@ func TestCLIProcesses(t *testing.T) {
 			{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "--sql-stdin", "--output=text"},
 			{"query", "--connection", "payments-prod-reporting", "--sql-file", "script.sql", "--output=text"},
 			{"query", "--connection", "PAYMENTS", "--sql", "select 1", "--output=text"},
+			// A time flag the input does not take, two inputs at once and a
+			// label name that is not one are refused locally as well.
+			{"query", "--connection", "payments-prod-reporting", "--promql", "up", "--at", "now", "--start", "-1h", "--output=text"},
+			{"query", "--connection", "payments-prod-reporting", "--labels", "--promql", "up", "--output=text"},
+			{"query", "--connection", "payments-prod-reporting", "--label-values", "9metric", "--output=text"},
 		} {
 			exit, output, prompt = processCLI(t, binary, string(password), args...)
 			require.Equal(t, 2, exit, "%v", args)

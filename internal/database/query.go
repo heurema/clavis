@@ -32,13 +32,28 @@ const (
 // range and never echo the submitted SQL, which is the caller's own data.
 const (
 	hintQueryRows        = "maxRows is 0 for the connection's own row cap, or a positive number at or below it."
-	hintQueryUnsupported = "Only postgresql connections can execute queries in this release."
+	maxQueryTimeBytes    = 256
+	hintQueryUnsupported = "This connection's provider does not execute queries; postgresql and victoriametrics connections do."
 	hintQueryCheck       = "Run `clavis connections check` to see whether the source is reachable and the stored credentials still work."
+	// The two halves of the input rule: which inputs exist, and which time
+	// fields each of them takes. Neither names the connection's provider,
+	// because both are decided before any record is read.
+	hintQueryInput = "Send exactly one input: sql for a postgresql connection, " +
+		"or promql, labels, labelValues or series for a victoriametrics connection."
+	hintQueryTime = "at applies to promql without start, step requires start, match applies to the discovery inputs, " +
+		"and start and end apply to promql or a discovery input, never to sql."
+	hintQueryLabel = "labelValues names one Prometheus label: a letter or underscore followed by letters, digits or underscores."
+	// The mismatch hints name the input the connection's own provider takes.
+	hintQueryWantsSQL     = "This connection is postgresql: send sql."
+	hintQueryWantsMetrics = "This connection is victoriametrics: send promql, labels, labelValues or series."
 )
 
-// hintQuerySQL states the bound the route and the CLI share, from the one
-// constant that defines it.
-var hintQuerySQL = fmt.Sprintf("The SQL is 1 to %d bytes; send a shorter statement or split the script.", auth.MaxSQLBytes)
+// hintQuerySQL and hintQueryExpression state the bound the route and the CLI
+// share, from the one constant that defines it.
+var (
+	hintQuerySQL        = fmt.Sprintf("The SQL is 1 to %d bytes; send a shorter statement or split the script.", auth.MaxSQLBytes)
+	hintQueryExpression = fmt.Sprintf("The expression or selector is 1 to %d bytes; send a shorter one.", auth.MaxSQLBytes)
+)
 
 // hintQueryCap states the connection's own cap, which the caller cannot read
 // off the request it sent.
@@ -86,12 +101,98 @@ func queryFailure(err error, timeoutMS int) error {
 		return &auth.Error{Code: auth.SourceAuthRejected, Hint: hintQueryCheck}
 	case errors.Is(err, provider.ErrUnsupported):
 		return &auth.Error{Code: auth.ProviderUnsupported, Hint: hintQueryUnsupported}
+	case errors.Is(err, provider.ErrUnsupportedInput):
+		// The service refuses a mismatched input before any credential is
+		// opened, so this is the backstop for a rule the two sides disagree
+		// about rather than something a caller can reach.
+		return invalidArgument(hintQueryInput)
 	}
 	return unavailable()
 }
 
-// ExecuteQuery forwards one SQL string to the connection's source under the
-// connection's own credentials and bounds. It writes nothing: no advisory key,
+// discoveryInput reports whether the request carries one of the three metadata
+// inputs, which share the selector and the time bounds but take no step.
+func discoveryInput(request auth.QueryRequest) bool {
+	return request.Labels || request.LabelValues != "" || request.Series != ""
+}
+
+// validateQueryInput applies the input rules that need no record: exactly one
+// input, the time fields that input takes, the one validated label name and
+// the bound on the submitted text. Every rejection carries the rule as its
+// hint and none of them echoes a submitted value.
+func validateQueryInput(request auth.QueryRequest) error {
+	inputs := 0
+	for _, set := range []bool{request.SQL != "", request.PromQL != "", request.Labels,
+		request.LabelValues != "", request.Series != ""} {
+		if set {
+			inputs++
+		}
+	}
+	if inputs != 1 {
+		return invalidArgument(hintQueryInput)
+	}
+	expression, discovery := request.PromQL != "", discoveryInput(request)
+	switch {
+	// An instant query is the only input a pinned time belongs to; a step
+	// belongs to a range query alone, and a selector to discovery alone.
+	case request.At != "" && (!expression || request.Start != ""):
+		return invalidArgument(hintQueryTime)
+	case request.Step != "" && (!expression || request.Start == ""):
+		return invalidArgument(hintQueryTime)
+	case request.Match != "" && !discovery:
+		return invalidArgument(hintQueryTime)
+	case request.End != "" && !discovery && (!expression || request.Start == ""):
+		return invalidArgument(hintQueryTime)
+	case request.Start != "" && !expression && !discovery:
+		return invalidArgument(hintQueryTime)
+	}
+	if request.LabelValues != "" && !auth.ValidLabelName(request.LabelValues) {
+		return invalidArgument(hintQueryLabel)
+	}
+	// A time or step string is short in every format the source accepts; the
+	// bound keeps a form body from carrying a quarter megabyte of timestamp.
+	for _, when := range []string{request.At, request.Start, request.End, request.Step} {
+		if len(when) > maxQueryTimeBytes {
+			return invalidArgument(hintQueryTime)
+		}
+	}
+	// Whitespace alone is nothing to execute; a comment-only string is not,
+	// and is forwarded like any other.
+	if request.SQL != "" && (strings.TrimSpace(request.SQL) == "" || len(request.SQL) > auth.MaxSQLBytes) {
+		return invalidArgument(hintQuerySQL)
+	}
+	for _, text := range []string{request.PromQL, request.Series, request.Match} {
+		if text != "" && (strings.TrimSpace(text) == "" || len(text) > auth.MaxSQLBytes) {
+			return invalidArgument(hintQueryExpression)
+		}
+	}
+	if request.MaxRows < 0 {
+		return invalidArgument(hintQueryRows)
+	}
+	return nil
+}
+
+// providerInput refuses an input the connection's provider does not take. It
+// is decided on the authorized record, before the capability assertion and
+// before the secret is opened, so a mismatch never reaches a credential.
+func providerInput(kind auth.ProviderType, request auth.QueryRequest) error {
+	switch kind {
+	case auth.ProviderPostgreSQL:
+		if request.SQL == "" {
+			return invalidArgument(hintQueryWantsSQL)
+		}
+	case auth.ProviderVictoriaMetrics:
+		if request.SQL != "" {
+			return invalidArgument(hintQueryWantsMetrics)
+		}
+	}
+	return nil
+}
+
+// ExecuteQuery forwards one input to the connection's source under the
+// connection's own credentials and bounds: a SQL string for a SQL source, or
+// an expression or one discovery input for a metrics source, each with the
+// time fields it takes. It writes nothing: no advisory key,
 // no row lock, no platform row changes, and no platform transaction is open
 // while the source is working, because the authorization commits before the
 // request leaves. Nothing records that the execution happened.
@@ -103,13 +204,8 @@ func (s *LocalAuth) ExecuteQuery(ctx context.Context, previous auth.Session,
 	if !auth.ValidConnectionRef(request.Connection) {
 		return empty, invalidArgument(hintConnectionNotFound)
 	}
-	// Whitespace alone is nothing to execute; a comment-only string is not,
-	// and is forwarded like any other.
-	if strings.TrimSpace(request.SQL) == "" || len(request.SQL) > auth.MaxSQLBytes {
-		return empty, invalidArgument(hintQuerySQL)
-	}
-	if request.MaxRows < 0 {
-		return empty, invalidArgument(hintQueryRows)
+	if err := validateQueryInput(request); err != nil {
+		return empty, err
 	}
 	record, err := s.AuthorizeConnection(ctx, previous, request.Connection)
 	if err != nil {
@@ -123,6 +219,9 @@ func (s *LocalAuth) ExecuteQuery(ctx context.Context, previous auth.Session,
 			return empty, invalidArgument(hintQueryCap(record.MaxRows))
 		}
 		maxRows = request.MaxRows
+	}
+	if err := providerInput(record.Provider, request); err != nil {
+		return empty, err
 	}
 	implementation, ok := provider.Lookup(record.Provider)
 	if !ok {
@@ -154,16 +253,26 @@ func (s *LocalAuth) ExecuteQuery(ctx context.Context, previous auth.Session,
 	defer cancel()
 	started := time.Now()
 	result, err := executor.Execute(ctx, record.Target, auth.Secret(plaintext), provider.ExecuteRequest{
-		SQL: request.SQL, Timeout: timeout, MaxRows: maxRows, MaxBytes: record.MaxBytes,
+		SQL: request.SQL, PromQL: request.PromQL, At: request.At, Start: request.Start, End: request.End,
+		Step: request.Step, Labels: request.Labels, LabelValues: request.LabelValues, Series: request.Series,
+		Match: request.Match, Timeout: timeout, MaxRows: maxRows, MaxBytes: record.MaxBytes,
 		Application: applicationName(record.Name, previous.User.Username),
 	})
 	duration := time.Since(started).Milliseconds()
 	if err != nil {
 		return empty, queryFailure(err, record.StatementTimeoutMS)
 	}
-	results := result.Results
-	if results == nil {
-		results = []auth.QueryResult{}
+	// The shape is the provider's, named by the record rather than inferred
+	// from the answer: a caller branches on one field it can trust.
+	response := auth.QueryResponse{Provider: record.Provider, Truncated: result.Truncated, DurationMS: duration}
+	if record.Provider == auth.ProviderVictoriaMetrics {
+		response.ResultType, response.Result = result.ResultType, result.Result
+		response.Warnings, response.Infos, response.IsPartial = result.Warnings, result.Infos, result.IsPartial
+		return response, nil
 	}
-	return auth.QueryResponse{Results: results, Truncated: result.Truncated, DurationMS: duration}, nil
+	response.Results = result.Results
+	if response.Results == nil {
+		response.Results = []auth.QueryResult{}
+	}
+	return response, nil
 }
