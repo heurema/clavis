@@ -167,7 +167,9 @@ func TestRealHTTPQueryRouteRoundTrip(t *testing.T) {
 	started = time.Now()
 	response = query(admin, auth.QueryRequest{Connection: "ledger-primary", SQL: "select pg_sleep(6)"})
 	require.Equal(t, 200, response.Code, "a statement longer than the operation deadline still completes")
-	require.GreaterOrEqual(t, time.Since(started), 6*time.Second)
+	// pg_sleep's granularity can undershoot by a few tens of milliseconds;
+	// what matters is that the wait outlived the shared five-second bound.
+	require.Greater(t, time.Since(started), auth.OperationTimeout)
 
 	// Nothing in the platform database changed because of any execution; the
 	// grant revocation above is the only administrative change since.

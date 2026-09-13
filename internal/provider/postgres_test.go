@@ -723,3 +723,30 @@ func TestStatementTimeoutMS(t *testing.T) {
 	require.Equal(t, 5, explicit.MaxRows)
 	require.Equal(t, 2048, explicit.MaxBytes)
 }
+
+// A statement the role lacks the privilege for is refused by the source with
+// its own SQLSTATE; the platform neither pre-empts nor softens it.
+func TestPostgresExecutePrivilegeErrorIsTheSourcesOwn(t *testing.T) {
+	dsn := testDSN(t)
+	if !adminValue[bool](t, dsn, "select rolsuper or rolcreaterole from pg_roles where rolname = current_user") {
+		t.Skip("the test role cannot create roles")
+	}
+	schema := querySchema(t)
+	role := schema + "_reader"
+	password := "reader-password-" + schema
+	adminExec(t, dsn, fmt.Sprintf("create role %s login password '%s'", role, password))
+	t.Cleanup(func() {
+		adminExec(t, dsn, "drop owned by "+role)
+		adminExec(t, dsn, "drop role if exists "+role)
+	})
+	adminExec(t, dsn, "create table "+schema+".ledger (value text)")
+	adminExec(t, dsn, "grant usage on schema "+schema+" to "+role)
+	target, _ := postgresTarget(t)
+	target[keyRole] = role
+	_, err := postgreSQL{}.Execute(t.Context(), target, auth.Secret(password), executeRequest("select value from "+schema+".ledger"))
+	var rejected *SourceError
+	require.ErrorAs(t, err, &rejected)
+	require.Equal(t, "42501", rejected.Failure.SQLState)
+	require.Contains(t, rejected.Failure.Message, "permission denied")
+	require.Equal(t, 0, rejected.Failure.Statement)
+}

@@ -322,6 +322,7 @@ func TestQueryArgumentsRejectedBeforeIO(t *testing.T) {
 		{"invalid connection", []string{"query", "--connection", "PAYMENTS", "--sql", "select 1"}, connectionRefHint},
 		{"zero max rows", []string{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "--max-rows", "0"}, maxRowsHint},
 		{"negative max rows", []string{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "--max-rows", "-1"}, maxRowsHint},
+		{"non-numeric max rows", []string{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "--max-rows", "abc"}, ""},
 		{"max rows above ceiling", []string{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "--max-rows", "100001"}, maxRowsHint},
 		{"positional argument", []string{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "extra"}, ""},
 		{"unknown flag", []string{"query", "--connection", "payments-prod-reporting", "--statement", "select 1"}, ""},

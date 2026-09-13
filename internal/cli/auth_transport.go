@@ -269,7 +269,7 @@ const (
 	maxQueryColumns    = 1664
 	maxCommandBytes    = 64
 	maxIdentifierBytes = 63
-	maxSourceTextBytes = 4096
+	maxSourceTextBytes = auth.QueryEnvelopeAllowance
 )
 
 // sqlState is the five-character SQLSTATE the source reports.
@@ -325,8 +325,9 @@ func validQueryResult(value auth.QueryResult) bool {
 			return false
 		}
 	}
-	// A statement without rows carries no columns, so it can carry no rows.
-	return len(value.Columns) != 0 || len(value.Rows) == 0
+	// A zero-column result set (`select from t`) is legal and carries empty
+	// rows, so columns and rows are only tied by width.
+	return true
 }
 
 // validQueryResponse accepts the documented results document. The number of
