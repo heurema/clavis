@@ -143,6 +143,36 @@ func TestCLIProcesses(t *testing.T) {
 		exit, output, _ = processCLI(t, binary, "", "grants", "revoke", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, "Revoked: false\n", output)
+		// Execution is driven the way an agent drives it: inline, and from a
+		// heredoc on stdin, with the results rendered as a table.
+		fixture.mu.Lock()
+		fixture.queryResponse = queryRows()
+		fixture.mu.Unlock()
+		exit, output, _ = processCLI(t, binary, "", "query", "--connection", "payments-prod-reporting",
+			"--sql", "select id, label from notes", "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Equal(t, "id   label\n1    alpha\n22   ∅\n333  \n(3 rows)\nUPDATE 2\nDuration: 17 ms\n", output)
+		require.NotContains(t, output, "from notes")
+		exit, output, prompt = processCLI(t, binary, "insert into notes values ('x');\nselect count(*) from notes;\n",
+			"query", "--connection", "payments-prod-reporting", "--sql-stdin", "--max-rows", "1")
+		require.Equal(t, 0, exit, output)
+		require.Empty(t, prompt, "reading SQL must not prompt")
+		require.True(t, decode(t, output).OK)
+		// A statement the source rejects exits 1 with the source's own lines.
+		fixture.mu.Lock()
+		fixture.queryFailure = &auth.Error{Code: auth.SourceError, Hint: querySourceHint,
+			Source: &auth.SourceFailure{SQLState: "42601", Message: "syntax error", Position: 1}}
+		fixture.mu.Unlock()
+		exit, output, _ = processCLI(t, binary, "", "query", "--connection", "payments-prod-reporting",
+			"--sql", "selec 1", "--output=text")
+		require.Equal(t, 1, exit)
+		require.Equal(t, "SOURCE_ERROR: The source rejected the SQL\nHint: "+querySourceHint+"\n"+
+			"ERROR: 42601 syntax error\nPosition: 1\nStatement: 0\n", output)
+		require.NotContains(t, output, "selec 1")
+		fixture.mu.Lock()
+		fixture.queryFailure = nil
+		fixture.mu.Unlock()
+
 		// A user command takes the username as readily as the UUID.
 		exit, output, _ = processCLI(t, binary, "", "users", "unblock", "--user", "alice", "--output=text")
 		require.Equal(t, 0, exit, output)
@@ -172,6 +202,7 @@ func TestCLIProcesses(t *testing.T) {
 			{"connections", "check", "--help"},
 			{"grants", "--help"}, {"grants"}, {"grants", "list", "--help"},
 			{"grants", "create", "--help"}, {"grants", "revoke", "--help"},
+			{"query", "--help"},
 		} {
 			exit, output, prompt = processCLI(t, binary, "", args...)
 			require.Equal(t, 0, exit, "%v: %s", args, output)
@@ -189,6 +220,12 @@ func TestCLIProcesses(t *testing.T) {
 				"--url", "https://metrics.example:8428", "--password-file", "relative", "--output=text"},
 			{"grants", "create", "--user", "ALICE", "--connection", "payments-prod-reporting", "--output=text"},
 			{"grants", "revoke", "--user", "alice", "--output=text"},
+			// No SQL input, two of them, and a relative script path: each is
+			// refused locally, so the closed server is never contacted.
+			{"query", "--connection", "payments-prod-reporting", "--output=text"},
+			{"query", "--connection", "payments-prod-reporting", "--sql", "select 1", "--sql-stdin", "--output=text"},
+			{"query", "--connection", "payments-prod-reporting", "--sql-file", "script.sql", "--output=text"},
+			{"query", "--connection", "PAYMENTS", "--sql", "select 1", "--output=text"},
 		} {
 			exit, output, prompt = processCLI(t, binary, string(password), args...)
 			require.Equal(t, 2, exit, "%v", args)

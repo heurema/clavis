@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -261,6 +262,94 @@ func validGrantRevocation(value auth.GrantRevocation) bool {
 		validGrantParty(value.Connection, auth.ValidConnectionName)
 }
 
+// maxQueryColumns is PostgreSQL's own hard column limit, which no result can
+// exceed; maxCommandBytes bounds the command tag word, and maxSourceTextBytes
+// each free-text member of a source failure.
+const (
+	maxQueryColumns    = 1664
+	maxCommandBytes    = 64
+	maxIdentifierBytes = 63
+	maxSourceTextBytes = auth.QueryEnvelopeAllowance
+)
+
+// sqlState is the five-character SQLSTATE the source reports.
+var sqlState = regexp.MustCompile(`^[0-9A-Z]{5}$`)
+
+// validSourceFailure accepts the source's own rejection: a well-formed
+// SQLSTATE, non-negative offsets and renderable text. The message is the
+// source's, not the platform's, so it is bounded and checked for control
+// characters rather than trusted onto a terminal.
+func validSourceFailure(value auth.SourceFailure) bool {
+	if value.SQLState != "" && !sqlState.MatchString(value.SQLState) {
+		return false
+	}
+	if value.Position < 0 || value.Statement < 0 {
+		return false
+	}
+	for _, text := range []string{value.Message, value.Detail, value.Hint} {
+		if len(text) > maxSourceTextBytes || !printableText(text) {
+			return false
+		}
+	}
+	return value.Message != ""
+}
+
+// validCommandTag accepts the source's command tag word. A comment-only
+// statement produces no tag at all, which is a documented result rather than a
+// malformed one.
+func validCommandTag(value string) bool {
+	return len(value) <= maxCommandBytes && (value == "" || printableSetting(value))
+}
+
+// validQueryResult accepts one statement's outcome: a bounded column list, a
+// row for every kept row with exactly one value per column, and non-negative
+// counts. Row values themselves are the caller's own data and are accepted
+// unchanged; only their shape is checked.
+func validQueryResult(value auth.QueryResult) bool {
+	if !validCommandTag(value.Command) || len(value.Columns) > maxQueryColumns {
+		return false
+	}
+	for _, column := range value.Columns {
+		// A column name is whatever the SQL aliased it to, tabs and line
+		// breaks included, within PostgreSQL's identifier length; a type
+		// name is a catalogue value.
+		if column.Name == "" || len(column.Name) > maxIdentifierBytes || !printableText(column.Name) || !printableSetting(column.Type) {
+			return false
+		}
+	}
+	if value.RowCount < 0 || len(value.Rows) > auth.MaxMaxRows {
+		return false
+	}
+	for _, row := range value.Rows {
+		if len(row) != len(value.Columns) {
+			return false
+		}
+	}
+	// A zero-column result set (`select from t`) is legal and carries empty
+	// rows, so columns and rows are only tied by width.
+	return true
+}
+
+// validQueryResponse accepts the documented results document. The number of
+// results is bounded by the response body limit alone: one statement's outcome
+// is a few dozen bytes, and the SQL that produced them was bounded before it
+// was sent.
+func validQueryResponse(value auth.QueryResponse) bool {
+	if value.DurationMS < 0 {
+		return false
+	}
+	truncated := false
+	for _, result := range value.Results {
+		if !validQueryResult(result) {
+			return false
+		}
+		truncated = truncated || result.Truncated
+	}
+	// The top-level flag is the one an agent branches on, so it may not
+	// understate what the results already say.
+	return !truncated || value.Truncated
+}
+
 // responseDecoder is the seam for the two connection reads, the only routes
 // whose success body has two documented shapes. Everything else decodes into
 // one DTO and is validated by the type switch below.
@@ -343,7 +432,8 @@ func documentedFailure(code, method, path string) bool {
 		return path != auth.LoginPath
 	case auth.UserNotFound, auth.UsernameTaken, auth.LastAdministrator, auth.SelfTarget, auth.RateLimited,
 		auth.ConnectionExists, auth.ConnectionNotFound, auth.ConnectionInUse, auth.CredentialsUnavailable,
-		auth.ConnectionDisabled:
+		auth.ConnectionDisabled, auth.SourceError, auth.SourceTimeout, auth.SourceUnreachable,
+		auth.SourceAuthRejected, auth.ProviderUnsupported:
 		return slices.Contains(routeFailures(method, path), code)
 	}
 	return true
@@ -371,6 +461,11 @@ func routeFailures(method, path string) []string {
 	target := strings.HasPrefix(path, auth.UsersPath+"/")
 	connection := strings.HasPrefix(path, auth.ConnectionsPath+"/")
 	switch {
+	// Execution is the one route where the source itself can be the reason a
+	// request failed, so the four source codes join the authorization ones.
+	case path == auth.QueryPath:
+		return []string{auth.SourceError, auth.SourceTimeout, auth.SourceUnreachable, auth.SourceAuthRejected,
+			auth.CredentialsUnavailable, auth.ProviderUnsupported, auth.ConnectionNotFound, auth.ConnectionDisabled}
 	case path == auth.GrantRevokePath || (path == auth.GrantsPath && method == http.MethodPost):
 		return []string{auth.UserNotFound, auth.ConnectionNotFound}
 	case path == auth.GrantsPath: // the bounded listing
@@ -399,6 +494,39 @@ func routeFailures(method, path string) []string {
 		return []string{auth.UserNotFound, auth.RateLimited}
 	default: // login, whoami, logout
 		return []string{auth.RateLimited}
+	}
+}
+
+// queryBodyAllowance is what a query request may add on top of the SQL: the
+// JSON framing, the connection reference and maxRows. The route bounds its own
+// body with the same sum, so a body one side refuses is one the other never
+// builds.
+const queryBodyAllowance = 4096
+
+// requestLimit is the per-route request bound. Every route carries a
+// credential-sized body except execution, which carries the SQL.
+func requestLimit(path string) int {
+	if path == auth.QueryPath {
+		return auth.MaxSQLBytes + queryBodyAllowance
+	}
+	return auth.MaxCredentialBody
+}
+
+// responseLimit is the per-route response bound: the general limit, the
+// listing limit for the three bounded listings, and for execution the largest
+// byte cap a connection may carry plus the envelope allowance, doubled for the
+// escaping headroom. The CLI does not know the connection's own cap, so it
+// reads under the ceiling; values are bounded by the server's drain, but JSON
+// escaping can double a value the source rendered, so the ceiling alone would
+// refuse a legitimate result.
+func responseLimit(method, path string) int {
+	switch {
+	case path == auth.QueryPath:
+		return 2*auth.MaxMaxBytes + auth.QueryEnvelopeAllowance
+	case method == http.MethodGet && (path == auth.UsersPath || path == auth.ConnectionsPath || path == auth.GrantsPath):
+		return auth.MaxListingBody
+	default:
+		return auth.MaxResponseBody
 	}
 }
 
@@ -460,7 +588,7 @@ func (a authTransport) send(ctx context.Context, route apiCall, token auth.Secre
 	var body io.Reader
 	if input != nil {
 		encoded, err := json.Marshal(input)
-		if err != nil || len(encoded) > auth.MaxCredentialBody {
+		if err != nil || len(encoded) > requestLimit(path) {
 			r := failure("INVALID_ARGUMENT", "Invalid request input", nil)
 			return &r
 		}
@@ -491,11 +619,7 @@ func (a authTransport) send(ctx context.Context, route apiCall, token auth.Secre
 		return transportFailure(ctx)
 	}
 	defer func() { _ = response.Body.Close() }()
-	// Only the bounded listings may exceed the general response limit.
-	limit := auth.MaxResponseBody
-	if method == http.MethodGet && (path == auth.UsersPath || path == auth.ConnectionsPath || path == auth.GrantsPath) {
-		limit = auth.MaxListingBody
-	}
+	limit := responseLimit(method, path)
 	data, err := io.ReadAll(io.LimitReader(response.Body, int64(limit)+1))
 	if ctx.Err() != nil {
 		return transportFailure(ctx)
@@ -516,9 +640,16 @@ func (a authTransport) send(ctx context.Context, route apiCall, token auth.Secre
 		if !known || status != response.StatusCode || !documentedFailure(remote.Error.Code, method, path) {
 			return &invalid
 		}
+		// Only the source's own rejection carries a source block, and only on
+		// the execution route: anywhere else it is an undocumented envelope.
+		if remote.Source != nil &&
+			(remote.Error.Code != auth.SourceError || path != auth.QueryPath || !validSourceFailure(*remote.Source)) {
+			return &invalid
+		}
 		// The message is the client's own allowlisted text; only the optional
 		// hint is server-authored, and it is rendered as guidance.
 		r := failureWithHint(safe.Code, safe.Message, safeHint(remote.Error.Hint))
+		r.Error.Source = remote.Source
 		return &r
 	}
 	if decoder, twoShapes := output.(responseDecoder); twoShapes {
@@ -560,6 +691,8 @@ func (a authTransport) send(ctx context.Context, route apiCall, token auth.Secre
 		valid = validGrant(value.Grant)
 	case *auth.GrantRevocation:
 		valid = validGrantRevocation(*value)
+	case *auth.QueryResponse:
+		valid = validQueryResponse(*value)
 	}
 	if !valid {
 		return &invalid

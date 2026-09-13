@@ -1116,6 +1116,210 @@ try {
     "[smoke] Real CLI grants, member visibility, username references and revocation passed",
   )
 
+  // Queries run through the product CLI against the smoke database itself:
+  // pass-through scripts, bounds with explicit truncation, distinguishable
+  // failures, and nothing written to the platform database by any of it.
+  const platformRows = async (name) =>
+    sql(
+      "SELECT (SELECT count(*) FROM users) || ':' || (SELECT count(*) FROM sessions) || ':' || (SELECT count(*) FROM connections) || ':' || (SELECT count(*) FROM grants)",
+      name,
+    )
+  const query = (name, args, expected = 0, input) =>
+    cli(
+      name,
+      ["query", "--connection", "smoke-postgres", ...args],
+      expected,
+      input,
+    )
+  const rowsBefore = await platformRows("query-rows-before")
+  const script = await query("member", [
+    "--sql",
+    "create temp table smoke_query as select generate_series(1, 3) as n; select n from smoke_query order by n;",
+  ])
+  assert.equal(script.data.results.length, 2)
+  assert.equal(script.data.results[0].command, "SELECT")
+  assert.deepEqual(script.data.results[0].rows, [])
+  assert.deepEqual(
+    script.data.results[1].columns.map((column) => column.name),
+    ["n"],
+  )
+  assert.deepEqual(script.data.results[1].rows, [["1"], ["2"], ["3"]])
+  assert.equal(script.data.results[1].rowCount, 3)
+  assert.equal(script.data.truncated, false)
+  assert(Number.isInteger(script.data.durationMs))
+  const typed = await query("admin-one", [
+    "--sql",
+    "select 12345678901234567890::numeric as big, null::text as missing, 1, 1",
+  ])
+  assert.deepEqual(typed.data.results[0].rows, [
+    ["12345678901234567890", null, "1", "1"],
+  ])
+  assert.deepEqual(
+    typed.data.results[0].columns.map((column) => column.type),
+    ["numeric", "text", "int4", "int4"],
+  )
+  const wide = await query("member", [
+    "--sql",
+    "select generate_series(1, 2000)",
+  ])
+  assert.equal(wide.data.results[0].rows.length, 1000)
+  assert.equal(wide.data.results[0].truncated, true)
+  assert.equal(wide.data.truncated, true)
+  const narrow = await query("member", [
+    "--sql",
+    "select generate_series(1, 2000)",
+    "--max-rows",
+    "5",
+  ])
+  assert.equal(narrow.data.results[0].rows.length, 5)
+  assert.equal(narrow.data.truncated, true)
+  const piped = await query(
+    "member",
+    ["--sql-stdin"],
+    0,
+    "select 'stdin' as via;\n",
+  )
+  assert.deepEqual(piped.data.results[0].rows, [["stdin"]])
+  const sqlFile = join(privateDirectory, "query.sql")
+  writeFileSync(sqlFile, "select 'file' as via;\n")
+  const fromFile = await query("member", ["--sql-file", sqlFile])
+  assert.deepEqual(fromFile.data.results[0].rows, [["file"]])
+  const wideText = await execute(
+    join(root, "bin/clavis"),
+    [
+      "query",
+      "--connection",
+      "smoke-postgres",
+      "--sql",
+      "select generate_series(1, 2000) as n, null::text as missing",
+      "--output",
+      "text",
+      "--server",
+      apiURL,
+    ],
+    "auth-member-query-text",
+    { env: clientEnv("member") },
+  )
+  assert(wideText.includes("(1000 rows)"), "text output counts the kept rows")
+  assert(wideText.includes("Truncated: true"))
+  assert(wideText.includes("∅"), "NULL is rendered distinctly")
+  const broken = await query(
+    "member",
+    ["--sql", "select 1; select no_such_column from smoke_missing;"],
+    1,
+  )
+  assert.equal(broken.error.code, "SOURCE_ERROR")
+  assert.equal(broken.error.source.sqlstate, "42P01")
+  assert.equal(broken.error.source.statement, 1)
+  assert(broken.error.source.message.includes("smoke_missing"))
+  const syntax = await query("member", ["--sql", "selec 1"], 1)
+  assert.equal(syntax.error.source.sqlstate, "42601")
+  assert.equal(syntax.error.source.statement, 0)
+  assert(syntax.error.source.position > 0)
+  assert.equal(
+    (await query("member", ["--sql", "select 1", "--sql-stdin"], 2)).error.code,
+    "INVALID_ARGUMENT",
+  )
+  // A cap above the connection's is refused by the server and, like every
+  // argument problem, exits 2 with the cap in the hint.
+  const overCap = await query(
+    "member",
+    ["--sql", "select 1", "--max-rows", "5000"],
+    2,
+  )
+  assert.equal(overCap.error.code, "INVALID_ARGUMENT")
+  assert(overCap.error.hint.includes("1000"))
+  // Authorization and provider refusals never contact a source.
+  await cli("admin-one", [
+    "connections",
+    "create",
+    "--name",
+    "smoke-vm-query",
+    "--provider",
+    "victoriametrics",
+    "--url",
+    "http://127.0.0.1:9",
+    "--auth",
+    "none",
+  ])
+  assert.equal(
+    (
+      await cli(
+        "admin-one",
+        ["query", "--connection", "smoke-vm-query", "--sql", "select 1"],
+        1,
+      )
+    ).error.code,
+    "PROVIDER_UNSUPPORTED",
+  )
+  assert.equal(
+    (
+      await cli(
+        "member",
+        ["query", "--connection", "smoke-vm-query", "--sql", "select 1"],
+        1,
+      )
+    ).error.code,
+    "CONNECTION_NOT_FOUND",
+  )
+  await cli("admin-one", [
+    "connections",
+    "disable",
+    "--connection",
+    "smoke-postgres",
+  ])
+  assert.equal(
+    (await query("member", ["--sql", "select 1"], 1)).error.code,
+    "CONNECTION_DISABLED",
+  )
+  await cli("admin-one", [
+    "connections",
+    "enable",
+    "--connection",
+    "smoke-postgres",
+  ])
+  // The statement timeout is PostgreSQL's own; the platform never cancels.
+  await cli("admin-one", [
+    "connections",
+    "update",
+    "--connection",
+    "smoke-postgres",
+    "--statement-timeout",
+    "1s",
+  ])
+  const slow = await query("member", ["--sql", "select pg_sleep(3)"], 1)
+  assert.equal(slow.error.code, "SOURCE_TIMEOUT")
+  assert(slow.error.hint)
+  await cli("admin-one", [
+    "connections",
+    "update",
+    "--connection",
+    "smoke-postgres",
+    "--statement-timeout",
+    "45s",
+  ])
+  await cli("admin-one", [
+    "connections",
+    "disable",
+    "--connection",
+    "smoke-vm-query",
+  ])
+  await cli("admin-one", [
+    "connections",
+    "delete",
+    "--connection",
+    "smoke-vm-query",
+  ])
+  assert.equal(
+    await platformRows("query-rows-after"),
+    rowsBefore,
+    "executions write nothing to the platform database",
+  )
+  summary.queryExecution = "passed"
+  console.log(
+    "[smoke] Real CLI query execution, bounds, failures and refusals passed",
+  )
+
   await sql(
     "UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE user_id IN (SELECT id FROM users WHERE username='smoke-admin')",
     "fixture-expire",

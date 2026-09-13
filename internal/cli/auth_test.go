@@ -82,12 +82,18 @@ type cliAuthFixture struct {
 	grantQuery     string
 	grantCalls     int
 	grantMutations int
-	requests       int
-	login          int
-	logout         int
-	whoami         int
-	revoke         int
-	admin          int
+	// queryResponse is what an authorized execution answers, and queryFailure
+	// short-circuits one, so every documented code can be exercised end to end.
+	queryResponse auth.QueryResponse
+	queryFailure  *auth.Error
+	queryBody     []byte
+	queryCalls    int
+	requests      int
+	login         int
+	logout        int
+	whoami        int
+	revoke        int
+	admin         int
 }
 
 func newCLIFixture(t *testing.T, password auth.Secret) (*cliAuthFixture, *httptest.Server) {
@@ -115,11 +121,18 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(auth.ErrorResponse{Error: safe})
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, auth.MaxCredentialBody+1))
+	// Every route carries a credential-sized body except execution, which
+	// carries the SQL under its own documented bound.
+	execution := r.URL.Path == auth.QueryPath
+	limit := auth.MaxCredentialBody
+	if execution {
+		limit = auth.MaxSQLBytes + queryBodyAllowance
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	// Only the connection and grant routes document query parameters.
 	connections := r.URL.Path == auth.ConnectionsPath || strings.HasPrefix(r.URL.Path, auth.ConnectionsPath+"/")
 	grants := r.URL.Path == auth.GrantsPath || r.URL.Path == auth.GrantRevokePath
-	if err != nil || len(body) > auth.MaxCredentialBody || r.Header.Get("Cookie") != "" ||
+	if err != nil || len(body) > limit || r.Header.Get("Cookie") != "" ||
 		(r.URL.RawQuery != "" && !connections && !grants) || r.Header.Get("Accept") != "application/json" {
 		fail(auth.InvalidArgument)
 		return
@@ -157,6 +170,10 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if grants {
 		f.serveGrants(w, r, identity, body, fail)
+		return
+	}
+	if execution {
+		f.serveQuery(w, r, identity, body, fail)
 		return
 	}
 	if len(body) != 0 {

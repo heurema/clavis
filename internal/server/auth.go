@@ -41,6 +41,7 @@ type authHTTP struct {
 	connections auth.Connections
 	grants      auth.Grants
 	members     MemberConnections
+	executor    auth.QueryExecutor
 	origin      string
 	secure      bool
 	views       AuthViews
@@ -75,6 +76,9 @@ func (a *authHTTP) mount(router chi.Router) {
 	router.With(a.operation).Get(auth.GrantsPath, a.listGrantsJSON)
 	router.With(a.operation).Post(auth.GrantsPath, a.createGrantJSON)
 	router.With(a.operation).Post(auth.GrantRevokePath, a.revokeGrantJSON)
+	// Execution is not administration: a member with a grant uses it, so it
+	// sits outside /api/admin and alongside the member connection reads.
+	router.With(a.queryOperation).Post(auth.QueryPath, a.executeQueryJSON)
 }
 
 type responseBuffer struct {
@@ -106,15 +110,35 @@ func (w *responseBuffer) Write(b []byte) (int, error) {
 // Socket read deadlines unblock body consumption, while the context also bounds
 // pool and row locks. Response publication waits for preparation.
 func (a *authHTTP) operation(next http.Handler) http.Handler {
+	return a.bounded(auth.OperationTimeout, false, next)
+}
+
+// queryOperation is operation with the execution budget. A query waits on an
+// external source whose own statement timeout may be twenty times the shared
+// bound, so cutting it at five seconds would report unavailability for a
+// perfectly ordinary statement instead of the source's own outcome. The
+// per-request write deadline is extended past the server's global one for the
+// same reason: the response cannot be published after it.
+func (a *authHTTP) queryOperation(next http.Handler) http.Handler {
+	return a.bounded(auth.QueryRequestBudget, true, next)
+}
+
+func (a *authHTTP) bounded(budget time.Duration, extendWrite bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), auth.OperationTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), budget)
 		defer cancel()
 		deadline, _ := ctx.Deadline()
 		controller := http.NewResponseController(w)
-		_ = controller.SetReadDeadline(deadline)
+		// The body is read under the shared bound whatever the budget: a long
+		// budget is for waiting on a source, never for a trickling request.
+		readDeadline := time.Now().Add(min(budget, auth.OperationTimeout))
+		_ = controller.SetReadDeadline(readDeadline)
+		if extendWrite {
+			_ = controller.SetWriteDeadline(time.Now().Add(budget + 5*time.Second))
+		}
 		defer func() {
 			// Never re-enable draining a stalled body after its deadline.
-			if time.Now().Before(deadline) && ctx.Err() == nil {
+			if time.Now().Before(readDeadline) && ctx.Err() == nil {
 				_ = controller.SetReadDeadline(time.Time{})
 			}
 		}()

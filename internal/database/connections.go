@@ -654,11 +654,7 @@ func (s *LocalAuth) probe(ctx context.Context, implementation provider.Provider,
 	if !ok {
 		return "", false
 	}
-	defer func() {
-		for index := range plaintext {
-			plaintext[index] = 0
-		}
-	}()
+	defer wipe(plaintext)
 	return implementation.Probe(ctx, target, auth.Secret(plaintext)), true
 }
 

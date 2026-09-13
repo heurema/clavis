@@ -10,30 +10,39 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
+// sharedTimeout is the whole-request deadline every command but execution
+// takes: none of them waits on anything but the platform itself.
+const sharedTimeout = 5 * time.Second
+
 type cachedSession struct {
 	Origin string `json:"origin"`
 	auth.LoginResponse
 }
 
 func authCommands(streams IO, check func(*urfave.Command) error, set func(Result)) []*urfave.Command {
-	flags := func() []urfave.Flag {
+	flags := func(timeout time.Duration, timeoutUsage string) []urfave.Flag {
 		return []urfave.Flag{
 			&urfave.StringFlag{Name: "server", Value: "http://127.0.0.1:8080", Sources: urfave.EnvVars("CLAVIS_SERVER_URL"), Usage: "Server root origin"},
-			&urfave.DurationFlag{Name: "timeout", Value: 5 * time.Second, Usage: "Whole-request and credential-lock deadline"},
+			&urfave.DurationFlag{Name: "timeout", Value: timeout, Usage: timeoutUsage},
 		}
 	}
 	// The operation names the runAuth branch; a group prefix ("users.") is
-	// dropped from the command name.
-	makeCommand := func(operation, usage string, extra ...urfave.Flag) *urfave.Command {
-		name := operation[strings.LastIndex(operation, ".")+1:]
-		return &urfave.Command{Name: name, Usage: usage, Flags: append(flags(), extra...), Action: func(ctx context.Context, command *urfave.Command) error {
-			if err := check(command); err != nil {
-				return err
-			}
-			set(runAuth(ctx, operation, command, streams))
-			return nil
-		}}
+	// dropped from the command name. Every command takes the same whole-request
+	// deadline; only execution, which waits on an external source, defaults to
+	// a different one.
+	timedCommand := func(timeout time.Duration, timeoutUsage string) func(string, string, ...urfave.Flag) *urfave.Command {
+		return func(operation, usage string, extra ...urfave.Flag) *urfave.Command {
+			name := operation[strings.LastIndex(operation, ".")+1:]
+			return &urfave.Command{Name: name, Usage: usage, Flags: append(flags(timeout, timeoutUsage), extra...), Action: func(ctx context.Context, command *urfave.Command) error {
+				if err := check(command); err != nil {
+					return err
+				}
+				set(runAuth(ctx, operation, command, streams))
+				return nil
+			}}
+		}
 	}
+	makeCommand := timedCommand(sharedTimeout, "Whole-request and credential-lock deadline")
 	group := func(name, usage string, commands ...*urfave.Command) *urfave.Command {
 		return &urfave.Command{Name: name, Usage: usage, Action: func(ctx context.Context, command *urfave.Command) error {
 			if err := check(command); err != nil {
@@ -48,6 +57,7 @@ func authCommands(streams IO, check func(*urfave.Command) error, set func(Result
 			&urfave.BoolFlag{Name: "password-stdin", Usage: "Read a bounded password from stdin instead of a hidden terminal prompt"}),
 		makeCommand("logout", "Revoke and remove the local session"),
 		makeCommand("whoami", "Check current identity with the server"),
+		queryCommand(timedCommand(auth.QueryRequestBudget, queryTimeoutUsage)),
 		group("sessions", "Manage sessions",
 			makeCommand("revoke", "Revoke all current sessions for a user (administrator only)",
 				&urfave.StringFlag{Name: "user", Usage: "Target user UUID or username"})),
@@ -69,6 +79,9 @@ func validateAuthArguments(operation string, command *urfave.Command) *Result {
 	}
 	if grantCommand(operation) {
 		return validateGrantArguments(operation, command)
+	}
+	if operation == "query" {
+		return validateQueryArguments(command)
 	}
 	var message, hint string
 	switch operation {
@@ -149,6 +162,15 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 			return *failed
 		}
 	}
+	// The statement is read on the same terms as a credential: exactly one
+	// channel, bounded, and before any cache or network access.
+	var sql string
+	if operation == "query" {
+		var failed *Result
+		if sql, failed = readSQL(ctx, command, streams); failed != nil {
+			return *failed
+		}
+	}
 	lockCtx, cancel := context.WithTimeout(ctx, min(timeout, 5*time.Second))
 	cache, err := openCache(lockCtx, origin)
 	cancel()
@@ -204,6 +226,8 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 			return failure(failed.Error.Code, "Local credential removed; remote revocation was not confirmed", nil)
 		}
 		return success(auth.Revocation{Revoked: true})
+	case "query":
+		return runQuery(ctx, command, api, previous.Token, sql)
 	case "revoke":
 		var revoked auth.Revocation
 		path := userPath(auth.RevokePath, command.String("user"))

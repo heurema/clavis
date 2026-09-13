@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/buildinfo"
@@ -16,6 +17,11 @@ type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Hint    string `json:"hint,omitempty"`
+	// Source is the external source's own rejection, carried through from the
+	// server's envelope unchanged. Only an execution the source refused has
+	// one, and its message may quote values from the caller's own SQL, so it
+	// reaches the caller and nothing else.
+	Source *auth.SourceFailure `json:"source,omitempty"`
 }
 
 type Result struct {
@@ -56,8 +62,13 @@ func render(w io.Writer, result Result, format string) error {
 				return err
 			}
 		}
+		if err := renderSourceFailure(w, result.Error.Source); err != nil {
+			return err
+		}
 	}
 	switch data := result.Data.(type) {
+	case auth.QueryResponse:
+		return renderQueryResponse(w, data)
 	case auth.Identity:
 		if _, err := fmt.Fprintf(w, "User: %s (%s)\nRole: %s\nExpires: %s\n", data.User.Username, data.User.ID, data.User.Role, timestamp(data.ExpiresAt)); err != nil {
 			return err
@@ -150,6 +161,128 @@ func render(w io.Writer, result Result, format string) error {
 		return err
 	}
 	return nil
+}
+
+// nullMark distinguishes SQL NULL from an empty string in text output, which
+// no rendering of the value itself could do.
+const nullMark = "∅"
+
+// emptyStatementLabel names the result a comment-only string produces: the
+// source reports no command tag at all, and a bare count would read as a
+// missing result rather than a real one.
+const emptyStatementLabel = "(empty statement)"
+
+// renderQueryResponse prints one aligned table per row-producing result, the
+// command tag and affected count for the others, then the truncation notice
+// and the duration. The values are printed exactly as the source rendered
+// them; only NULL is marked, because nothing in the value itself could be.
+func renderQueryResponse(w io.Writer, response auth.QueryResponse) error {
+	for _, result := range response.Results {
+		if err := renderQueryResult(w, result); err != nil {
+			return err
+		}
+	}
+	if response.Truncated {
+		if _, err := fmt.Fprint(w, "Truncated: true\n"); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintf(w, "Duration: %d ms\n", response.DurationMS)
+	return err
+}
+
+func renderQueryResult(w io.Writer, result auth.QueryResult) error {
+	if len(result.Columns) == 0 {
+		command := result.Command
+		if command == "" {
+			command = emptyStatementLabel
+		}
+		_, err := fmt.Fprintf(w, "%s %d\n", command, result.RowCount)
+		return err
+	}
+	rows := make([][]string, 0, len(result.Rows)+1)
+	header := make([]string, len(result.Columns))
+	for index, column := range result.Columns {
+		header[index] = column.Name
+	}
+	rows = append(rows, header)
+	for _, row := range result.Rows {
+		values := make([]string, len(row))
+		for index, value := range row {
+			values[index] = nullMark
+			if value != nil {
+				values[index] = *value
+			}
+		}
+		rows = append(rows, values)
+	}
+	// The widths come from the kept rows and the header, so a truncated table
+	// is aligned on what it actually shows.
+	widths := make([]int, len(result.Columns))
+	for _, row := range rows {
+		for index, value := range row {
+			if index < len(widths) {
+				widths[index] = max(widths[index], utf8.RuneCountInString(value))
+			}
+		}
+	}
+	for _, row := range rows {
+		if err := renderQueryRow(w, row, widths); err != nil {
+			return err
+		}
+	}
+	// The count is what the table shows: a truncated result reports the kept
+	// rows, and the truncation notice says the rest was dropped.
+	_, err := fmt.Fprintf(w, "(%d rows)\n", len(result.Rows))
+	return err
+}
+
+func renderQueryRow(w io.Writer, row []string, widths []int) error {
+	var line strings.Builder
+	for index, value := range row {
+		if index > 0 {
+			line.WriteString("  ")
+		}
+		line.WriteString(value)
+		// The last column is never padded, so no line carries trailing blanks.
+		if index < len(row)-1 && index < len(widths) {
+			line.WriteString(strings.Repeat(" ", max(0, widths[index]-utf8.RuneCountInString(value))))
+		}
+	}
+	_, err := fmt.Fprintln(w, line.String())
+	return err
+}
+
+// renderSourceFailure prints the source's own rejection under the platform's
+// failure line. The upper-case labels are the source's own words; the mixed
+// case ones are the platform's, so the two are never confused.
+func renderSourceFailure(w io.Writer, source *auth.SourceFailure) error {
+	if source == nil {
+		return nil
+	}
+	headline := source.Message
+	if source.SQLState != "" {
+		headline = source.SQLState + " " + source.Message
+	}
+	if _, err := fmt.Fprintf(w, "ERROR: %s\n", headline); err != nil {
+		return err
+	}
+	for _, line := range []struct{ label, value string }{{"DETAIL", source.Detail}, {"HINT", source.Hint}} {
+		if line.value == "" {
+			continue
+		}
+		if _, err := fmt.Fprintf(w, "%s: %s\n", line.label, line.value); err != nil {
+			return err
+		}
+	}
+	if source.Position > 0 {
+		if _, err := fmt.Fprintf(w, "Position: %d\n", source.Position); err != nil {
+			return err
+		}
+	}
+	// Zero is meaningful: the whole string was rejected before anything ran.
+	_, err := fmt.Fprintf(w, "Statement: %d\n", source.Statement)
+	return err
 }
 
 func userStatus(user auth.UserRecord) string {
