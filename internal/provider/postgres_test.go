@@ -385,7 +385,7 @@ func TestPostgresExecuteImplicitTransactionRollsBack(t *testing.T) {
 	require.Equal(t, "42703", rejected.Failure.SQLState)
 	require.NotEmpty(t, rejected.Failure.Message)
 	require.NotZero(t, rejected.Failure.Position)
-	require.Equal(t, 1, rejected.Failure.Statement, "one statement completed before the failing one")
+	require.Equal(t, auth.StatementIndex(1), rejected.Failure.Statement, "one statement completed before the failing one")
 	// The failing statement took the implicit transaction down with it, so the
 	// insert that had already run is gone.
 	require.Equal(t, int64(0), adminValue[int64](t, dsn, "select count(*) from "+schema+".notes"))
@@ -399,7 +399,7 @@ func TestPostgresExecuteSyntaxErrorLocatesItself(t *testing.T) {
 	// PostgreSQL parses the whole string before it runs any of it, so a syntax
 	// error means no statement completed whichever one carries it; the
 	// position locates it in the string the caller submitted.
-	require.Equal(t, 0, rejected.Failure.Statement)
+	require.Equal(t, auth.StatementIndex(0), rejected.Failure.Statement)
 	require.Greater(t, rejected.Failure.Position, len("select 1; "))
 }
 
@@ -748,7 +748,7 @@ func TestPostgresExecutePrivilegeErrorIsTheSourcesOwn(t *testing.T) {
 	require.ErrorAs(t, err, &rejected)
 	require.Equal(t, "42501", rejected.Failure.SQLState)
 	require.Contains(t, rejected.Failure.Message, "permission denied")
-	require.Equal(t, 0, rejected.Failure.Statement)
+	require.Equal(t, auth.StatementIndex(0), rejected.Failure.Statement)
 }
 
 // A metrics input on a SQL connection is refused before anything is dialled.

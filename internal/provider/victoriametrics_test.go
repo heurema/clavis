@@ -767,6 +767,44 @@ func TestVictoriaMetricsExecuteByteCap(t *testing.T) {
 	require.Equal(t, int64(2), result.Rows)
 }
 
+// Once the byte cap is spent, later series are dropped whole, labels
+// included, so a high-cardinality answer cannot grow past the cap by its label
+// sets alone; the sample cap alone keeps every series with its labels.
+func TestVictoriaMetricsExecuteByteCapDropsLaterSeries(t *testing.T) {
+	wide := strings.Repeat("l", 64)
+	address, _ := metricsJSON(t, `{"status":"success","data":{"resultType":"matrix","result":[`+
+		`{"metric":{"job":"a"},"values":[[1,"1"],[2,"2"]]},`+
+		`{"metric":{"job":"`+wide+`"},"values":[[1,"1"]]},`+
+		`{"metric":{"job":"`+wide+`"},"values":[[1,"1"]]}]}}`)
+	result, err := metricsExecute(t, address, ExecuteRequest{PromQL: metricsExpression, MaxRows: 1000, MaxBytes: 8})
+	require.NoError(t, err)
+	// The second series crosses the cap with its labels and keeps them with no
+	// samples; the third is dropped whole.
+	require.Equal(t, `[{"metric":{"job":"a"},"values":[[1,"1"],[2,"2"]]},`+
+		`{"metric":{"job":"`+wide+`"},"values":[],"truncated":true}]`, string(result.Result))
+	require.True(t, result.Truncated)
+	require.LessOrEqual(t, result.Bytes, int64(8+len(wide)+3), "kept bytes are the cap plus the series that crossed it")
+
+	// The sample cap by itself keeps every later series, labels and all.
+	result, err = metricsExecute(t, address, ExecuteRequest{PromQL: metricsExpression, MaxRows: 2, MaxBytes: 1 << 20})
+	require.NoError(t, err)
+	require.Equal(t, `[{"metric":{"job":"a"},"values":[[1,"1"],[2,"2"]]},`+
+		`{"metric":{"job":"`+wide+`"},"values":[],"truncated":true},`+
+		`{"metric":{"job":"`+wide+`"},"values":[],"truncated":true}]`, string(result.Result))
+	require.True(t, result.Truncated)
+}
+
+// The source's own error wins over a null data member, and a deadline reached
+// while an error body is still arriving is the timeout, not a rejection.
+func TestVictoriaMetricsExecuteErrorEnvelopeWithNullData(t *testing.T) {
+	address, _ := metricsJSON(t, `{"status":"error","errorType":"422","error":"bad query","data":null}`)
+	_, err := metricsExecute(t, address, ExecuteRequest{PromQL: metricsExpression})
+	var rejected *SourceError
+	require.ErrorAs(t, err, &rejected)
+	require.Equal(t, "422", rejected.Failure.ErrorType)
+	require.Equal(t, "bad query", rejected.Failure.Message)
+}
+
 // A body beyond the ceiling is not data: it fails the request rather than
 // arriving as an answer the platform never read to the end.
 func TestVictoriaMetricsExecuteBodyCeiling(t *testing.T) {

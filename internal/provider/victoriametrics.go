@@ -505,7 +505,12 @@ func metricsBodyError(err error) error {
 // with a bounded prefix of whatever text came with it, which is what a proxy
 // or a gateway in front of the source usually answers.
 func metricsHTTPError(response *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(response.Body, maxMetricsErrorBody))
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxMetricsErrorBody))
+	if err != nil {
+		// A deadline reached while reading an error body is the timeout the
+		// caller was promised, not a source rejection with half its text.
+		return metricsReadError(err)
+	}
 	var envelope struct {
 		Status    string `json:"status"`
 		ErrorType string `json:"errorType"`
@@ -694,8 +699,12 @@ func (d *metricsDecoder) data() error {
 	}
 	delim, ok := token.(json.Delim)
 	if !ok {
-		if token == nil && d.call.discovery {
-			d.resultType, d.result = d.call.resultType, []byte("[]")
+		// A null data member is an absent one: the status decides the outcome,
+		// so a source that says error and null data reports its own error.
+		if token == nil {
+			if d.call.discovery {
+				d.resultType, d.result = d.call.resultType, []byte("[]")
+			}
 			return nil
 		}
 		return errMalformed
@@ -813,6 +822,25 @@ func (d *metricsDecoder) seriesList(out *bytes.Buffer) error {
 // vector entry whose one sample was cut is dropped, because half of a sample
 // is not a shape any caller can read.
 func (d *metricsDecoder) series() ([]byte, bool, error) {
+	// Once the byte cap is spent, a later series is read and dropped whole,
+	// labels included: kept bytes then stay bounded by the cap plus the one
+	// series that crossed it, which is what the route and the CLI read under.
+	// The sample cap alone keeps a series with its labels and no samples.
+	if d.keeper.started && d.keeper.bytes > d.keeper.maxBytes {
+		for d.decoder.More() {
+			if _, err := d.key(); err != nil {
+				return nil, false, err
+			}
+			if err := d.skip(0); err != nil {
+				return nil, false, err
+			}
+		}
+		if err := d.expect('}'); err != nil {
+			return nil, false, err
+		}
+		d.keeper.dropped = true
+		return nil, false, nil
+	}
 	var out bytes.Buffer
 	out.WriteByte('{')
 	first, cut, dropped := true, false, false
