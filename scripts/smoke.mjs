@@ -212,6 +212,7 @@ try {
   before = await snapshot()
   // Docker can reassign a published port of zero when the database restarts.
   env.CLAVIS_DB_PORT = String(await freePort())
+  env.CLAVIS_VM_PORT = String(await freePort())
   composeStarted = true
   await execute(
     "docker",
@@ -1242,16 +1243,15 @@ try {
     "--auth",
     "none",
   ])
-  assert.equal(
-    (
-      await cli(
-        "admin-one",
-        ["query", "--connection", "smoke-vm-query", "--sql", "select 1"],
-        1,
-      )
-    ).error.code,
-    "PROVIDER_UNSUPPORTED",
+  // SQL on a metrics connection is an argument error, refused before any
+  // credential is opened or source contacted.
+  const mismatch = await cli(
+    "admin-one",
+    ["query", "--connection", "smoke-vm-query", "--sql", "select 1"],
+    2,
   )
+  assert.equal(mismatch.error.code, "INVALID_ARGUMENT")
+  assert(mismatch.error.hint.includes("victoriametrics"))
   assert.equal(
     (
       await cli(
@@ -1318,6 +1318,234 @@ try {
   summary.queryExecution = "passed"
   console.log(
     "[smoke] Real CLI query execution, bounds, failures and refusals passed",
+  )
+
+  // PromQL runs against the real single-node VictoriaMetrics from compose:
+  // instant and range queries, discovery, the source's own errors, truncation,
+  // the timeout backstop against a stalling source, and the provider mismatch.
+  const vmURL = `http://127.0.0.1:${env.CLAVIS_VM_PORT}`
+  await waitHTTP(`${vmURL}/health`, 200)
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  const importLines = []
+  for (const job of ["api", "web"])
+    for (let back = 600; back >= 60; back -= 60)
+      importLines.push(
+        `smoke_requests_total{job="${job}",status="200"} ${(600 - back) / 60 + (job === "api" ? 10 : 20)} ${(nowSeconds - back) * 1000}`,
+      )
+  const imported = await fetch(`${vmURL}/api/v1/import/prometheus`, {
+    method: "POST",
+    body: importLines.join("\n") + "\n",
+  })
+  assert.equal(imported.status, 204)
+  await fetch(`${vmURL}/internal/force_flush`)
+  await cli("admin-one", [
+    "connections",
+    "create",
+    "--name",
+    "smoke-vm",
+    "--provider",
+    "victoriametrics",
+    "--url",
+    vmURL,
+    "--auth",
+    "none",
+    "--label",
+    "env=smoke",
+  ])
+  await check("smoke-vm", "reachable")
+  const metricsQuery = (name, args, expected = 0) =>
+    cli(name, ["query", "--connection", "smoke-vm", ...args], expected)
+  const at = String(nowSeconds - 60)
+  const instant = await metricsQuery("admin-one", [
+    "--promql",
+    "smoke_requests_total",
+    "--at",
+    at,
+  ])
+  assert.equal(instant.data.provider, "victoriametrics")
+  assert.equal(instant.data.resultType, "vector")
+  assert.equal(instant.data.result.length, 2)
+  assert.deepEqual(
+    instant.data.result.map((series) => series.metric.job).sort(),
+    ["api", "web"],
+  )
+  assert.equal(typeof instant.data.result[0].value[1], "string")
+  assert.equal(instant.data.truncated, false)
+  const range = await metricsQuery("admin-one", [
+    "--promql",
+    "sum(smoke_requests_total) by (job)",
+    "--start",
+    String(nowSeconds - 660),
+    "--end",
+    String(nowSeconds),
+    "--step",
+    "60s",
+  ])
+  assert.equal(range.data.resultType, "matrix")
+  assert.equal(range.data.result.length, 2)
+  assert(
+    range.data.result[0].values.length >= 5,
+    "the range covers the imported samples",
+  )
+  const selector = await metricsQuery("admin-one", [
+    "--promql",
+    "smoke_requests_total[10m]",
+    "--at",
+    at,
+  ])
+  assert.equal(
+    selector.data.resultType,
+    "matrix",
+    "an instant range selector answers a matrix",
+  )
+  const names = await metricsQuery("admin-one", ["--label-values", "__name__"])
+  assert.equal(names.data.resultType, "labelValues")
+  assert(names.data.result.includes("smoke_requests_total"))
+  const labels = await metricsQuery("admin-one", [
+    "--labels",
+    "--match",
+    "smoke_requests_total",
+  ])
+  assert.equal(labels.data.resultType, "labels")
+  assert(
+    labels.data.result.includes("job") && labels.data.result.includes("status"),
+  )
+  const series = await metricsQuery("admin-one", [
+    "--series",
+    'smoke_requests_total{job="api"}',
+    "--start",
+    String(nowSeconds - 660),
+    "--end",
+    String(nowSeconds),
+  ])
+  assert.equal(series.data.resultType, "series")
+  assert.deepEqual(
+    series.data.result.map((entry) => entry.job),
+    ["api"],
+  )
+  const namesText = await execute(
+    join(root, "bin/clavis"),
+    [
+      "query",
+      "--connection",
+      "smoke-vm",
+      "--label-values",
+      "__name__",
+      "--output",
+      "text",
+      "--server",
+      apiURL,
+    ],
+    "auth-admin-one-query-vm-text",
+    { env: clientEnv("admin-one") },
+  )
+  assert(namesText.split("\n").includes("smoke_requests_total"))
+  const badExpression = await metricsQuery(
+    "admin-one",
+    ["--promql", "sum(("],
+    1,
+  )
+  assert.equal(badExpression.error.code, "SOURCE_ERROR")
+  assert(
+    badExpression.error.source.errorType,
+    "the source's own error type is passed through",
+  )
+  assert.equal(badExpression.error.source.statement, undefined)
+  assert(!JSON.stringify(badExpression).includes("sqlstate"))
+  const capped = await metricsQuery("admin-one", [
+    "--promql",
+    "smoke_requests_total",
+    "--start",
+    String(nowSeconds - 660),
+    "--end",
+    String(nowSeconds),
+    "--step",
+    "60s",
+    "--max-rows",
+    "3",
+  ])
+  assert.equal(capped.data.truncated, true)
+  assert(
+    capped.data.result.some((entry) => entry.truncated === true),
+    "a cut series is marked inside its object",
+  )
+  assert.equal(
+    capped.data.result.reduce((sum, entry) => sum + entry.values.length, 0),
+    3,
+    "the sample cap bounds the whole response",
+  )
+  // Provider mismatch is refused before anything is sent, in both directions.
+  assert.equal(
+    (await metricsQuery("admin-one", ["--sql", "select 1"], 2)).error.code,
+    "INVALID_ARGUMENT",
+  )
+  assert.equal(
+    (await query("admin-one", ["--promql", "up"], 2)).error.code,
+    "INVALID_ARGUMENT",
+  )
+  assert.equal(
+    (
+      await metricsQuery(
+        "admin-one",
+        ["--promql", "up", "--at", at, "--start", at],
+        2,
+      )
+    ).error.code,
+    "INVALID_ARGUMENT",
+  )
+  // Members need a grant, and the grant makes the same queries work.
+  assert.equal(
+    (await metricsQuery("member", ["--promql", "up"], 1)).error.code,
+    "CONNECTION_NOT_FOUND",
+  )
+  await cli("admin-one", [
+    "grants",
+    "create",
+    "--user",
+    "smoke-member",
+    "--connection",
+    "smoke-vm",
+  ])
+  assert.equal(
+    (
+      await metricsQuery("member", [
+        "--promql",
+        "smoke_requests_total",
+        "--at",
+        at,
+      ])
+    ).data.result.length,
+    2,
+  )
+  // A source that stops answering is cut at the timeout plus the grace.
+  const stallPort = await freePort()
+  const stall = createHTTPServer(() => {})
+  await new Promise((resolve) => stall.listen(stallPort, "127.0.0.1", resolve))
+  stall.unref()
+  await cli("admin-one", [
+    "connections",
+    "create",
+    "--name",
+    "smoke-vm-stall",
+    "--provider",
+    "victoriametrics",
+    "--url",
+    `http://127.0.0.1:${stallPort}`,
+    "--auth",
+    "none",
+    "--statement-timeout",
+    "1s",
+  ])
+  const stalled = await cli(
+    "admin-one",
+    ["query", "--connection", "smoke-vm-stall", "--promql", "up"],
+    1,
+  )
+  assert.equal(stalled.error.code, "SOURCE_TIMEOUT")
+  stall.close()
+  summary.metricsQueries = "passed"
+  console.log(
+    "[smoke] Real CLI PromQL queries, discovery, bounds and refusals passed",
   )
 
   await sql(

@@ -329,7 +329,8 @@ browser admin page lists grants read-only below the connections.
 
 ## Queries
 
-`clavis query` runs SQL on a PostgreSQL connection the caller may use:
+`clavis query` runs a query on a connection the caller may use, SQL for
+PostgreSQL and PromQL for VictoriaMetrics (see below). For PostgreSQL:
 administrators on any enabled connection, members on the ones they hold a grant
 on. The SQL is forwarded unchanged under the connection's credentials; the
 platform does not parse, filter or wrap it, so the external role decides what
@@ -364,10 +365,49 @@ than the five seconds of the other commands. Failures are distinct codes:
 `SOURCE_ERROR` (422) with the source's `sqlstate`, `message`, `detail`, `hint`,
 `position` and the index of the failing statement under `error.source`,
 `SOURCE_TIMEOUT` (504), `SOURCE_UNREACHABLE` and `SOURCE_AUTH_REJECTED` (502),
-`CREDENTIALS_UNAVAILABLE`, `PROVIDER_UNSUPPORTED` (VictoriaMetrics queries are a
-later change), and the authorization codes `CONNECTION_NOT_FOUND`,
+`CREDENTIALS_UNAVAILABLE`, `PROVIDER_UNSUPPORTED`, and the authorization codes `CONNECTION_NOT_FOUND`,
 `CONNECTION_DISABLED`, `FORBIDDEN` and `UNAUTHENTICATED`. The source's message
 may contain values from your own SQL; it is returned to you and never logged.
+
+### VictoriaMetrics
+
+The same command queries a VictoriaMetrics connection with PromQL, forwarded to
+the source's Prometheus API exactly as typed:
+
+```sh
+clavis query --connection payments-metrics --promql 'sum(rate(http_requests_total[5m])) by (job)'
+clavis query --connection payments-metrics --promql 'rate(errors_total[5m])' --start -1h --step 1m
+clavis query --connection payments-metrics --label-values __name__ --match 'http_requests_total'
+clavis query --connection payments-metrics --labels --match '{job="api"}' --output text
+clavis query --connection payments-metrics --series '{__name__=~"http_.*"}' --start -15m
+```
+
+`--promql` alone is an instant query at the source's now; `--at` pins it;
+`--start` with `--step` makes it a range query and `--end` defaults to now.
+Time strings, steps and selectors are not parsed by the platform: RFC 3339,
+Unix seconds and the source's relative forms such as `-1h` all work, and the
+source's own rules decide the rest (a reversed range is clamped, not refused).
+Discovery forwards the source's metadata endpoints: `--label-values <name>`
+lists values of a label (metric names are `--label-values __name__`),
+`--labels` lists label names and `--series <selector>` lists matching series,
+each bounded by the row cap and narrowed with `--match`, `--start` and `--end`.
+`--promql-stdin` and `--promql-file` take the expression like their SQL twins.
+
+The response carries `provider: "victoriametrics"`, `resultType` and `result`
+in the Prometheus format with values as strings, plus the source's `warnings`,
+`infos` and `isPartial` when present; nothing is reformatted. The connection's
+timeout is sent to the source as the API `timeout` (the source caps it at its
+own maximum) and bounds the request plus a five-second grace. The row cap counts
+samples across all series: past it, remaining series keep the samples read so
+far and are marked `truncated`; the byte cap counts kept label and value text
+and drops later series whole once spent;
+and a body beyond four times the byte cap plus 1 MiB fails as `SOURCE_ERROR`
+with `errorType: response_too_large` rather than returning partial data.
+Failures are the source's own: `SOURCE_ERROR` carries its `errorType` (a
+Prometheus server says `bad_data` for an expression that does not parse,
+VictoriaMetrics says `422`) and message; HTTP 401 or 403 is
+`SOURCE_AUTH_REJECTED`. `--sql` on a metrics connection, or
+`--promql` on a PostgreSQL one, is refused with a hint before anything is sent.
 
 Each request opens one connection to the source and closes it afterwards; the
 platform keeps no pool and imposes no concurrency limit, so a runaway agent is

@@ -16,5 +16,21 @@ services:
       timeout: 3s
       retries: 30
     stop_grace_period: 5s
+  # A single-node VictoriaMetrics for smoke and development. The short maximum
+  # query duration makes the timeout case provable; nothing is persisted.
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.151.0@sha256:6d164540a04f49ba4e696cbdb70f9fee78be1e94b8f2a1292743a0b1ab8275bd
+    command:
+      - -search.maxQueryDuration=5s
+      - -search.latencyOffset=1s
+      - -retentionPeriod=1d
+    ports:
+      - "127.0.0.1:${CLAVIS_VM_PORT:-8428}:8428"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8428/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    stop_grace_period: 5s
 volumes:
   postgres-data:
