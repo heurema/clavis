@@ -196,6 +196,13 @@ func (postgreSQL) Probe(ctx context.Context, target map[string]string, secret au
 // runs the statements in order under its implicit transaction and returns one
 // result for each. Nothing here inspects, rewrites or restricts the string.
 func (postgreSQL) Execute(ctx context.Context, target map[string]string, secret auth.Secret, request ExecuteRequest) (ExecuteResult, error) {
+	// A metrics input on a SQL connection is refused before anything is
+	// dialled. The service decides this first, with a hint naming the input
+	// this provider takes; this is the backstop that keeps a missed rule from
+	// becoming an empty statement sent under the connection's credentials.
+	if !postgresInput(request) {
+		return ExecuteResult{}, ErrUnsupportedInput
+	}
 	// The same deadline-to-driver-timeout conversion the probe uses: an
 	// exhausted budget is an unreachable source rather than a spent dial.
 	timeout, ok := probeTimeout(ctx)
@@ -220,6 +227,16 @@ func (postgreSQL) Execute(ctx context.Context, target map[string]string, secret 
 	}
 	defer closePostgres(ctx, conn)
 	return postgresExecute(ctx, conn, boundedRequest(request))
+}
+
+// postgresInput reports whether the request carries the one input this
+// provider takes. An empty SQL string is not one: it would run nothing and
+// still open a connection under the connection's role.
+func postgresInput(request ExecuteRequest) bool {
+	metrics := request.PromQL != "" || request.Labels || request.LabelValues != "" ||
+		request.Series != "" || request.Match != "" ||
+		request.At != "" || request.Start != "" || request.End != "" || request.Step != ""
+	return request.SQL != "" && !metrics
 }
 
 // applicationName keeps the source from seeing an empty name: the platform
@@ -424,7 +441,7 @@ func postgresExecuteError(err error, completed int) error {
 			Detail:    pgErr.Detail,
 			Hint:      pgErr.Hint,
 			Position:  int(pgErr.Position),
-			Statement: completed,
+			Statement: auth.StatementIndex(completed),
 		}}
 	}
 	// The request deadline is the backstop for a source that stops answering;

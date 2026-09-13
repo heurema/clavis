@@ -281,7 +281,11 @@ func renderSourceFailure(w io.Writer, source *auth.SourceFailure) error {
 		}
 	}
 	// Zero is meaningful: the whole string was rejected before anything ran.
-	_, err := fmt.Fprintf(w, "Statement: %d\n", source.Statement)
+	// A source without statements reports none, and the line is left out.
+	if source.Statement == nil {
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "Statement: %d\n", *source.Statement)
 	return err
 }
 

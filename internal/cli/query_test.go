@@ -268,12 +268,12 @@ func TestQueryTextRendering(t *testing.T) {
 		"no-rows":         {success(noRows), "id\n(0 rows)\nDuration: 2 ms\n"},
 		"source-error": {failureWithSource(auth.SourceError, "The source rejected the SQL", querySourceHint,
 			&auth.SourceFailure{SQLState: "42601", Message: `syntax error at or near "selec"`,
-				Detail: "the parser stopped here", Hint: "check the spelling", Position: 1, Statement: 0}),
+				Detail: "the parser stopped here", Hint: "check the spelling", Position: 1, Statement: auth.StatementIndex(0)}),
 			"SOURCE_ERROR: The source rejected the SQL\nHint: " + querySourceHint + "\n" +
 				"ERROR: 42601 syntax error at or near \"selec\"\n" +
 				"DETAIL: the parser stopped here\nHINT: check the spelling\nPosition: 1\nStatement: 0\n"},
 		"source-minimal": {failureWithSource(auth.SourceError, "The source rejected the SQL", "",
-			&auth.SourceFailure{SQLState: "42703", Message: "column x does not exist", Statement: 1}),
+			&auth.SourceFailure{SQLState: "42703", Message: "column x does not exist", Statement: auth.StatementIndex(1)}),
 			"SOURCE_ERROR: The source rejected the SQL\nERROR: 42703 column x does not exist\nStatement: 1\n"},
 		"timeout": {failureWithHint(auth.SourceTimeout, "The statement timeout was exceeded", "The bound is 1000 ms"),
 			"SOURCE_TIMEOUT: The statement timeout was exceeded\nHint: The bound is 1000 ms\n"},
@@ -403,7 +403,8 @@ func TestQueryDocumentedFailures(t *testing.T) {
 		source  bool
 	}{
 		{&auth.Error{Code: auth.SourceError, Hint: querySourceHint, Source: &auth.SourceFailure{
-			SQLState: "42601", Message: `syntax error at or near "selec"`, Position: 1}}, true},
+			SQLState: "42601", Message: `syntax error at or near "selec"`, Position: 1,
+			Statement: auth.StatementIndex(0)}}, true},
 		{&auth.Error{Code: auth.SourceTimeout, Hint: "The bound is 1000 ms"}, false},
 		{&auth.Error{Code: auth.SourceUnreachable, Hint: "Run connections check"}, false},
 		{&auth.Error{Code: auth.SourceAuthRejected, Hint: "Run connections check"}, false},
@@ -433,7 +434,8 @@ func TestQueryDocumentedFailures(t *testing.T) {
 			require.Equal(t, "42601", result.Error.Source.SQLState)
 			require.Equal(t, 1, result.Error.Source.Position)
 			// Zero is meaningful and is always carried.
-			require.Equal(t, 0, result.Error.Source.Statement)
+			require.NotNil(t, result.Error.Source.Statement)
+			require.Equal(t, 0, *result.Error.Source.Statement)
 		})
 	}
 }
@@ -444,7 +446,7 @@ func TestQuerySourceErrorAsText(t *testing.T) {
 	fixture, server := queryFixture(t)
 	fixture.mu.Lock()
 	fixture.queryFailure = &auth.Error{Code: auth.SourceError, Hint: querySourceHint,
-		Source: &auth.SourceFailure{SQLState: "42703", Message: "column x does not exist", Statement: 1}}
+		Source: &auth.SourceFailure{SQLState: "42703", Message: "column x does not exist", Statement: auth.StatementIndex(1)}}
 	fixture.mu.Unlock()
 	exit, output := queryText(t, server, "", "query", "--connection", "payments-prod-reporting", "--sql", "select x from notes")
 	require.Equal(t, 1, exit)

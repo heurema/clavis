@@ -10,6 +10,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"slices"
@@ -38,23 +39,46 @@ type Executor interface {
 }
 
 // ExecuteRequest is one pass-through execution under the connection's bounds.
-// The SQL reaches the source unchanged. Application is the application_name
-// the source will see; the service composes it, because only the service knows
-// the connection name and the caller.
+// Exactly one input is set and it reaches the source unchanged: the SQL for
+// PostgreSQL, or for a metrics source the expression with its optional time
+// bounds, or one of the three discovery inputs. Application is the
+// application_name a SQL source will see; the service composes it, because
+// only the service knows the connection name and the caller, and a metrics
+// source has nowhere to put it.
 type ExecuteRequest struct {
-	SQL         string
+	SQL    string
+	PromQL string
+	At     string
+	Start  string
+	End    string
+	Step   string
+
+	Labels      bool
+	LabelValues string
+	Series      string
+	Match       string
+
 	Timeout     time.Duration
 	MaxRows     int
 	MaxBytes    int
 	Application string
 }
 
-// ExecuteResult is the bounded view of what the source produced. Results is
-// one entry per statement in order. Statements, Rows and Bytes count what was
-// kept, not what the source sent: the rest was read and dropped, so the
-// counters describe the response rather than the work.
+// ExecuteResult is the bounded view of what the source produced. For a SQL
+// source Results is one entry per statement in order; for a metrics source
+// ResultType names the shape and Result holds the source's own data, with the
+// source's warnings, infos and partial-answer flag beside it. Statements, Rows
+// and Bytes count what was kept, not what the source sent: the rest was read
+// and dropped, so the counters describe the response rather than the work.
 type ExecuteResult struct {
-	Results    []auth.QueryResult
+	Results []auth.QueryResult
+
+	ResultType string
+	Result     json.RawMessage
+	Warnings   []string
+	Infos      []string
+	IsPartial  bool
+
 	Truncated  bool
 	Statements int64
 	Rows       int64
@@ -69,9 +93,14 @@ var (
 	ErrUnreachable  = errors.New("the source could not be reached")
 	ErrAuthRejected = errors.New("the source refused the credentials")
 	ErrUnsupported  = errors.New("the provider does not support this operation")
+	// ErrUnsupportedInput is the backstop for an input this provider does not
+	// take, such as SQL for a metrics source. The service refuses a mismatch
+	// before any credential is opened, so reaching this means the service's
+	// own rule was missed rather than that a caller found a way in.
+	ErrUnsupportedInput = errors.New("the provider does not take this input")
 )
 
-// SourceError is the source's own rejection of the submitted SQL, the one
+// SourceError is the source's own rejection of the submitted input, the one
 // failure whose text the caller sees. Error() is fixed application text: the
 // source's message travels in Failure, which the service puts in the
 // envelope's source block and nothing logs.

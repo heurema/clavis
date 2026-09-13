@@ -161,7 +161,8 @@ func TestCLIProcesses(t *testing.T) {
 		// A statement the source rejects exits 1 with the source's own lines.
 		fixture.mu.Lock()
 		fixture.queryFailure = &auth.Error{Code: auth.SourceError, Hint: querySourceHint,
-			Source: &auth.SourceFailure{SQLState: "42601", Message: "syntax error", Position: 1}}
+			Source: &auth.SourceFailure{SQLState: "42601", Message: "syntax error", Position: 1,
+				Statement: auth.StatementIndex(0)}}
 		fixture.mu.Unlock()
 		exit, output, _ = processCLI(t, binary, "", "query", "--connection", "payments-prod-reporting",
 			"--sql", "selec 1", "--output=text")

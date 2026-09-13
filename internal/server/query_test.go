@@ -172,7 +172,7 @@ func TestQueryRouteRendersTheSourceFailureInsideTheEnvelope(t *testing.T) {
 	f, handler := queryFixture(t)
 	f.queryErr = &auth.Error{Code: auth.SourceError, Hint: "Correct the statement and try again",
 		Source: &auth.SourceFailure{SQLState: "42601", Message: `syntax error at or near "selec"`,
-			Detail: "detail line", Hint: "source hint", Position: 1, Statement: 0}}
+			Detail: "detail line", Hint: "source hint", Position: 1, Statement: auth.StatementIndex(0)}}
 	response := requestAuth(handler, "POST", auth.QueryPath, validQueryBody, queryHeaders())
 	require.Equal(t, 422, response.Code)
 	var failure auth.ErrorResponse
@@ -186,7 +186,8 @@ func TestQueryRouteRendersTheSourceFailureInsideTheEnvelope(t *testing.T) {
 	require.Equal(t, "source hint", failure.Source.Hint)
 	require.Equal(t, 1, failure.Source.Position)
 	// Zero is meaningful: the whole string was rejected before anything ran.
-	require.Equal(t, 0, failure.Source.Statement)
+	require.NotNil(t, failure.Source.Statement)
+	require.Equal(t, 0, *failure.Source.Statement)
 	require.Contains(t, response.Body.String(), `"source":{`)
 	// A failure that carries no source block does not grow one.
 	f, handler = queryFixture(t)

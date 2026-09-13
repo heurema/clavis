@@ -750,3 +750,35 @@ func TestPostgresExecutePrivilegeErrorIsTheSourcesOwn(t *testing.T) {
 	require.Contains(t, rejected.Failure.Message, "permission denied")
 	require.Equal(t, 0, rejected.Failure.Statement)
 }
+
+// A metrics input on a SQL connection is refused before anything is dialled.
+// The service refuses the mismatch first, with a hint naming the input this
+// provider takes; this proves the provider's own backstop.
+func TestPostgresExecuteRefusesUnsupportedInput(t *testing.T) {
+	postgres, ok := Lookup(auth.ProviderPostgreSQL)
+	require.True(t, ok)
+	executor, ok := postgres.(Executor)
+	require.True(t, ok)
+	// A target that could never answer: reaching the source at all would be
+	// the failure this test is looking for.
+	target := map[string]string{
+		keyHost: "127.0.0.1", keyPort: "1", keyDatabase: "none", keyRole: "none", keySSLMode: "disable",
+	}
+	for name, request := range map[string]ExecuteRequest{
+		"an expression":       {PromQL: "up"},
+		"labels":              {Labels: true},
+		"label values":        {LabelValues: "job"},
+		"series":              {Series: "up"},
+		"a match":             {SQL: "select 1", Match: `{job="api"}`},
+		"a time beside sql":   {SQL: "select 1", Start: "-1h"},
+		"a step beside sql":   {SQL: "select 1", Step: "1m"},
+		"no input at all":     {},
+		"an empty sql string": {SQL: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := executor.Execute(t.Context(), target, auth.Secret(sentinel), request)
+			require.ErrorIs(t, err, ErrUnsupportedInput)
+			requireNoSentinel(t, err.Error())
+		})
+	}
+}

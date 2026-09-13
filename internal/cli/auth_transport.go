@@ -283,7 +283,7 @@ func validSourceFailure(value auth.SourceFailure) bool {
 	if value.SQLState != "" && !sqlState.MatchString(value.SQLState) {
 		return false
 	}
-	if value.Position < 0 || value.Statement < 0 {
+	if value.Position < 0 || (value.Statement != nil && *value.Statement < 0) {
 		return false
 	}
 	for _, text := range []string{value.Message, value.Detail, value.Hint} {
