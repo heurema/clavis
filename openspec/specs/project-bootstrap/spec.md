@@ -217,7 +217,7 @@ Server operational logs SHALL be structured and SHALL distinguish service startu
 
 ### Requirement: Repeatable quality and smoke checks
 
-The project SHALL provide documented non-interactive commands for formatting checks, static analysis, generated-source consistency, non-browser tests, builds, and an end-to-end bootstrap smoke check. A failing check SHALL return a nonzero exit status. The smoke check SHALL exercise the real local server and database, verify API and CLI behavior against the same server origin, and clean up only the temporary resources it creates. Setup, quality and smoke commands SHALL NOT install or require a browser runtime.
+The project SHALL provide documented non-interactive commands for formatting checks, static analysis, generated-source consistency, non-browser tests, builds, and an end-to-end bootstrap smoke check. Static analysis SHALL include a whole-program dead-code check that fails when any Go function is unreachable from the project's executables, with tests not counted as roots, so that code only tests reach is reported; the tool SHALL be pinned and installed by the setup command like the other Go tools. A failing check SHALL return a nonzero exit status. The smoke check SHALL exercise the real local server and database, verify API and CLI behavior against the same server origin, and clean up only the temporary resources it creates. Setup, quality and smoke commands SHALL NOT install or require a browser runtime.
 
 Smoke verification SHALL run the built server from a separate working directory without companion web assets and SHALL verify document/asset availability through HTTP alongside CLI diagnostics and authentication. It SHALL cover database outage/recovery and server stop/restart through fresh HTTP and CLI requests. Automated browser behavior, DOM, screenshot and already-loaded-page checks are outside the current test scope.
 
@@ -225,6 +225,10 @@ Smoke verification SHALL run the built server from a separate working directory 
 - **WHEN** a contributor runs the quality and smoke commands with the documented prerequisites
 - **THEN** the checks verify that the application builds, generated sources are consistent, and API/CLI requests observe real server/database behavior
 - **AND** no browser installation or browser automation is invoked
+
+#### Scenario: Unreachable code is introduced
+- **WHEN** a function that no executable reaches is added to a production package, including one only tests call
+- **THEN** the dead-code check exits unsuccessfully and names the function and its location
 
 #### Scenario: Verify the deployable artifact
 - **WHEN** the copied server executable runs in an otherwise empty directory with valid configuration
