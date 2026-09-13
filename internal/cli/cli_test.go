@@ -20,7 +20,7 @@ import (
 func invoke(t *testing.T, args ...string) (int, string) {
 	t.Helper()
 	var out bytes.Buffer
-	code := Run(context.Background(), append([]string{"clavis"}, args...), &out)
+	code := RunWithIO(context.Background(), append([]string{"clavis"}, args...), IO{Stdout: &out})
 	return code, out.String()
 }
 

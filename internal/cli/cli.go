@@ -11,11 +11,6 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
-// Run preserves the stdout-only entry point for callers that do not need input.
-func Run(ctx context.Context, args []string, stdout io.Writer) int {
-	return RunWithIO(ctx, args, IO{Stdout: stdout})
-}
-
 // RunWithIO is the command output/exit boundary. Library usage errors and help
 // are buffered so an invalid invocation always produces one JSON document.
 func RunWithIO(ctx context.Context, args []string, streams IO) int {

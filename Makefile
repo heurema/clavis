@@ -9,17 +9,20 @@ PNPM := /usr/bin/env pnpm
 # The templ runtime dependency is also the compiler pin.
 TEMPL_VERSION = $(shell go list -m -f '{{.Version}}' github.com/a-h/templ)
 GOLANGCI_VERSION := 2.13.2
+DEADCODE_VERSION := 0.50.0
 SQLC_VERSION = $(shell cat .sqlc-version)
 TEMPL := $(CURDIR)/.tools/templ/bin/templ
 GOLANGCI := $(CURDIR)/.tools/golangci-lint/bin/golangci-lint
+DEADCODE := $(CURDIR)/.tools/deadcode/bin/deadcode
 SQLC := $(CURDIR)/.tools/sqlc/bin/sqlc
 
-.PHONY: setup dev dev-db dev-api build build-server build-cli build-web-assets install-templ install-golangci-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go format test-mutation test-mutation-full smoke down reset-db
+.PHONY: setup dev dev-db dev-api build build-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke down reset-db
 
 setup:
 	go mod download
 	$(PNPM) --dir web install --frozen-lockfile
 	$(MAKE) install-golangci-lint
+	$(MAKE) install-deadcode
 	$(MAKE) install-templ
 	$(MAKE) install-sqlc
 	$(MAKE) build-web-assets
@@ -56,6 +59,9 @@ install-templ:
 
 install-golangci-lint:
 	GOBIN='$(dir $(GOLANGCI))' GOWORK=off go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v$(GOLANGCI_VERSION)
+
+install-deadcode:
+	GOBIN='$(dir $(DEADCODE))' GOWORK=off go install golang.org/x/tools/cmd/deadcode@v$(DEADCODE_VERSION)
 
 generate-web:
 	'$(TEMPL)' generate -path internal/web
@@ -106,6 +112,7 @@ check:
 	$(MAKE) build-web-assets
 	$(NODE) --test scripts/*.test.mjs
 	$(MAKE) lint-go
+	$(MAKE) check-dead-code
 	# Package binaries run serially: database-backed packages share one database
 	# and its database-wide advisory lock keys, so parallel packages can stall.
 	go test -p 1 ./...
@@ -120,6 +127,15 @@ check-go-format:
 
 lint-go:
 	'$(GOLANGCI)' run --config .golangci.yml ./...
+
+# Functions no executable reaches are dead production code, test-only helpers
+# included: the tool exits 0 whatever it finds, so any output is the failure.
+check-dead-code:
+	@set -eu; findings=$$('$(DEADCODE)' ./...); \
+		if [ -n "$$findings" ]; then \
+			echo "Unreachable Go code (deadcode $(DEADCODE_VERSION)):"; echo "$$findings"; exit 1; \
+		fi; \
+		echo "No unreachable Go code."
 
 format:
 	find cmd internal scripts/check-sql-boundaries -name '*.go' ! -name '*_templ.go' ! -path 'internal/database/sqlc/*' -exec gofmt -w {} +
