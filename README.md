@@ -68,7 +68,7 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make build` | Build the server and CLI |
 | `make build-server` | Verify generated templates/queries, rebuild embedded assets and build the server |
 | `make build-cli` | Build only the CLI using Go, without web or SQL tools |
-| `make install-templ` / `make install-golangci-lint` | Install the exact template compiler / Go linter pin |
+| `make install-templ` / `make install-golangci-lint` / `make install-deadcode` | Install the exact template compiler / Go linter / dead-code tool pin |
 | `make install-sqlc` | Install the exact development sqlc pin |
 | `make generate-db` | Explicitly regenerate checked-in pgx query methods |
 | `make check-db-generated` | Check the complete generated query tree without rewriting files |
@@ -78,6 +78,7 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make check-web-generated` | Check template formatting and generated-source consistency without rewriting files |
 | `make check` | Run non-mutating source checks, linters, tests, and builds |
 | `make lint-go` | Run golangci-lint |
+| `make check-dead-code` | Fail on any Go function no executable reaches, test-only helpers included |
 | `make format` | Format maintained Go, templates and JavaScript; regenerate templ Go source |
 | `make smoke` | Test standalone server HTTP/API/CLI behavior with real database outage, recovery and cleanup |
 | `make test-mutation` | Mutation-test the handwritten Go files changed against `main` in an isolated copy and report survivors |
@@ -85,10 +86,10 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make down` | Stop the database and keep its data |
 | `make reset-db` | Delete the local Clavis database and its data |
 
-`make setup` installs templ, golangci-lint and sqlc with versioned `go install`
+`make setup` installs templ, golangci-lint, deadcode and sqlc with versioned `go install`
 commands into ignored `.tools/<tool>/bin/`, and frontend development dependencies
 with pnpm's frozen lockfile. Pins come from the templ runtime in `go.mod`,
-`GOLANGCI_VERSION` in `Makefile`, and `.sqlc-version`. Go verifies downloaded
+`GOLANGCI_VERSION` and `DEADCODE_VERSION` in `Makefile`, and `.sqlc-version`. Go verifies downloaded
 modules using its normal module integrity checks; no remote installer is executed
 and application Go dependencies are not changed. Package managers and pinned
 install arguments own tool versions; builds/checks do not add custom version gates

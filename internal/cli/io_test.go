@@ -36,8 +36,8 @@ func TestRunWithIOPreservesOutputAndExit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := append([]string{"clavis"}, tc.args...)
-			var legacy, stdout, stderr bytes.Buffer
-			wantExit := Run(context.Background(), args, &legacy)
+			var stdoutOnly, stdout, stderr bytes.Buffer
+			wantExit := RunWithIO(context.Background(), args, IO{Stdout: &stdoutOnly})
 			stdin := strings.NewReader("SECRET\n")
 			gotExit := RunWithIO(context.Background(), args, IO{
 				Stdin: stdin, Stdout: &stdout, Stderr: &stderr,
@@ -48,7 +48,7 @@ func TestRunWithIOPreservesOutputAndExit(t *testing.T) {
 			})
 			assert.Equal(t, tc.exit, gotExit)
 			assert.Equal(t, wantExit, gotExit)
-			assert.Equal(t, legacy.String(), stdout.String())
+			assert.Equal(t, stdoutOnly.String(), stdout.String())
 			assert.Empty(t, stderr.String())
 			assert.Equal(t, len("SECRET\n"), stdin.Len(), "existing commands must not consume stdin")
 			assert.NotContains(t, stdout.String(), "SECRET")
