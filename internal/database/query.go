@@ -39,7 +39,7 @@ const (
 	// rejection the source wrote speaks for itself. A log answer is unbounded
 	// unless the caller bounds it, so the ceiling names the caller's own limit
 	// beside the bounds an administrator owns.
-	hintQueryCeiling   = "The answer exceeded the platform's reading ceiling of four times the connection's byte cap plus 1 MiB; narrow the range, step or query, pass a limit, lower maxRows, or ask an administrator to raise the cap."
+	hintQueryCeiling   = "The answer exceeded the platform's reading ceiling of four times the connection's byte cap plus 1 MiB; for metrics narrow the range or coarsen the step, for logs narrow the query or select fewer fields, or ask an administrator to raise the byte cap."
 	hintQueryMalformed = "The answer was not the response the source's API documents; confirm the connection's URL is the source's query API and run `clavis connections check`."
 	// The halves of the input rule: which inputs exist, which time fields each
 	// of them takes, and the three rules the log inputs add. None of them names

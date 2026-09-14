@@ -408,7 +408,7 @@ read so far and are marked `truncated`, and vector entries beyond it are
 dropped; the byte cap counts kept label and value text and drops later series
 whole once spent; and a body beyond four times the byte cap plus 1 MiB fails as
 `SOURCE_ERROR` with `errorType: response_too_large` and a hint to narrow the
-range or step or lower `--max-rows`, rather than returning partial data.
+range or coarsen the step, rather than returning partial data.
 Failures are the source's own: `SOURCE_ERROR` carries its `errorType` (a
 Prometheus server says `bad_data` for an expression that does not parse,
 VictoriaMetrics says `422`, also when it aborts an evaluation at the forwarded

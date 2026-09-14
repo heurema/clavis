@@ -1094,7 +1094,7 @@ func TestExecuteQueryReportsLogSourceFailures(t *testing.T) {
 	code(t, failure, auth.SourceError)
 	require.Equal(t, provider.ResponseTooLarge, sourceOf(t, failure).ErrorType)
 	require.Equal(t, hintQueryCeiling, hintOf(t, failure))
-	require.Contains(t, hintQueryCeiling, "pass a limit")
+	require.Contains(t, hintQueryCeiling, "fewer fields")
 
 	// A source that stops answering is cut at the connection's own bound plus
 	// the documented grace, and the bound it was asked to apply is the same one.
