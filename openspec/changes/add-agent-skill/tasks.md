@@ -1,0 +1,19 @@
+Two slices in dependency order; implementation and independent acceptance review are separate tasks, and a reviewer never approves their own implementation. Expect roughly 900 to 1,200 changed handwritten lines including the skill prose; no generated output is expected.
+
+## 1. Skill commands, embedding and the drift guard
+
+Requirements: agent-skill "Skill install command", "Skill show command", "Skill cannot drift from the CLI". Owned paths: `internal/skill/` (new, with `clavis/` holding placeholder files that slice 2 replaces), `internal/cli/skill_commands.go`, `internal/cli/skill_test.go`, `internal/cli/skill_drift_test.go`, `internal/cli/cli.go` (command list), `internal/cli/result.go` (the install result rendering). Verify: `go test -race ./internal/cli/ ./internal/skill/ && make build-cli`.
+
+- [ ] 1.1 Embed the skill directory with the version marker rendering; implement `skill install` (target resolution for user, project, `--agent` and `--dir`; marker detection; written, updated, unchanged, refused outcomes; `--force`; `--dry-run`; temporary-file writes) and `skill show`; JSON and text results; exit codes. Tests in a temporary home for every scenario in the spec, plus permission and I/O failure paths and the hint texts.
+- [ ] 1.2 Implement the drift guard: invocation and flag extraction against the command tree, hint comparison, entry and reference line bounds; prove it fails on a planted bad flag.
+- [ ] 1.3 Independent acceptance review of slice 1; record the revision.
+
+## 2. Skill content, smoke, docs and rehearsal
+
+Requirements: agent-skill "Embedded skill content"; project-bootstrap smoke and quality requirements. Depends on slice 1. Owned paths: `internal/skill/clavis/*.md`, `scripts/smoke.mjs`, `README.md`, `docs/PRD.md` (7.6 and 12), `reports/` (ignored). Verify: `go test -race ./internal/cli/ ./internal/skill/ && make check && make smoke`.
+
+- [ ] 2.1 Write `SKILL.md` and the three references per design decision 4, from README, the specs and the real-data notes, with placeholder connection names and no real host; the drift guard passes; extend smoke with the install, show, reinstall, refusal and force cases in a temporary home.
+- [ ] 2.2 README "Agents" section and the agent setup in Quick start; PRD 7.6 marked implemented with the install route, 12 updated.
+- [ ] 2.3 Rehearsal: a fresh agent session with only the installed skill against the smoke stack completes one task per provider (row counts per status over a day; error rate by job over an hour; warnings per service over fifteen minutes with JSON messages unpacked) and states its limits without coaching; record the verdict and any prose fix it prompted.
+- [ ] 2.4 Independent acceptance review of slice 2 and the whole change against the PRD's SKILL-01 to SKILL-04; record the revision, limits and any exceptions for owner acceptance before archive.
+- [ ] 2.5 Run clean-checkout `make setup`, `make check`, `make smoke` and `make test-mutation-full`; report handwritten and generated line counts separately; confirm no tracked source is rewritten by successful checks.
