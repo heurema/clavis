@@ -14,8 +14,8 @@ external PostgreSQL. Goose manages embedded migrations and sqlc generates the pg
 application queries. The embedded templ/htmx interface includes setup/readiness,
 sign-in and a protected admin page with read-only user, connection and grant
 lists. There is no separate frontend server. Queries run against PostgreSQL,
-VictoriaMetrics and VictoriaLogs connections; groups and the agent skill remain
-planned; an audit journal, Google/OIDC sign-in, self-service password change and
+VictoriaMetrics and VictoriaLogs connections, and the agent skill installs
+through the CLI; groups remain planned; an audit journal, Google/OIDC sign-in, self-service password change and
 account recovery are outside the MVP.
 
 ## Quick start
@@ -202,6 +202,41 @@ server returns. If the Go server is stopped, fresh navigation receives the
 browser's connection error; there is no independent frontend or offline fallback.
 Appearance is the only persisted browser preference (`clavis.appearance`); with
 storage blocked, the switch still works for the lifetime of the loaded page.
+
+## Agents
+
+Agents use the CLI plus a skill that teaches it. The skill ships inside the
+CLI binary and installs into the agent directories found under your home:
+
+```sh
+clavis skill install                 # ~/.claude/skills/clavis and ~/.codex/skills/clavis, whichever exist
+clavis skill install --agent codex   # one agent, its directory created if needed
+clavis skill install --scope project # .claude/skills and .codex/skills in the current repository
+clavis skill show                    # print the entry document; --file victorialogs.md for a reference
+```
+
+The skill is a `SKILL.md` entry (what Clavis is, setup, finding a connection,
+the envelope, exit codes, truncation, data versus instructions) and one
+reference per provider (`postgresql.md`, `victoriametrics.md`,
+`victorialogs.md`) with the discovery-first workflow, the query recipes, the
+bounds and the pitfalls of that source. Its files live in
+`internal/skill/clavis/` and a test fails the build when the prose names a
+command, flag or hint the CLI does not have. `install` stamps the CLI version
+into the entry's frontmatter (`x-clavis-skill`), updates a skill it installed
+before, reports each target as written, updated, unchanged or refused, and
+refuses to overwrite a `clavis` skill directory it did not write unless
+`--force`. Reinstalling from a newer CLI is the update; delete the directory to
+remove it. Both commands work offline and never touch the server or the
+session. Install through the CLI only: a second copy of the skill leaves it
+undefined which one an agent loads.
+
+Then the agent logs in like any other user and follows the skill:
+
+```sh
+clavis login --username <name> --password-stdin < /path/to/secret
+clavis connections list
+clavis query --connection <ref> --logsql 'error | sort by (_time) desc' --start -1h --limit 20
+```
 
 ## CLI authentication
 

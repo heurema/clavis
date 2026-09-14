@@ -156,6 +156,8 @@ func render(w io.Writer, result Result, format string) error {
 		}
 		_, err := fmt.Fprintf(w, "Check: %s at %s\n", data.Check.Outcome, timestamp(data.Check.CheckedAt))
 		return err
+	case SkillInstall:
+		return renderSkillInstall(w, data)
 	case Diagnosis:
 		_, err := fmt.Fprintf(w, "API: %s\nDatabase: %s\n", data.API, data.Database)
 		return err
@@ -592,6 +594,28 @@ func settingPairs(values map[string]string) string {
 		pairs = append(pairs, key+"="+values[key])
 	}
 	return strings.Join(pairs, " ")
+}
+
+// renderSkillInstall prints what happened where, one target per line, and
+// closes with the version the files now carry: the outcome and the path are
+// what a reader acts on, and the version is what the whole run installed.
+func renderSkillInstall(w io.Writer, install SkillInstall) error {
+	for _, target := range install.Targets {
+		line := target.Outcome + "\t" + target.Path
+		// Only an update has a previous version; a fresh directory replaced
+		// nothing and an unchanged one is already at this version.
+		if target.PreviousVersion != "" {
+			line += " (was " + target.PreviousVersion + ")"
+		}
+		if _, err := fmt.Fprintln(w, line); err != nil {
+			return err
+		}
+	}
+	if err := renderDryRun(w, install.DryRun); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(w, "Version: %s\n", install.Version)
+	return err
 }
 
 func renderDryRun(w io.Writer, dryRun bool) error {
