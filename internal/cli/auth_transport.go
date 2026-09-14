@@ -148,15 +148,38 @@ func validCheck(value auth.CheckResult) bool {
 	return validOutcome(value.Outcome) && validTimestamp(value.CheckedAt)
 }
 
-// maxTargetSettings bounds the non-secret provider settings a record may carry.
-const maxTargetSettings = 8
+// maxTargetSettings bounds the non-secret provider settings a record may carry,
+// and maxSettingKeyBytes one setting's name.
+const (
+	maxTargetSettings  = 8
+	maxSettingKeyBytes = 63
+)
+
+// validSettingKey accepts a provider setting name: a lower-case letter followed
+// by letters and digits, which is how every provider spells one, camel case
+// included. A label has a grammar of its own and is validated with it; a target
+// setting is the provider's own vocabulary and is only bounded and framed here.
+func validSettingKey(key string) bool {
+	if key == "" || len(key) > maxSettingKeyBytes || key[0] < 'a' || key[0] > 'z' {
+		return false
+	}
+	for index := 1; index < len(key); index++ {
+		c := key[index]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
 
 func validTarget(target map[string]string) bool {
 	if len(target) == 0 || len(target) > maxTargetSettings {
 		return false
 	}
 	for key, value := range target {
-		if !auth.ValidLabelKey(key) || !printableSetting(value) {
+		if !validSettingKey(key) || !printableSetting(value) {
 			return false
 		}
 	}
@@ -283,9 +306,10 @@ func validSourceFailure(value auth.SourceFailure) bool {
 	if value.SQLState != "" && !sqlState.MatchString(value.SQLState) {
 		return false
 	}
-	// A source classifies its own failure either way, never both: a SQLSTATE
-	// is PostgreSQL's word and an errorType is a metrics source's.
-	// A metrics failure carries no statement index either: the source ran one
+	// A source classifies its own failure either way, never both: a SQLSTATE is
+	// PostgreSQL's word and an errorType is an HTTP source's, whether it wrote
+	// the classification itself or the platform named the status.
+	// Such a failure carries no statement index either: the source ran one
 	// request, and the index belongs to a script.
 	if value.ErrorType != "" && (value.SQLState != "" || value.Statement != nil || !printableSetting(value.ErrorType)) {
 		return false
@@ -341,9 +365,15 @@ func validQueryResult(value auth.QueryResult) bool {
 // expression, and the platform's for each of the three discovery endpoints.
 var metricsResultTypes = []string{"vector", "matrix", "scalar", "string", "labels", "labelValues", "series"}
 
+// The result types a log answer may name. A log source writes no result type
+// of its own, so each of these names the input the platform forwarded.
+var logsResultTypes = []string{"logs", "fieldNames", "fieldValues", "streams",
+	"streamFieldNames", "streamFieldValues"}
+
 // validQueryResponse accepts the document the named provider defines, and only
 // that one: a results list for PostgreSQL, a native metrics answer for
-// VictoriaMetrics, and nothing that mixes the two or names neither.
+// VictoriaMetrics, the source's own rows for VictoriaLogs, and nothing that
+// mixes them or names none of them.
 func validQueryResponse(value auth.QueryResponse) bool {
 	if value.DurationMS < 0 {
 		return false
@@ -353,8 +383,81 @@ func validQueryResponse(value auth.QueryResponse) bool {
 		return validResultsDocument(value)
 	case auth.ProviderVictoriaMetrics:
 		return validMetricsDocument(value)
+	case auth.ProviderVictoriaLogs:
+		return validLogsDocument(value)
 	}
 	return false
+}
+
+// validLogsDocument accepts the log source's own answer: a known result type, a
+// result whose shape matches it, and none of the members another provider's
+// document carries. A log source writes no warnings, infos or partial flag, so
+// a document carrying one is not the shape this provider produces.
+func validLogsDocument(value auth.QueryResponse) bool {
+	if value.Results != nil || value.Warnings != nil || value.Infos != nil || value.IsPartial {
+		return false
+	}
+	if !slices.Contains(logsResultTypes, value.ResultType) {
+		return false
+	}
+	return validLogsResult(value.ResultType, value.Result)
+}
+
+// logsValue is one discovery item as the platform re-encoded it: the source's
+// own value text and its hit count, kept exact. Both are pointers because the
+// pair is the whole shape: an item missing either is not the source's answer.
+// The count is raw so that a quoted number is refused rather than accepted: a
+// hit count the source wrote as text is not a count.
+type logsValue struct {
+	Value *string          `json:"value"`
+	Hits  *json.RawMessage `json:"hits"`
+}
+
+// validLogsHits accepts a hit count the source wrote as a JSON number, with the
+// digits it wrote, and nothing that only looks like one.
+func validLogsHits(raw *json.RawMessage) bool {
+	if raw == nil {
+		return false
+	}
+	var hits json.Number
+	if json.Unmarshal(*raw, &hits) != nil {
+		return false
+	}
+	return bytes.Equal(bytes.TrimSpace(*raw), []byte(hits.String()))
+}
+
+// validLogsResult checks that the result is the shape its type names. The rows
+// inside are the source's own data and are accepted as they are, with any
+// fields and any JSON value types it wrote; only the frame around them is
+// judged, exactly as a SQL row's values are.
+func validLogsResult(resultType string, raw json.RawMessage) bool {
+	// An absent or null result is not an empty one: the platform always sends
+	// the array its own result type promises, empty when nothing matched.
+	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return false
+	}
+	if resultType == "logs" {
+		var rows []map[string]json.RawMessage
+		if json.Unmarshal(raw, &rows) != nil || rows == nil {
+			return false
+		}
+		for _, row := range rows {
+			if row == nil {
+				return false
+			}
+		}
+		return true
+	}
+	var values []logsValue
+	if json.Unmarshal(raw, &values) != nil || values == nil {
+		return false
+	}
+	for _, item := range values {
+		if item.Value == nil || !validLogsHits(item.Hits) {
+			return false
+		}
+	}
+	return true
 }
 
 // validMetricsDocument accepts the source's own answer: a known result type, a

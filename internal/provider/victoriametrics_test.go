@@ -927,7 +927,7 @@ func TestVictoriaMetricsExecuteNonJSONStatus(t *testing.T) {
 	var rejected *SourceError
 	require.ErrorAs(t, err, &rejected)
 	require.Equal(t, "http_500", rejected.Failure.ErrorType)
-	require.Len(t, rejected.Failure.Message, maxMetricsErrorText)
+	require.Len(t, rejected.Failure.Message, maxErrorText)
 }
 
 // The transport failures keep the categories the probe reports, so a caller

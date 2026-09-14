@@ -31,7 +31,7 @@ func requireNoSentinel(t *testing.T, values ...any) {
 }
 
 func TestLookup(t *testing.T) {
-	for _, name := range []auth.ProviderType{auth.ProviderPostgreSQL, auth.ProviderVictoriaMetrics} {
+	for _, name := range []auth.ProviderType{auth.ProviderPostgreSQL, auth.ProviderVictoriaMetrics, auth.ProviderVictoriaLogs} {
 		implementation, ok := Lookup(name)
 		require.True(t, ok)
 		require.Equal(t, name, implementation.Type())
@@ -44,7 +44,7 @@ func TestLookup(t *testing.T) {
 }
 
 func TestTypesIsSorted(t *testing.T) {
-	require.Equal(t, []auth.ProviderType{auth.ProviderPostgreSQL, auth.ProviderVictoriaMetrics}, Types())
+	require.Equal(t, []auth.ProviderType{auth.ProviderPostgreSQL, auth.ProviderVictoriaLogs, auth.ProviderVictoriaMetrics}, Types())
 	for _, provider := range Types() {
 		require.True(t, auth.ValidProvider(provider))
 	}

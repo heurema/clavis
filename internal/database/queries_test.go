@@ -345,6 +345,7 @@ func TestConnectionMigrationAppliesToInitializedInstallation(t *testing.T) {
 	delete(previous, "003_connections.sql")
 	delete(previous, "004_grants.sql")
 	delete(previous, "005_drop_audit_events.sql")
+	delete(previous, "006_victorialogs_provider.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	// The previous release still had the journal and stored rows in it.
 	execSQL(t, pool, `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'user.create', 'success')`, randomTestID(t))

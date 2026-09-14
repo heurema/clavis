@@ -33,30 +33,43 @@ const (
 const (
 	hintQueryRows        = "maxRows is 0 for the connection's own row cap, or a positive number at or below it."
 	maxQueryTimeBytes    = 256
-	hintQueryUnsupported = "This connection's provider does not execute queries; postgresql and victoriametrics connections do."
+	hintQueryUnsupported = "This connection's provider does not execute queries; postgresql, victoriametrics and victorialogs connections do."
 	hintQueryCheck       = "Run `clavis connections check` to see whether the source is reachable and the stored credentials still work."
 	// The two failures the platform classified itself carry the next step; a
-	// rejection the source wrote speaks for itself.
-	hintQueryCeiling   = "The answer exceeded the platform's reading ceiling of four times the connection's byte cap plus 1 MiB; narrow the range or step, lower maxRows, or ask an administrator to raise the cap."
-	hintQueryMalformed = "The answer was not a Prometheus API envelope; confirm the connection's URL is the source's query API and run `clavis connections check`."
-	// The two halves of the input rule: which inputs exist, and which time
-	// fields each of them takes. Neither names the connection's provider,
-	// because both are decided before any record is read.
+	// rejection the source wrote speaks for itself. A log answer is unbounded
+	// unless the caller bounds it, so the ceiling names the caller's own limit
+	// beside the bounds an administrator owns.
+	hintQueryCeiling   = "The answer exceeded the platform's reading ceiling of four times the connection's byte cap plus 1 MiB; for metrics narrow the range or coarsen the step, for logs narrow the query or select fewer fields, or ask an administrator to raise the byte cap."
+	hintQueryMalformed = "The answer was not the response the source's API documents; confirm the connection's URL is the source's query API and run `clavis connections check`."
+	// The halves of the input rule: which inputs exist, which time fields each
+	// of them takes, and the three rules the log inputs add. None of them names
+	// the connection's provider, because all are decided before any record is
+	// read.
 	hintQueryInput = "Send exactly one input: sql for a postgresql connection, " +
-		"or promql, labels, labelValues or series for a victoriametrics connection."
-	hintQueryTime = "at applies to promql without start, step requires start, match applies to the discovery inputs, " +
-		"and start and end apply to promql or a discovery input, never to sql."
+		"promql, labels, labelValues or series for a victoriametrics connection, " +
+		"or logsql, fieldNames, fieldValues, streams, streamFieldNames or streamFieldValues for a victorialogs connection."
+	hintQueryTime = "at applies to promql without start, step requires start, neither applies to a log input, " +
+		"match applies to the discovery inputs, and start and end apply to promql, a discovery input or logsql, never to sql."
+	hintQueryMatch = "match carries the source's own query and is required with fieldNames, fieldValues, streams, " +
+		"streamFieldNames and streamFieldValues; logsql carries its own query and takes no match."
+	hintQueryLimit = "limit is a non-negative integer the source applies itself, and applies to logsql, fieldValues, " +
+		"streams and streamFieldValues only."
 	hintQueryLabel = "labelValues names one Prometheus label: a letter or underscore followed by letters, digits or underscores."
 	// The mismatch hints name the input the connection's own provider takes.
 	hintQueryWantsSQL     = "This connection is postgresql: send sql."
 	hintQueryWantsMetrics = "This connection is victoriametrics: send promql, labels, labelValues or series."
+	hintQueryWantsLogs    = "This connection is victorialogs: send logsql, fieldNames, fieldValues, streams, streamFieldNames or streamFieldValues."
 )
 
 // hintQuerySQL and hintQueryExpression state the bound the route and the CLI
 // share, from the one constant that defines it.
 var (
 	hintQuerySQL        = fmt.Sprintf("The SQL is 1 to %d bytes; send a shorter statement or split the script.", auth.MaxSQLBytes)
-	hintQueryExpression = fmt.Sprintf("The expression or selector is 1 to %d bytes; send a shorter one.", auth.MaxSQLBytes)
+	hintQueryExpression = fmt.Sprintf("The expression, query, selector or field name is 1 to %d bytes; send a shorter one.", auth.MaxSQLBytes)
+	// The filter is a substring a log endpoint matches against a value, not a
+	// query, so its bound is the short one and the rule travels with it.
+	hintQueryFilter = fmt.Sprintf("filter is a substring of 1 to %d bytes and applies to fieldNames, fieldValues, "+
+		"streamFieldNames and streamFieldValues only.", auth.MaxFilterBytes)
 )
 
 // hintQueryCap states the connection's own cap, which the caller cannot read
@@ -132,6 +145,57 @@ func discoveryInput(request auth.QueryRequest) bool {
 	return request.Labels || request.LabelValues != "" || request.Series != ""
 }
 
+// logDiscoveryInput reports whether the request carries one of the five log
+// metadata inputs. Each of them takes the source's own query in Match, which
+// is why they are named apart from the log stream.
+func logDiscoveryInput(request auth.QueryRequest) bool {
+	return request.FieldNames || request.FieldValues != "" || request.Streams ||
+		request.StreamFieldNames || request.StreamFieldValues != ""
+}
+
+// logInput reports whether the request carries any log input at all. Limit and
+// Filter are modifiers rather than inputs: they name no endpoint of their own
+// and are only ever sent beside one of these.
+func logInput(request auth.QueryRequest) bool {
+	return request.LogsQL != "" || logDiscoveryInput(request)
+}
+
+// takesLimit and takesFilter name the log endpoints that have a parameter for
+// each. The source drops a parameter its endpoint does not declare rather than
+// refusing it, so a request that would be silently ignored is refused here.
+func takesLimit(request auth.QueryRequest) bool {
+	return request.LogsQL != "" || request.FieldValues != "" || request.Streams || request.StreamFieldValues != ""
+}
+
+func takesFilter(request auth.QueryRequest) bool {
+	return request.FieldNames || request.FieldValues != "" ||
+		request.StreamFieldNames || request.StreamFieldValues != ""
+}
+
+// validateLogRules applies the three rules the log inputs add: the query a
+// discovery endpoint needs, the limit the source applies itself and the filter
+// four of the endpoints take. They are decided before any record is read, so
+// they hold for every connection, and a limit beside a SQL or PromQL input is
+// refused here rather than sent to a source that has no parameter for it.
+func validateLogRules(request auth.QueryRequest) error {
+	logs, discovery := logInput(request), logDiscoveryInput(request)
+	if logs && (request.At != "" || request.Step != "") {
+		return invalidArgument(hintQueryTime)
+	}
+	// Discovery carries the source's query in match; the log stream carries its
+	// own and takes no second one.
+	if logs && discovery == (request.Match == "") {
+		return invalidArgument(hintQueryMatch)
+	}
+	if request.Limit != nil && (*request.Limit < 0 || !takesLimit(request)) {
+		return invalidArgument(hintQueryLimit)
+	}
+	if request.Filter != "" && (!takesFilter(request) || len(request.Filter) > auth.MaxFilterBytes) {
+		return invalidArgument(hintQueryFilter)
+	}
+	return nil
+}
+
 // validateQueryInput applies the input rules that need no record: exactly one
 // input, the time fields that input takes, the one validated label name and
 // the bound on the submitted text. Every rejection carries the rule as its
@@ -139,7 +203,8 @@ func discoveryInput(request auth.QueryRequest) bool {
 func validateQueryInput(request auth.QueryRequest) error {
 	inputs := 0
 	for _, set := range []bool{request.SQL != "", request.PromQL != "", request.Labels,
-		request.LabelValues != "", request.Series != ""} {
+		request.LabelValues != "", request.Series != "", request.LogsQL != "", request.FieldNames,
+		request.FieldValues != "", request.Streams, request.StreamFieldNames, request.StreamFieldValues != ""} {
 		if set {
 			inputs++
 		}
@@ -147,19 +212,25 @@ func validateQueryInput(request auth.QueryRequest) error {
 	if inputs != 1 {
 		return invalidArgument(hintQueryInput)
 	}
+	if err := validateLogRules(request); err != nil {
+		return err
+	}
 	expression, discovery := request.PromQL != "", discoveryInput(request)
+	logs := logInput(request)
 	switch {
 	// An instant query is the only input a pinned time belongs to; a step
-	// belongs to a range query alone, and a selector to discovery alone.
+	// belongs to a range query alone, and a selector to metrics discovery
+	// alone. A log input takes neither time pin, and its own match rule was
+	// decided above.
 	case request.At != "" && (!expression || request.Start != ""):
 		return invalidArgument(hintQueryTime)
 	case request.Step != "" && (!expression || request.Start == ""):
 		return invalidArgument(hintQueryTime)
-	case request.Match != "" && !discovery:
+	case request.Match != "" && !discovery && !logs:
 		return invalidArgument(hintQueryTime)
-	case request.End != "" && !discovery && (!expression || request.Start == ""):
+	case request.End != "" && !discovery && !logs && (!expression || request.Start == ""):
 		return invalidArgument(hintQueryTime)
-	case request.Start != "" && !expression && !discovery:
+	case request.Start != "" && !expression && !discovery && !logs:
 		return invalidArgument(hintQueryTime)
 	}
 	if request.LabelValues != "" && !auth.ValidLabelName(request.LabelValues) {
@@ -177,7 +248,11 @@ func validateQueryInput(request auth.QueryRequest) error {
 	if request.SQL != "" && (strings.TrimSpace(request.SQL) == "" || len(request.SQL) > auth.MaxSQLBytes) {
 		return invalidArgument(hintQuerySQL)
 	}
-	for _, text := range []string{request.PromQL, request.Series, request.Match} {
+	// A field name is a parameter value, bounded like the queries beside it and
+	// never validated by a grammar of its own: only a label name forms a path
+	// segment on a source.
+	for _, text := range []string{request.PromQL, request.Series, request.Match, request.LogsQL,
+		request.FieldValues, request.StreamFieldValues} {
 		if text != "" && (strings.TrimSpace(text) == "" || len(text) > auth.MaxSQLBytes) {
 			return invalidArgument(hintQueryExpression)
 		}
@@ -198,17 +273,22 @@ func providerInput(kind auth.ProviderType, request auth.QueryRequest) error {
 			return invalidArgument(hintQueryWantsSQL)
 		}
 	case auth.ProviderVictoriaMetrics:
-		if request.SQL != "" {
+		if request.SQL != "" || logInput(request) {
 			return invalidArgument(hintQueryWantsMetrics)
+		}
+	case auth.ProviderVictoriaLogs:
+		if !logInput(request) {
+			return invalidArgument(hintQueryWantsLogs)
 		}
 	}
 	return nil
 }
 
 // ExecuteQuery forwards one input to the connection's source under the
-// connection's own credentials and bounds: a SQL string for a SQL source, or
-// an expression or one discovery input for a metrics source, each with the
-// time fields it takes. It writes nothing: no advisory key,
+// connection's own credentials and bounds: a SQL string for a SQL source, an
+// expression or one discovery input for a metrics source, or a LogsQL query or
+// one log discovery input for a log source, each with the time fields, limit
+// and filter it takes. It writes nothing: no advisory key,
 // no row lock, no platform row changes, and no platform transaction is open
 // while the source is working, because the authorization commits before the
 // request leaves. Nothing records that the execution happened.
@@ -271,7 +351,10 @@ func (s *LocalAuth) ExecuteQuery(ctx context.Context, previous auth.Session,
 	result, err := executor.Execute(ctx, record.Target, auth.Secret(plaintext), provider.ExecuteRequest{
 		SQL: request.SQL, PromQL: request.PromQL, At: request.At, Start: request.Start, End: request.End,
 		Step: request.Step, Labels: request.Labels, LabelValues: request.LabelValues, Series: request.Series,
-		Match: request.Match, Timeout: timeout, MaxRows: maxRows, MaxBytes: record.MaxBytes,
+		Match: request.Match, LogsQL: request.LogsQL, FieldNames: request.FieldNames,
+		FieldValues: request.FieldValues, Streams: request.Streams, StreamFieldNames: request.StreamFieldNames,
+		StreamFieldValues: request.StreamFieldValues, Limit: request.Limit, Filter: request.Filter,
+		Timeout: timeout, MaxRows: maxRows, MaxBytes: record.MaxBytes,
 		Application: applicationName(record.Name, previous.User.Username),
 	})
 	duration := time.Since(started).Milliseconds()
@@ -281,7 +364,10 @@ func (s *LocalAuth) ExecuteQuery(ctx context.Context, previous auth.Session,
 	// The shape is the provider's, named by the record rather than inferred
 	// from the answer: a caller branches on one field it can trust.
 	response := auth.QueryResponse{Provider: record.Provider, Truncated: result.Truncated, DurationMS: duration}
-	if record.Provider == auth.ProviderVictoriaMetrics {
+	if record.Provider != auth.ProviderPostgreSQL {
+		// Both HTTP sources answer with one named shape. A log source writes no
+		// warnings, infos or partial flag of its own, so those stay absent
+		// rather than being invented here.
 		response.ResultType, response.Result = result.ResultType, result.Result
 		response.Warnings, response.Infos, response.IsPartial = result.Warnings, result.Infos, result.IsPartial
 		return response, nil

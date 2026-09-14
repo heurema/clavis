@@ -33,5 +33,18 @@ services:
       timeout: 3s
       retries: 30
     stop_grace_period: 5s
+  # A single-node VictoriaLogs for smoke and development. The short maximum
+  # query duration caps the forwarded timeout at a development-sized bound;
+  # nothing is persisted.
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.52.0@sha256:47b820890d64c4575a2a0a46415dcd8a4fd59a0f1fcd6a377693d7aea639442e
+    command:
+      - -search.maxQueryDuration=5s
+      - -retentionPeriod=1d
+    ports:
+      - "127.0.0.1:${CLAVIS_VL_PORT:-9428}:9428"
+    # The image ships no shell or wget, so there is no container health check;
+    # smoke waits on /health over HTTP from the host instead.
+    stop_grace_period: 5s
 volumes:
   postgres-data:

@@ -13,7 +13,8 @@ data-source connections with encrypted credentials and connectivity checks, with
 external PostgreSQL. Goose manages embedded migrations and sqlc generates the pgx
 application queries. The embedded templ/htmx interface includes setup/readiness,
 sign-in and a protected admin page with read-only user, connection and grant
-lists. There is no separate frontend server. Query execution and groups remain
+lists. There is no separate frontend server. Queries run against PostgreSQL,
+VictoriaMetrics and VictoriaLogs connections; groups and the agent skill remain
 planned; an audit journal, Google/OIDC sign-in, self-service password change and
 account recovery are outside the MVP.
 
@@ -261,7 +262,7 @@ administrator password is replaced by another administrator.
 ## Connections
 
 A connection is a registered external data source: a stable UUID, a unique
-mutable name, a provider (`postgresql` or `victoriametrics`), non-secret target
+mutable name, a provider (`postgresql`, `victoriametrics` or `victorialogs`), non-secret target
 settings, labels, resource bounds and one encrypted secret. Administrators manage
 them through the CLI; the browser admin page only lists them. The commands follow
 the same conventions as `users` and are designed for agents: one verb vocabulary,
@@ -367,7 +368,11 @@ than the five seconds of the other commands. Failures are distinct codes:
 `SOURCE_TIMEOUT` (504), `SOURCE_UNREACHABLE` and `SOURCE_AUTH_REJECTED` (502),
 `CREDENTIALS_UNAVAILABLE`, `PROVIDER_UNSUPPORTED`, and the authorization codes `CONNECTION_NOT_FOUND`,
 `CONNECTION_DISABLED`, `FORBIDDEN` and `UNAUTHENTICATED`. The source's message
-may contain values from your own SQL; it is returned to you and never logged.
+may contain values from your own SQL; it is returned to you and never logged. To
+learn a database's structure, query its catalog through the same command, for
+example `select table_schema, table_name, column_name, data_type from
+information_schema.columns where table_schema not in ('pg_catalog',
+'information_schema') order by 1, 2, ordinal_position`.
 
 ### VictoriaMetrics
 
@@ -403,7 +408,7 @@ read so far and are marked `truncated`, and vector entries beyond it are
 dropped; the byte cap counts kept label and value text and drops later series
 whole once spent; and a body beyond four times the byte cap plus 1 MiB fails as
 `SOURCE_ERROR` with `errorType: response_too_large` and a hint to narrow the
-range or step or lower `--max-rows`, rather than returning partial data.
+range or coarsen the step, rather than returning partial data.
 Failures are the source's own: `SOURCE_ERROR` carries its `errorType` (a
 Prometheus server says `bad_data` for an expression that does not parse,
 VictoriaMetrics says `422`, also when it aborts an evaluation at the forwarded
@@ -411,13 +416,72 @@ timeout) and message; HTTP 401 or 403 is `SOURCE_AUTH_REJECTED`; only a source
 that stops answering is `SOURCE_TIMEOUT`, cut at the timeout plus the grace. `--sql` on a metrics connection, or
 `--promql` on a PostgreSQL one, is refused with a hint before anything is sent.
 
+### VictoriaLogs
+
+A VictoriaLogs connection takes the same `--url` and `--auth` settings plus
+optional tenant settings, sent as the `AccountID` and `ProjectID` headers on
+every request:
+
+```sh
+clavis connections create --name payments-logs --provider victorialogs \
+  --url http://logs.payments.internal:9428 --auth bearer --account-id 12 \
+  --password-env LOGS_TOKEN
+clavis query --connection payments-logs --logsql 'error _time:1h | sort by (_time) desc' --limit 50
+clavis query --connection payments-logs --logsql '_stream:{app="api"} | stats by (level) count() as n'
+clavis query --connection payments-logs --field-names --match '*'
+clavis query --connection payments-logs --field-values level --match 'app:api' --filter err
+clavis query --connection payments-logs --streams --match '*' --start -1h --output text
+clavis query --connection payments-logs --stream-field-values app --match '*'
+```
+
+`--logsql` (or `--logsql-stdin`, `--logsql-file`) is forwarded to the source's
+query endpoint exactly as typed, with `--start`, `--end` and `--limit`. The
+platform never adds a limit, a sort or a time range: without `--limit` or a
+sort pipe the source streams rows in arbitrary order, and `--limit N` makes it
+sort by `_time` descending before cutting, so put the sort pipe in the query
+when the order matters. `--limit` is the source's own limit and `--max-rows`
+is the platform's cap on what comes back: they are different knobs. Discovery
+forwards the source's metadata endpoints with `--match <query>` as the
+required query: `--field-names`, `--field-values <name>`, `--streams`,
+`--stream-field-names` and `--stream-field-values <name>`, each with
+`--start` and `--end`, `--filter <substring>` where the source takes it (the
+field-name and field-value endpoints) and `--limit` where it takes it (the
+field-value, stream and stream-field-value endpoints); the answer keeps the
+source's `value` and `hits` pairs, and under a `--limit` the hit counts are
+not observed (the source returns a subset with zero hits).
+
+The response carries `provider: "victorialogs"` and `resultType: "logs"` with
+`result` as an array of the source's rows exactly as it wrote them (every value
+is a string, `_stream` and `_stream_id` included); rows of a `| stats` pipe
+carry only the fields the query produced. Text output prints one physical line
+per row: `_time`, `_msg`, the other fields as sorted `key=value` pairs and
+`_stream` last, quoting a name or value that is empty or contains whitespace,
+quotes, backslashes, control characters or `=`, so a multi-line message stays
+on one line. The log stream is
+unbounded unless `--limit` bounds it, so the row and byte caps are applied by
+stopping: once a cap is reached the platform closes the connection and returns
+the complete rows kept with `truncated: true`, which means the source's
+completion was not observed and more rows may exist (a count landing exactly
+on the cap is truncated too unless the stream ended right there); pass
+`--limit` with a sort pipe to choose which rows you get. A single row beyond four times the byte cap plus 1 MiB fails as
+`SOURCE_ERROR` with `errorType: response_too_large`. Discovery answers are one
+document and are read to the end under the same ceiling. Failures are the
+source's own: `SOURCE_ERROR` carries `errorType: http_400` and the source's
+text for a query it rejects, `http_503` when it aborts a query at the forwarded
+timeout, and `malformed_response` when a line of the stream is not a JSON row
+(the source can write an error after rows, and one arriving right where the
+cap would have cut the stream counts as such an error, not as truncation; no
+rows are returned then). The platform reads one line past a full cap to learn
+whether the stream ended there, so a row beyond the ceiling or a source that
+stalls at that point is reported as that failure rather than as a truncated
+answer. Only a source that stops answering is
+`SOURCE_TIMEOUT`. `--sql` or `--promql` on a
+log connection, or `--logsql` elsewhere, is refused with a hint before
+anything is sent.
+
 Each request opens one connection to the source and closes it afterwards; the
 platform keeps no pool and imposes no concurrency limit, so a runaway agent is
-throttled where it belongs: give the role a `CONNECTION LIMIT` in PostgreSQL. To
-learn a database's structure, query its catalog through the same command, for
-example `select table_schema, table_name, column_name, data_type from
-information_schema.columns where table_schema not in ('pg_catalog',
-'information_schema') order by 1, 2, ordinal_position`.
+throttled where it belongs: give the role a `CONNECTION LIMIT` in PostgreSQL.
 
 For a custom API address, add `--server <url>` or export `CLAVIS_SERVER_URL`; the
 CLI does not load `.env`. Authentication requires a root-origin HTTPS URL except

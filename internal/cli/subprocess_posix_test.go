@@ -167,7 +167,7 @@ func TestCLIProcesses(t *testing.T) {
 		exit, output, _ = processCLI(t, binary, "", "query", "--connection", "payments-prod-reporting",
 			"--sql", "selec 1", "--output=text")
 		require.Equal(t, 1, exit)
-		require.Equal(t, "SOURCE_ERROR: The source rejected the SQL\nHint: "+querySourceHint+"\n"+
+		require.Equal(t, "SOURCE_ERROR: The source rejected the query\nHint: "+querySourceHint+"\n"+
 			"ERROR: 42601 syntax error\nPosition: 1\nStatement: 0\n", output)
 		require.NotContains(t, output, "selec 1")
 		fixture.mu.Lock()

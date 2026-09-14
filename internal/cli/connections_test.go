@@ -158,7 +158,10 @@ func (f *cliAuthFixture) serveConnections(w http.ResponseWriter, r *http.Request
 		var input auth.CreateConnectionRequest
 		secretRequired := true
 		if strictJSON(body, &input) {
-			secretRequired = input.Provider != auth.ProviderVictoriaMetrics || input.Target["auth"] != "none"
+			// The two HTTP providers are the only ones that may authenticate
+			// with nothing at all.
+			http := input.Provider == auth.ProviderVictoriaMetrics || input.Provider == auth.ProviderVictoriaLogs
+			secretRequired = !http || input.Target["auth"] != "none"
 		}
 		if !strictJSON(body, &input) || !auth.ValidConnectionName(input.Name) || !auth.ValidProvider(input.Provider) ||
 			!auth.ValidLabels(input.Labels) || input.Target["url"] == "" ||
@@ -637,6 +640,14 @@ func TestConnectionsArgumentsRejectedBeforeIO(t *testing.T) {
 		{"connections", "create", "--name", "payments", "--provider", "postgresql", "--url", "postgres://db", "--statement-timeout", "5m"},
 		{"connections", "create", "--name", "payments", "--provider", "postgresql", "--url", "postgres://db", "--max-rows", "100001"},
 		{"connections", "create", "--name", "payments", "--provider", "postgresql", "--url", "postgres://db", "--max-bytes", "512"},
+		// A tenant is a header the source reads as an identity, so anything but
+		// an unsigned 32-bit decimal is refused before it can travel as one.
+		{"connections", "create", "--name", "logs", "--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none", "--account-id", "-1"},
+		{"connections", "create", "--name", "logs", "--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none", "--account-id", "12.5"},
+		{"connections", "create", "--name", "logs", "--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none", "--account-id", " 12"},
+		{"connections", "create", "--name", "logs", "--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none", "--account-id", ""},
+		{"connections", "create", "--name", "logs", "--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none", "--account-id", "4294967296"},
+		{"connections", "create", "--name", "logs", "--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none", "--project-id", "x"},
 		{"connections", "update", "--connection", "payments"},
 		{"connections", "update", "--connection", "payments", "--title", "New", "--timeout=0"},
 		{"connections", "update", "--connection", "payments", "--title", "New", "--server=http://localhost:8080"},
@@ -978,6 +989,8 @@ func TestConnectionsUpdateRequiresURLWithTargetFlags(t *testing.T) {
 		{"connections", "update", "--connection", "payments", "--auth", "bearer"},
 		{"connections", "update", "--connection", "payments", "--auth-user", "bob"},
 		{"connections", "update", "--connection", "payments", "--auth-header", "X-Key"},
+		{"connections", "update", "--connection", "payments", "--account-id", "12"},
+		{"connections", "update", "--connection", "payments", "--project-id", "3"},
 	} {
 		exit, result, _ := cliInvoke(t, "", append(args, "--server", server.URL)...)
 		require.Equal(t, 2, exit, args)
@@ -987,4 +1000,70 @@ func TestConnectionsUpdateRequiresURLWithTargetFlags(t *testing.T) {
 	fixture.mu.Lock()
 	require.Equal(t, before, fixture.connCalls, "no request may be made")
 	fixture.mu.Unlock()
+}
+
+// A log connection carries its tenant as two target settings, validated
+// locally and sent under the keys the provider declares. The secret channel is
+// the one the method needs: none carries no credential at all.
+func TestConnectionsCreateSendsTheTenantSettings(t *testing.T) {
+	cliHome(t)
+	password := testToken()
+	fixture, server := newCLIFixture(t, password)
+	loginCLI(t, server, password)
+	exit, result, output := cliInvoke(t, "", "connections", "create", "--name", "payments-logs",
+		"--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none",
+		"--account-id", "12", "--project-id", "3", "--server", server.URL)
+	require.Equal(t, 0, exit, "%+v", result.Error)
+	require.NotContains(t, output, "password")
+
+	expected, err := json.Marshal(auth.CreateConnectionRequest{
+		Name:     "payments-logs",
+		Provider: auth.ProviderVictoriaLogs,
+		Target: map[string]string{"url": "http://vlogs:9428", "auth": "none",
+			"accountId": "12", "projectId": "3"},
+		Labels: map[string]string{},
+	})
+	require.NoError(t, err)
+	fixture.mu.Lock()
+	require.Equal(t, string(expected), string(fixture.connBody))
+	fixture.mu.Unlock()
+
+	// The largest tenant the grammar allows is accepted, and an omitted one
+	// sends no setting at all rather than an empty string.
+	exit, result, _ = cliInvoke(t, "", "connections", "create", "--name", "payments-logs-two",
+		"--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none",
+		"--account-id", "4294967295", "--server", server.URL)
+	require.Equal(t, 0, exit, "%+v", result.Error)
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	var sent auth.CreateConnectionRequest
+	require.NoError(t, json.Unmarshal(fixture.connBody, &sent))
+	require.Equal(t, "4294967295", sent.Target["accountId"])
+	require.NotContains(t, sent.Target, "projectId")
+}
+
+// A target setting's name follows the provider's own camelCase grammar rather
+// than the label grammar, so a record carrying accountId is a valid record and
+// a name the registry could never have produced is refused.
+func TestValidSettingKey(t *testing.T) {
+	for key, valid := range map[string]bool{
+		"url":                   true,
+		"accountId":             true,
+		"projectId":             true,
+		"a1":                    true,
+		strings.Repeat("a", 63): true,
+		"":                      false,
+		"Url":                   false,
+		"a-b":                   false,
+		"a.b":                   false,
+		"a_b":                   false,
+		"a b":                   false,
+		strings.Repeat("a", 64): false,
+		"1a":                    false,
+		"\x00":                  false,
+	} {
+		require.Equal(t, valid, validSettingKey(key), "%q", key)
+	}
+	require.True(t, validTarget(map[string]string{"url": "http://logs:9428", "auth": "none", "accountId": "12"}))
+	require.False(t, validTarget(map[string]string{"url": "http://logs:9428", "Account-Id": "12"}))
 }

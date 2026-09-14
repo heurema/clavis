@@ -1,10 +1,4 @@
-# query-execution Specification
-
-## Purpose
-
-Let a user with access execute SQL against a PostgreSQL connection through the platform, under the connection's credentials and bounds, with structured results and distinguishable failures.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Pass-through execution request
 

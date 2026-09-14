@@ -213,6 +213,7 @@ try {
   // Docker can reassign a published port of zero when the database restarts.
   env.CLAVIS_DB_PORT = String(await freePort())
   env.CLAVIS_VM_PORT = String(await freePort())
+  env.CLAVIS_VL_PORT = String(await freePort())
   composeStarted = true
   await execute(
     "docker",
@@ -677,7 +678,9 @@ try {
     const authorized =
       request.url === "/health" &&
       request.headers.authorization === `Bearer ${metricsToken}`
-    response.writeHead(authorized ? 200 : 401, { "content-type": "text/plain" })
+    response.writeHead(authorized ? 200 : 401, {
+      "content-type": "text/plain",
+    })
     response.end(authorized ? "OK" : "unauthorized")
   })
   await new Promise((resolve) =>
@@ -1546,6 +1549,331 @@ try {
   summary.metricsQueries = "passed"
   console.log(
     "[smoke] Real CLI PromQL queries, discovery, bounds and refusals passed",
+  )
+
+  // LogsQL runs against the real single-node VictoriaLogs from compose: an
+  // ordered query under the source's own limit, the cut of the unbounded
+  // stream at the platform's cap, an aggregate, every discovery endpoint, the
+  // source's own error, the tenant headers, the provider mismatch and the
+  // timeout backstop against a stalling source.
+  const vlURL = `http://127.0.0.1:${env.CLAVIS_VL_PORT}`
+  await waitHTTP(`${vlURL}/health`, 200)
+  const logRows = []
+  const rowTime = (back) => new Date(Date.now() - back * 1000).toISOString()
+  for (const [app, base] of [
+    ["api", 0],
+    ["web", 3],
+  ]) {
+    logRows.push(
+      {
+        _time: rowTime(base + 120),
+        _msg: "error: disk full",
+        level: "error",
+        app,
+        n: "1",
+      },
+      {
+        _time: rowTime(base + 60),
+        _msg: "ok\nsecond line",
+        level: "info",
+        app,
+        n: "2",
+      },
+      {
+        _time: rowTime(base + 30),
+        _msg: "error: timeout k=v",
+        level: "error",
+        app,
+        n: "3",
+      },
+    )
+  }
+  const ingested = await fetch(`${vlURL}/insert/jsonline?_stream_fields=app`, {
+    method: "POST",
+    headers: { "content-type": "application/stream+json" },
+    body: logRows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+  })
+  assert.equal(ingested.status, 200)
+  await cli("admin-one", [
+    "connections",
+    "create",
+    "--name",
+    "smoke-vl",
+    "--provider",
+    "victorialogs",
+    "--url",
+    vlURL,
+    "--auth",
+    "none",
+    "--label",
+    "env=smoke",
+  ])
+  await check("smoke-vl", "reachable")
+  const logsQuery = (name, args, expected = 0) =>
+    cli(name, ["query", "--connection", "smoke-vl", ...args], expected)
+  // Ingested rows become visible within about a second; poll for them.
+  let allRows
+  for (let attempt = 0; attempt < 50; attempt++) {
+    allRows = await logsQuery("admin-one", ["--logsql", "*"])
+    if (allRows.data.result.length === logRows.length) break
+    await delay(200)
+  }
+  assert.equal(allRows.data.provider, "victorialogs")
+  assert.equal(allRows.data.resultType, "logs")
+  assert.equal(allRows.data.result.length, logRows.length)
+  assert.equal(allRows.data.truncated, false)
+  assert.equal(
+    typeof allRows.data.result[0]._stream,
+    "string",
+    "rows arrive as the source wrote them",
+  )
+  // The source's own limit with a sort pipe decides which rows come back and
+  // in which order; the platform adds neither.
+  const orderedRows = await logsQuery("admin-one", [
+    "--logsql",
+    "app:api | sort by (_time) desc",
+    "--limit",
+    "2",
+  ])
+  assert.equal(orderedRows.data.result.length, 2)
+  assert(orderedRows.data.result[0]._time > orderedRows.data.result[1]._time)
+  assert.equal(
+    orderedRows.data.truncated,
+    false,
+    "the stream was read to its end",
+  )
+  // Without a limit the platform cuts the stream at its own cap and says so.
+  const capped2 = await logsQuery("admin-one", [
+    "--logsql",
+    "*",
+    "--max-rows",
+    "2",
+  ])
+  assert.equal(capped2.data.truncated, true)
+  assert.equal(capped2.data.result.length, 2)
+  // An aggregate answers rows without the log fields.
+  const levelCounts = await logsQuery("admin-one", [
+    "--logsql",
+    "* | stats by (level) count() as n",
+  ])
+  assert.deepEqual(
+    levelCounts.data.result.map((row) => [row.level, row.n]).sort(),
+    [
+      ["error", "4"],
+      ["info", "2"],
+    ],
+  )
+  assert(levelCounts.data.result.every((row) => row._msg === undefined))
+  // Discovery forwards the five metadata endpoints with the source's counts.
+  const fieldNames = await logsQuery("admin-one", [
+    "--field-names",
+    "--match",
+    "*",
+  ])
+  assert.equal(fieldNames.data.resultType, "fieldNames")
+  assert(fieldNames.data.result.some((item) => item.value === "level"))
+  const errorLevels = await logsQuery("admin-one", [
+    "--field-values",
+    "level",
+    "--match",
+    "*",
+    "--filter",
+    "err",
+  ])
+  assert.deepEqual(errorLevels.data.result, [{ value: "error", hits: 4 }])
+  const logStreams = await logsQuery("admin-one", ["--streams", "--match", "*"])
+  assert.equal(logStreams.data.result.length, 2)
+  const streamFields = await logsQuery("admin-one", [
+    "--stream-field-names",
+    "--match",
+    "*",
+  ])
+  assert.deepEqual(
+    streamFields.data.result.map((item) => item.value),
+    ["app"],
+  )
+  const appValues = await logsQuery("admin-one", [
+    "--stream-field-values",
+    "app",
+    "--match",
+    "*",
+    "--start",
+    "-1h",
+  ])
+  assert.deepEqual(appValues.data.result.map((item) => item.value).sort(), [
+    "api",
+    "web",
+  ])
+  // Text output keeps one physical line per row, the two-line message quoted.
+  const rowsText = await execute(
+    join(root, "bin/clavis"),
+    [
+      "query",
+      "--connection",
+      "smoke-vl",
+      "--logsql",
+      "app:web | sort by (_time)",
+      "--limit",
+      "3",
+      "--output",
+      "text",
+      "--server",
+      apiURL,
+    ],
+    "auth-admin-one-query-vl-text",
+    { env: clientEnv("admin-one") },
+  )
+  const rowLines = rowsText
+    .split("\n")
+    .filter((line) => line.includes("app=web"))
+  assert.equal(rowLines.length, 3)
+  assert(rowLines.some((line) => line.includes('"ok\\nsecond line"')))
+  // The source's rejection passes through with its own status and text.
+  const badQuery = await logsQuery("admin-one", ["--logsql", "* | bogus("], 1)
+  assert.equal(badQuery.error.code, "SOURCE_ERROR")
+  assert.equal(badQuery.error.source.errorType, "http_400")
+  assert.equal(badQuery.error.source.statement, undefined)
+  assert(!JSON.stringify(badQuery).includes("sqlstate"))
+  // A limit where the source takes none, and a discovery input without its
+  // query, are refused before anything is sent.
+  assert.equal(
+    (
+      await logsQuery(
+        "admin-one",
+        ["--field-names", "--match", "*", "--limit", "1"],
+        2,
+      )
+    ).error.code,
+    "INVALID_ARGUMENT",
+  )
+  assert.equal(
+    (await logsQuery("admin-one", ["--field-values", "level"], 2)).error.code,
+    "INVALID_ARGUMENT",
+  )
+  // Provider mismatch is refused before anything is sent, in every direction.
+  assert.equal(
+    (await logsQuery("admin-one", ["--sql", "select 1"], 2)).error.code,
+    "INVALID_ARGUMENT",
+  )
+  assert.equal(
+    (await logsQuery("admin-one", ["--promql", "up"], 2)).error.code,
+    "INVALID_ARGUMENT",
+  )
+  assert.equal(
+    (await query("admin-one", ["--logsql", "*"], 2)).error.code,
+    "INVALID_ARGUMENT",
+  )
+  assert.equal(
+    (await metricsQuery("admin-one", ["--logsql", "*"], 2)).error.code,
+    "INVALID_ARGUMENT",
+  )
+  // Members need a grant, and the grant makes the same queries work.
+  assert.equal(
+    (await logsQuery("member", ["--logsql", "*"], 1)).error.code,
+    "CONNECTION_NOT_FOUND",
+  )
+  await cli("admin-one", [
+    "grants",
+    "create",
+    "--user",
+    "smoke-member",
+    "--connection",
+    "smoke-vl",
+  ])
+  assert.equal(
+    (await logsQuery("member", ["--logsql", "app:api", "--limit", "10"])).data
+      .result.length,
+    3,
+  )
+  // The stored credential and the tenant settings travel on every request.
+  const logsToken = randomBytes(16).toString("hex")
+  secrets.add(logsToken)
+  const tenantPort = await freePort()
+  const tenantHeaders = []
+  const tenant = createHTTPServer((request, response) => {
+    tenantHeaders.push({ url: request.url, headers: request.headers })
+    response.writeHead(200, { "content-type": "application/stream+json" })
+    response.end(
+      request.url.startsWith("/health")
+        ? "OK"
+        : '{"_time":"2026-01-01T00:00:00Z","_msg":"tenant row"}\n',
+    )
+  })
+  await new Promise((resolve) =>
+    tenant.listen(tenantPort, "127.0.0.1", resolve),
+  )
+  tenant.unref()
+  await cli(
+    "admin-one",
+    [
+      "connections",
+      "create",
+      "--name",
+      "smoke-vl-tenant",
+      "--provider",
+      "victorialogs",
+      "--url",
+      `http://127.0.0.1:${tenantPort}`,
+      "--auth",
+      "bearer",
+      "--account-id",
+      "12",
+      "--project-id",
+      "3",
+      "--password-stdin",
+    ],
+    0,
+    logsToken + "\n",
+  )
+  await check("smoke-vl-tenant", "reachable")
+  const tenantRows = await cli("admin-one", [
+    "query",
+    "--connection",
+    "smoke-vl-tenant",
+    "--logsql",
+    "*",
+  ])
+  assert.equal(tenantRows.data.result[0]._msg, "tenant row")
+  for (const seen of tenantHeaders) {
+    assert.equal(seen.headers.authorization, `Bearer ${logsToken}`)
+    assert.equal(seen.headers.accountid, "12")
+    assert.equal(seen.headers.projectid, "3")
+  }
+  assert(
+    tenantHeaders.some((seen) => seen.url.startsWith("/select/logsql/query?")),
+  )
+  tenant.close()
+  // A source that stops answering is cut at the timeout plus the grace.
+  const logStallPort = await freePort()
+  const logStall = createHTTPServer(() => {})
+  await new Promise((resolve) =>
+    logStall.listen(logStallPort, "127.0.0.1", resolve),
+  )
+  logStall.unref()
+  await cli("admin-one", [
+    "connections",
+    "create",
+    "--name",
+    "smoke-vl-stall",
+    "--provider",
+    "victorialogs",
+    "--url",
+    `http://127.0.0.1:${logStallPort}`,
+    "--auth",
+    "none",
+    "--statement-timeout",
+    "1s",
+  ])
+  const logStalled = await cli(
+    "admin-one",
+    ["query", "--connection", "smoke-vl-stall", "--logsql", "*"],
+    1,
+  )
+  assert.equal(logStalled.error.code, "SOURCE_TIMEOUT")
+  logStall.close()
+  summary.logQueries = "passed"
+  console.log(
+    "[smoke] Real CLI LogsQL queries, discovery, bounds and refusals passed",
   )
 
   await sql(

@@ -751,9 +751,9 @@ func TestPostgresExecutePrivilegeErrorIsTheSourcesOwn(t *testing.T) {
 	require.Equal(t, auth.StatementIndex(0), rejected.Failure.Statement)
 }
 
-// A metrics input on a SQL connection is refused before anything is dialled.
-// The service refuses the mismatch first, with a hint naming the input this
-// provider takes; this proves the provider's own backstop.
+// A metrics or log input on a SQL connection is refused before anything is
+// dialled. The service refuses the mismatch first, with a hint naming the input
+// this provider takes; this proves the provider's own backstop.
 func TestPostgresExecuteRefusesUnsupportedInput(t *testing.T) {
 	postgres, ok := Lookup(auth.ProviderPostgreSQL)
 	require.True(t, ok)
@@ -774,6 +774,18 @@ func TestPostgresExecuteRefusesUnsupportedInput(t *testing.T) {
 		"a step beside sql":   {SQL: "select 1", Step: "1m"},
 		"no input at all":     {},
 		"an empty sql string": {SQL: ""},
+		// The log inputs, alone and beside the SQL this provider does take.
+		"a log query":                       {LogsQL: "*"},
+		"a log query beside sql":            {SQL: "select 1", LogsQL: "*"},
+		"field names":                       {FieldNames: true},
+		"field values":                      {FieldValues: "level"},
+		"streams":                           {Streams: true},
+		"stream field names":                {StreamFieldNames: true},
+		"stream field values":               {StreamFieldValues: "host"},
+		"field names beside sql":            {SQL: "select 1", FieldNames: true},
+		"a limit beside sql":                {SQL: "select 1", Limit: limit(10)},
+		"an explicit zero limit beside sql": {SQL: "select 1", Limit: limit(0)},
+		"a filter beside sql":               {SQL: "select 1", Filter: "err"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := executor.Execute(t.Context(), target, auth.Secret(sentinel), request)

@@ -205,6 +205,15 @@ A connectivity check confirms only what it actually tested. The administrator su
 - Structured results and clear source errors.
 - Authentication methods in the MVP: none, HTTP basic, bearer token, and a custom header. The credential model leaves room for mutual TLS and OAuth2 client credentials in a later stage.
 
+**VictoriaLogs** (pilot targets single-node deployments; added to the MVP on September 14, 2026)
+
+- Connectivity checks using the configured authentication method and the optional tenant settings.
+- Pass-through execution of any LogsQL the agent submits, with the source's own limit forwarded as typed; ordering and aggregation belong to the query.
+- Discovery of field names, field values, streams and stream fields through the source's own endpoints.
+- Per-connection request timeout and result cap; the unbounded log stream is cut at the cap with explicit truncation.
+- Rows returned as the source wrote them and clear source errors.
+- The same authentication methods as VictoriaMetrics.
+
 Business data modification is not a first-release use case, but the platform does not prevent it: whether a submitted statement can modify data is decided entirely by the external credentials. Administrators must configure restricted roles in the external systems before granting a connection. Naming a connection does not make broadly privileged external credentials safe.
 
 ### 7.5. CLI
@@ -312,7 +321,7 @@ Success: permission to use a connection does not expand its actual external perm
 - Users, basic roles, groups, and manageable CLI sessions.
 - A catalog of providers and preconfigured connections with encrypted credentials.
 - Connection access assignments; management is the administrator role.
-- PostgreSQL (pass-through SQL) and VictoriaMetrics (none, basic, bearer, custom-header authentication).
+- PostgreSQL (pass-through SQL), VictoriaMetrics and VictoriaLogs (none, basic, bearer, custom-header authentication).
 - Per-connection timeouts and result caps.
 - A CLI with structured output and administrative operations.
 - A skill and instructions for using it with Claude Code and Codex.
@@ -326,7 +335,7 @@ Success: permission to use a connection does not expand its actual external perm
 - Per-connection manager permissions.
 - Mutual TLS and OAuth2 client-credential authentication for VictoriaMetrics and other HTTP sources.
 - An audit journal of requests and administrative changes, with administrator-configurable retention.
-- Other databases, Prometheus, and log and trace sources.
+- Other databases, Prometheus, Loki, and trace sources.
 - GitHub/GitLab, issue trackers, Slack, and other external systems.
 - Additional permitted operations, including data modification subject to a separate product decision.
 - Saved investigations, built-in agents, alerts, and workflows.
@@ -388,8 +397,9 @@ Decided on September 11, 2026 (applied throughout this document):
 | Resource bounds | Per-connection timeout and result cap with explicit truncation |
 | Audit journal | Removed from the MVP on September 12, 2026, including the events already recorded by earlier changes; a later stage |
 | Web interface | Sign-in plus read-only administration tables; no browser management forms |
-| VictoriaMetrics authentication | None, basic, bearer, custom header; mutual TLS and OAuth2 deferred |
-| Pilot targets | Small teams; PostgreSQL 17 and 18; single-node VictoriaMetrics; Claude Code and Codex agents |
+| VictoriaMetrics authentication | None, basic, bearer, custom header; mutual TLS and OAuth2 deferred; the same methods for VictoriaLogs plus optional tenant settings |
+| Log source | VictoriaLogs pulled into the MVP on September 14, 2026 ahead of groups and the agent skill; rows pass through in the source's shape, the platform adds no limit and cuts the unbounded stream at the cap with explicit truncation; `hits`, stats endpoints and Loki deferred |
+| Pilot targets | Small teams; PostgreSQL 17 and 18; single-node VictoriaMetrics and VictoriaLogs; Claude Code and Codex agents |
 | Session lifetime | Fixed, eight hours by default, configurable between five minutes and 24 hours |
 | Grants | Per user and per connection, no expiry, idempotent; administrators use any connection without a grant; members see granted connections only, in a reduced projection, with disabled ones visible but unusable; groups deferred |
 | User references | Any `--user` accepts a UUID or a username; usernames are never UUID-shaped |
@@ -398,7 +408,7 @@ Still open, to be settled with the pilot team:
 
 - The first real questions from managers and developers used to evaluate the pilot.
 
-The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. Implemented so far: automated initial administrator setup, local browser/CLI sign-in, revocable sessions, administrator-managed local users with the peer administrator model and self-protection, registered connections with encrypted credentials, labels, resource bounds and connectivity checks for both providers, connection grants with member visibility, the per-request authorization check the providers will call, users addressable by UUID or username, and a protected admin page with read-only user, connection and grant lists; the audit journal built by the earlier changes was removed on September 12, 2026; PostgreSQL pass-through query execution with the per-connection timeout, row and byte caps, structured results and distinguishable source failures; VictoriaMetrics pass-through for PromQL instant and range queries and metadata discovery in the source's own format under the same bounds. Planned next: groups and the agent skill. A dedicated schema-discovery command was dropped on September 12, 2026: agents discover schema through the pass-through itself, and the skill documents the catalog query to run first.
+The technical stack is Go for the backend and CLI, with templ, htmx, templUI and Tailwind CSS for the minimal web interface, sqlc-generated pgx application queries and Goose SQL migrations. The API, migrations and web assets are delivered in one Go server executable; PostgreSQL remains external and the CLI remains separate. Implemented so far: automated initial administrator setup, local browser/CLI sign-in, revocable sessions, administrator-managed local users with the peer administrator model and self-protection, registered connections with encrypted credentials, labels, resource bounds and connectivity checks for every provider, connection grants with member visibility, the per-request authorization check the providers will call, users addressable by UUID or username, and a protected admin page with read-only user, connection and grant lists; the audit journal built by the earlier changes was removed on September 12, 2026; PostgreSQL pass-through query execution with the per-connection timeout, row and byte caps, structured results and distinguishable source failures; VictoriaMetrics pass-through for PromQL instant and range queries and metadata discovery in the source's own format under the same bounds; VictoriaLogs pass-through for LogsQL and log discovery with the source's limit forwarded as typed and the unbounded stream cut at the cap. Planned next: the agent skill covering the three providers, then groups. A dedicated schema-discovery command was dropped on September 12, 2026: agents discover schema through the pass-through itself, and the skill documents the catalog query to run first.
 
 ## 13. Sources and Context
 

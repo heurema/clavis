@@ -236,7 +236,7 @@ func postgresInput(request ExecuteRequest) bool {
 	metrics := request.PromQL != "" || request.Labels || request.LabelValues != "" ||
 		request.Series != "" || request.Match != "" ||
 		request.At != "" || request.Start != "" || request.End != "" || request.Step != ""
-	return request.SQL != "" && !metrics
+	return request.SQL != "" && !metrics && !logsFields(request)
 }
 
 // applicationName keeps the source from seeing an empty name: the platform

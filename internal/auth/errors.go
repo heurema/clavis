@@ -128,7 +128,7 @@ func LookupFailure(code string) (int, platform.Failure, bool) {
 	case ConnectionDisabled:
 		status, message = http.StatusConflict, "The connection is disabled"
 	case SourceError:
-		status, message = http.StatusUnprocessableEntity, "The source rejected the SQL"
+		status, message = http.StatusUnprocessableEntity, "The source rejected the query"
 	case SourceTimeout:
 		status, message = http.StatusGatewayTimeout, "The statement timeout was exceeded"
 	case SourceUnreachable:

@@ -20,10 +20,12 @@ const queryBodyAllowance = 4096
 var (
 	hintQueryBody       = "Send a JSON object with connection, one input and an optional positive maxRows"
 	hintQueryConnection = "Address the connection by its UUID or its name"
-	hintQueryInput      = "Send exactly one of sql, promql, labels, labelValues or series"
-	hintQueryText       = "sql, promql, series and match are each at most " + strconv.Itoa(auth.MaxSQLBytes) + " bytes"
-	hintQueryLabel      = "labelValues is one Prometheus label name"
-	hintQueryMaxRows    = "maxRows is optional and must be a positive integer at or below the connection's row cap"
+	hintQueryInput      = "Send exactly one of sql, promql, labels, labelValues, series, logsql, fieldNames, " +
+		"fieldValues, streams, streamFieldNames or streamFieldValues"
+	hintQueryText = "sql, promql, logsql, series, match and a field name are each at most " +
+		strconv.Itoa(auth.MaxSQLBytes) + " bytes, and filter at most " + strconv.Itoa(auth.MaxFilterBytes)
+	hintQueryLabel   = "labelValues is one Prometheus label name"
+	hintQueryMaxRows = "maxRows is optional and must be a positive integer at or below the connection's row cap"
 )
 
 // jsonBool reads the one boolean member the execution body carries. Like every
@@ -41,6 +43,27 @@ func jsonBool(assign func(bool)) jsonValue {
 	}
 }
 
+// jsonInt64Pointer reads the one optional integer the execution body carries.
+// The pointer is the point of it: an absent limit is the caller saying nothing
+// and an explicit zero is the caller's own "no limit", and the two reach the
+// source as no parameter and as a sent zero. A quoted or fractional value is a
+// rejection rather than a coercion, like every other member here.
+func jsonInt64Pointer(assign func(int64)) jsonValue {
+	return func(decoder *json.Decoder) error {
+		token, err := decoder.Token()
+		number, ok := token.(json.Number)
+		if err != nil || !ok {
+			return invalidArgument()
+		}
+		value, convErr := strconv.ParseInt(number.String(), 10, 64)
+		if convErr != nil {
+			return invalidArgument()
+		}
+		assign(value)
+		return nil
+	}
+}
+
 // The executor owns authorization, the credential and the source call; a
 // composition without one must reject the route instead of invoking anything.
 func (a *authHTTP) requireExecutor() error {
@@ -51,11 +74,12 @@ func (a *authHTTP) requireExecutor() error {
 }
 
 // queryRequest decodes and locally validates the one execution body. The SQL,
-// the expression, the times and the selectors are bounded but never inspected:
-// the platform forwards them unchanged, so the only judgements here are shape,
-// size, the connection reference and the label name that forms a path segment
-// on the source. Which input fits the connection's provider, and which time
-// fields that input takes, are the service's to decide on the record.
+// the expression, the query, the times, the selectors and the filter are
+// bounded but never inspected: the platform forwards them unchanged, so the
+// only judgements here are shape, size, the connection reference and the label
+// name that forms a path segment on the source. Which input fits the
+// connection's provider, and which time fields, limit and filter that input
+// takes, are the service's to decide on the record.
 func queryRequest(r *http.Request, request *auth.QueryRequest) error {
 	if _, err := query(r); err != nil {
 		return err
@@ -73,7 +97,18 @@ func queryRequest(r *http.Request, request *auth.QueryRequest) error {
 		"labelValues": jsonString(func(value string) { request.LabelValues = value }),
 		"series":      jsonString(func(value string) { request.Series = value }),
 		"match":       jsonString(func(value string) { request.Match = value }),
-		"maxRows":     jsonInt(func(value int) { request.MaxRows, maxRows = value, true }),
+		// The log inputs and the two parameters the log endpoints take beside
+		// them. Which endpoint takes which is the service's rule, decided on
+		// the connection's own record.
+		"logsql":            jsonString(func(value string) { request.LogsQL = value }),
+		"fieldNames":        jsonBool(func(value bool) { request.FieldNames = value }),
+		"fieldValues":       jsonString(func(value string) { request.FieldValues = value }),
+		"streams":           jsonBool(func(value bool) { request.Streams = value }),
+		"streamFieldNames":  jsonBool(func(value bool) { request.StreamFieldNames = value }),
+		"streamFieldValues": jsonString(func(value string) { request.StreamFieldValues = value }),
+		"limit":             jsonInt64Pointer(func(value int64) { request.Limit = &value }),
+		"filter":            jsonString(func(value string) { request.Filter = value }),
+		"maxRows":           jsonInt(func(value int) { request.MaxRows, maxRows = value, true }),
 	}); err != nil {
 		return &auth.Error{Code: auth.InvalidArgument, Hint: hintQueryBody}
 	}
@@ -82,7 +117,8 @@ func queryRequest(r *http.Request, request *auth.QueryRequest) error {
 	}
 	inputs := 0
 	for _, set := range []bool{request.SQL != "", request.PromQL != "", request.Labels,
-		request.LabelValues != "", request.Series != ""} {
+		request.LabelValues != "", request.Series != "", request.LogsQL != "", request.FieldNames,
+		request.FieldValues != "", request.Streams, request.StreamFieldNames, request.StreamFieldValues != ""} {
 		if set {
 			inputs++
 		}
@@ -90,10 +126,16 @@ func queryRequest(r *http.Request, request *auth.QueryRequest) error {
 	if inputs != 1 {
 		return &auth.Error{Code: auth.InvalidArgument, Hint: hintQueryInput}
 	}
-	for _, text := range []string{request.SQL, request.PromQL, request.Series, request.Match} {
+	for _, text := range []string{request.SQL, request.PromQL, request.Series, request.Match,
+		request.LogsQL, request.FieldValues, request.StreamFieldValues} {
 		if len(text) > auth.MaxSQLBytes {
 			return &auth.Error{Code: auth.InvalidArgument, Hint: hintQueryText}
 		}
+	}
+	// A filter is a substring the source matches against a value, not a query,
+	// so it carries the short bound of its own.
+	if len(request.Filter) > auth.MaxFilterBytes {
+		return &auth.Error{Code: auth.InvalidArgument, Hint: hintQueryText}
 	}
 	if request.LabelValues != "" && !auth.ValidLabelName(request.LabelValues) {
 		return &auth.Error{Code: auth.InvalidArgument, Hint: hintQueryLabel}

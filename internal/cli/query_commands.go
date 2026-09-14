@@ -16,27 +16,45 @@ import (
 )
 
 // queryInputHint names every channel an input may arrive through: the three a
-// statement or an expression takes, and the three discovery flags. It never
-// repeats the input itself, which is true of every message this command
+// statement, an expression or a query takes, and the eight discovery flags. It
+// never repeats the input itself, which is true of every message this command
 // produces.
 const queryInputHint = "Supply exactly one input: --sql <text>, --sql-stdin, --sql-file <absolute path>, " +
 	"--promql <expr>, --promql-stdin, --promql-file <absolute path>, --labels, " +
-	"--label-values <name> or --series <selector>"
+	"--label-values <name>, --series <selector>, --logsql <query>, --logsql-stdin, " +
+	"--logsql-file <absolute path>, --field-names, --field-values <name>, --streams, " +
+	"--stream-field-names or --stream-field-values <name>"
 
 // queryTimeHint states which input each time flag belongs to. The source
 // parses the strings themselves; only their applicability is decided here.
-const queryTimeHint = "--at applies to --promql without --start, --step requires --start, " +
-	"--match applies to --labels, --label-values and --series, and --start and --end apply to " +
-	"the PromQL and discovery inputs only"
+const queryTimeHint = "--at applies to --promql without --start, --step requires --start, neither applies " +
+	"to a log input, --match applies to the metrics and log discovery inputs, and --start and --end apply to " +
+	"the PromQL, discovery and LogsQL inputs only"
+
+// queryMatchHint states the rule the log discovery inputs add: each of them
+// takes the source's own query, and the log stream carries its own.
+const queryMatchHint = "--match carries the source's query and is required with --field-names, --field-values, " +
+	"--streams, --stream-field-names and --stream-field-values; --logsql carries its own query and takes no --match"
+
+// queryLimitHint states the one parameter the platform never adds: the limit
+// is the caller's own and only four of the endpoints take one.
+const queryLimitHint = "--limit is a non-negative integer the source applies itself, and applies to --logsql, " +
+	"--field-values, --streams and --stream-field-values only"
 
 // queryLabelHint states the one input the platform validates, because it forms
 // a path segment on the source.
 const queryLabelHint = "--label-values takes one Prometheus label name: a letter or underscore " +
 	"followed by letters, digits or underscores"
 
-// sqlBoundHint states the one local bound on a statement or an expression.
-var sqlBoundHint = "The SQL or expression must be non-empty, valid UTF-8 and at most " +
+// sqlBoundHint states the one local bound on a statement, an expression, a
+// query or the field name a discovery endpoint takes as a parameter value.
+var sqlBoundHint = "The SQL, expression, query or field name must be non-empty, valid UTF-8 and at most " +
 	strconv.Itoa(auth.MaxSQLBytes) + " bytes"
+
+// queryFilterHint states the filter's own short bound and the four inputs that
+// take it: a filter is a substring the source matches, never a query.
+var queryFilterHint = "--filter is a substring of at most " + strconv.Itoa(auth.MaxFilterBytes) +
+	" bytes and applies to --field-names, --field-values, --stream-field-names and --stream-field-values only"
 
 // maxRowsHint states what a caller may ask for. The connection's own cap is
 // the server's to apply; only a value no connection could honor is refused here.
@@ -55,7 +73,7 @@ var errSQLInput = errors.New("SQL input unavailable or invalid")
 // group. No flag carries a secret: the SQL is not one, and the credential is
 // the stored session.
 func queryCommand(makeCommand func(operation, usage string, extra ...urfave.Flag) *urfave.Command) *urfave.Command {
-	return makeCommand("query", "Execute SQL or PromQL against a connection you may use",
+	return makeCommand("query", "Execute SQL, PromQL or LogsQL against a connection you may use",
 		&urfave.StringFlag{Name: "connection", Usage: "Target connection UUID or name"},
 		&urfave.StringFlag{Name: "sql", Usage: "The statement or script to execute"},
 		&urfave.BoolFlag{Name: "sql-stdin", Usage: "Read the bounded SQL from stdin, for example from a heredoc"},
@@ -70,7 +88,17 @@ func queryCommand(makeCommand func(operation, usage string, extra ...urfave.Flag
 		&urfave.StringFlag{Name: "start", Usage: "Range start, in the source's own format"},
 		&urfave.StringFlag{Name: "end", Usage: "Range end, in the source's own format"},
 		&urfave.StringFlag{Name: "step", Usage: "Range resolution, in the source's own format"},
-		&urfave.StringFlag{Name: "match", Usage: "Selector narrowing a discovery request"},
+		&urfave.StringFlag{Name: "match", Usage: "Selector narrowing a metrics discovery request, or the query a log discovery request runs"},
+		&urfave.StringFlag{Name: "logsql", Usage: "The LogsQL query to execute"},
+		&urfave.BoolFlag{Name: "logsql-stdin", Usage: "Read the bounded LogsQL query from stdin"},
+		&urfave.StringFlag{Name: "logsql-file", Usage: "Absolute path of a regular file holding the query"},
+		&urfave.BoolFlag{Name: "field-names", Usage: "List the field names the query's logs carry"},
+		&urfave.StringFlag{Name: "field-values", Usage: "List the values of one log field, such as level"},
+		&urfave.BoolFlag{Name: "streams", Usage: "List the log streams the query matches"},
+		&urfave.BoolFlag{Name: "stream-field-names", Usage: "List the stream field names the query's logs carry"},
+		&urfave.StringFlag{Name: "stream-field-values", Usage: "List the values of one stream field"},
+		&urfave.IntFlag{Name: "limit", Usage: "The source's own limit, forwarded as typed; never added by the CLI"},
+		&urfave.StringFlag{Name: "filter", Usage: "Substring a log discovery endpoint matches against a value"},
 		&urfave.IntFlag{Name: "max-rows", Usage: "Keep at most this many rows or samples, at or below the connection's cap"})
 }
 
@@ -121,15 +149,20 @@ func (c textChannels) used() int {
 // cache or network access and none of them echoes the input.
 func readSQL(ctx context.Context, command *urfave.Command, streams IO) (string, *Result) {
 	sql, promql := channelsFor(command, "sql"), channelsFor(command, "promql")
+	logsql := channelsFor(command, "logsql")
 	labelValues, series := command.String("label-values"), command.String("series")
-	given := sql.used() + promql.used()
+	given := sql.used() + promql.used() + logsql.used()
 	for _, set := range []bool{command.Bool("labels"), labelValues != "", series != ""} {
 		if set {
 			given++
 		}
 	}
+	given += logDiscoveryGiven(command)
 	if given != 1 {
 		return "", argumentFailure("Provide exactly one query input", queryInputHint)
+	}
+	if failed := validateLogArguments(command, logsql.used() == 1); failed != nil {
+		return "", failed
 	}
 	if failed := validateQueryTimes(command, promql.used() == 1); failed != nil {
 		return "", failed
@@ -137,22 +170,76 @@ func readSQL(ctx context.Context, command *urfave.Command, streams IO) (string, 
 	if labelValues != "" && !auth.ValidLabelName(labelValues) {
 		return "", argumentFailure("Provide one Prometheus label name", queryLabelHint)
 	}
-	// Selectors travel as request members rather than as the text input, but
-	// they are bounded by the same rule, and locally, so an oversized one is
-	// refused before any request like an oversized expression.
-	for _, selector := range []string{series, command.String("match")} {
+	// Selectors and field names travel as request members rather than as the
+	// text input, but they are bounded by the same rule, and locally, so an
+	// oversized one is refused before any request like an oversized expression.
+	for _, selector := range []string{series, command.String("match"),
+		command.String("field-values"), command.String("stream-field-values")} {
 		if selector != "" && (len(selector) > auth.MaxSQLBytes || !utf8.ValidString(selector)) {
-			return "", argumentFailure("Provide a selector within the documented bound", sqlBoundHint)
+			return "", argumentFailure("Provide a selector or field name within the documented bound", sqlBoundHint)
 		}
 	}
-	if sql.used()+promql.used() == 0 {
+	if sql.used()+promql.used()+logsql.used() == 0 {
 		return "", nil
 	}
 	channels := sql
-	if promql.used() == 1 {
+	switch {
+	case promql.used() == 1:
 		channels = promql
+	case logsql.used() == 1:
+		channels = logsql
 	}
 	return readTextInput(ctx, channels, streams)
+}
+
+// logDiscoveryFlags are the five log metadata inputs, each of them a flag
+// rather than a text channel and each requiring --match.
+var logDiscoveryFlags = []string{"field-names", "field-values", "streams", "stream-field-names", "stream-field-values"}
+
+// logDiscoveryGiven counts the log discovery inputs, so two of them are a
+// rejection rather than a silent preference.
+func logDiscoveryGiven(command *urfave.Command) int {
+	given := 0
+	for _, flag := range logDiscoveryFlags {
+		if logDiscoverySet(command, flag) {
+			given++
+		}
+	}
+	return given
+}
+
+// logDiscoverySet reads one of the five, which are booleans except the two
+// naming a field.
+func logDiscoverySet(command *urfave.Command, flag string) bool {
+	switch flag {
+	case "field-values", "stream-field-values":
+		return command.String(flag) != ""
+	default:
+		return command.Bool(flag)
+	}
+}
+
+// validateLogArguments applies the rules the log inputs add: the query a
+// discovery endpoint needs, the limit only four endpoints take and the filter
+// the four field inputs take. A limit or a filter beside a SQL or PromQL input
+// is refused here too, because no such source has a parameter for it.
+func validateLogArguments(command *urfave.Command, stream bool) *Result {
+	discovery := logDiscoveryGiven(command) == 1
+	if (stream || discovery) && discovery == (command.String("match") == "") {
+		return argumentFailure("Provide --match with a log discovery input", queryMatchHint)
+	}
+	limited := stream || command.String("field-values") != "" ||
+		command.Bool("streams") || command.String("stream-field-values") != ""
+	if command.IsSet("limit") && (command.Int("limit") < 0 || !limited) {
+		return argumentFailure("Provide a limit the input takes", queryLimitHint)
+	}
+	filtered := command.Bool("field-names") || command.String("field-values") != "" ||
+		command.Bool("stream-field-names") || command.String("stream-field-values") != ""
+	filter := command.String("filter")
+	if filter != "" && (!filtered || len(filter) > auth.MaxFilterBytes || !utf8.ValidString(filter)) {
+		return argumentFailure("Provide a filter the input takes", queryFilterHint)
+	}
+	return nil
 }
 
 // validateQueryTimes refuses a time flag the chosen input does not take. The
@@ -163,12 +250,15 @@ func validateQueryTimes(command *urfave.Command, expression bool) *Result {
 	at, start, end := command.String("at"), command.String("start"), command.String("end")
 	step, match := command.String("step"), command.String("match")
 	discovery := command.Bool("labels") || command.String("label-values") != "" || command.String("series") != ""
+	// A log input takes start and end and its own match, and never a pinned
+	// time or a step; the match rule itself was decided before this.
+	logs := channelsFor(command, "logsql").used() == 1 || logDiscoveryGiven(command) == 1
 	switch {
 	case at != "" && (!expression || start != ""),
 		step != "" && (!expression || start == ""),
-		match != "" && !discovery,
-		end != "" && !discovery && (!expression || start == ""),
-		start != "" && !expression && !discovery:
+		match != "" && !discovery && !logs,
+		end != "" && !discovery && !logs && (!expression || start == ""),
+		start != "" && !expression && !discovery && !logs:
 		return argumentFailure("Provide time flags the input takes", queryTimeHint)
 	}
 	return nil
@@ -272,14 +362,34 @@ func runQuery(ctx context.Context, command *urfave.Command, api authTransport, t
 	switch {
 	case channelsFor(command, "promql").used() == 1:
 		input.PromQL = text
+	case channelsFor(command, "logsql").used() == 1:
+		input.LogsQL = text
 	case command.Bool("labels"):
 		input.Labels = true
 	case command.String("label-values") != "":
 		input.LabelValues = command.String("label-values")
 	case command.String("series") != "":
 		input.Series = command.String("series")
+	case command.Bool("field-names"):
+		input.FieldNames = true
+	case command.String("field-values") != "":
+		input.FieldValues = command.String("field-values")
+	case command.Bool("streams"):
+		input.Streams = true
+	case command.Bool("stream-field-names"):
+		input.StreamFieldNames = true
+	case command.String("stream-field-values") != "":
+		input.StreamFieldValues = command.String("stream-field-values")
 	default:
 		input.SQL = text
+	}
+	input.Filter = command.String("filter")
+	// The limit is sent only when it was given: an explicit zero is the
+	// caller's own "no limit" and an absent one is no parameter at all, and the
+	// CLI never invents one.
+	if command.IsSet("limit") {
+		limit := int64(command.Int("limit"))
+		input.Limit = &limit
 	}
 	if command.IsSet("max-rows") {
 		input.MaxRows = command.Int("max-rows")
