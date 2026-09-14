@@ -1135,8 +1135,293 @@ try {
     "[smoke] Real CLI grants, member visibility, username references and revocation passed",
   )
 
+  // Groups are the second grant recipient. A member inherits a connection by
+  // joining, keeps it when the direct grant is revoked, and loses it on the
+  // next call after leaving. Provenance is readable through the effective
+  // listing, the delete guard counts the group's grants, and rosters stay
+  // administrator-only.
+  await cli("admin-one", [
+    "connections",
+    "create",
+    "--name",
+    "smoke-group-metrics",
+    "--provider",
+    "victoriametrics",
+    "--url",
+    "http://127.0.0.1:9",
+    "--auth",
+    "none",
+  ])
+  const rehearsedGroup = await cli("admin-one", [
+    "groups",
+    "create",
+    "--name",
+    "smoke-analysts",
+    "--description",
+    "Analysts who read the smoke sources",
+    "--dry-run",
+  ])
+  assert.equal(rehearsedGroup.data.dryRun, true)
+  assert.equal(rehearsedGroup.data.group.name, "smoke-analysts")
+  assert.equal(await sql("SELECT count(*) FROM groups", "groups-none"), "0")
+  const group = await cli("admin-one", [
+    "groups",
+    "create",
+    "--name",
+    "smoke-analysts",
+    "--description",
+    "Analysts who read the smoke sources",
+  ])
+  assert.equal(group.data.group.members, 0)
+  assert.equal(group.data.group.grants, 0)
+  const added = await cli("admin-one", [
+    "groups",
+    "add-member",
+    "--group",
+    "smoke-analysts",
+    "--user",
+    "smoke-member",
+  ])
+  assert.equal(added.data.added, true)
+  assert.equal(added.data.membership.group.name, "smoke-analysts")
+  assert.equal(added.data.membership.user.id, member.id)
+  assert.equal(added.data.membership.createdBy.name, "smoke-admin")
+  const addedAgain = await cli("admin-one", [
+    "groups",
+    "add-member",
+    "--group",
+    group.data.group.id,
+    "--user",
+    member.id,
+  ])
+  assert.equal(addedAgain.data.added, false, "membership is idempotent")
+  const roster = await cli("admin-one", [
+    "groups",
+    "members",
+    "--group",
+    "smoke-analysts",
+  ])
+  assert.deepEqual(
+    roster.data.members.map((entry) => entry.username),
+    ["smoke-member"],
+  )
+  assert.equal(roster.data.truncated, false)
+  // One connection reached two ways: directly and through the group.
+  await cli("admin-one", [
+    "grants",
+    "create",
+    "--user",
+    "smoke-member",
+    "--connection",
+    "smoke-group-metrics",
+  ])
+  const groupGrant = await cli("admin-one", [
+    "grants",
+    "create",
+    "--group",
+    "smoke-analysts",
+    "--connection",
+    "smoke-group-metrics",
+  ])
+  assert.equal(groupGrant.data.created, true)
+  assert.deepEqual(groupGrant.data.grant.recipient, {
+    kind: "group",
+    id: group.data.group.id,
+    name: "smoke-analysts",
+  })
+  const inherited = await cli("member", ["whoami"])
+  assert.deepEqual(inherited.data.connections, [
+    "smoke-group-metrics",
+    "smoke-postgres",
+  ])
+  assert.deepEqual(inherited.data.groups, ["smoke-analysts"])
+  assert.equal(inherited.data.groupsTruncated, undefined)
+  const whoamiText = await execute(
+    join(root, "bin/clavis"),
+    ["whoami", "--output", "text", "--server", apiURL],
+    "auth-member-whoami-text",
+    { env: clientEnv("member") },
+  )
+  assert(whoamiText.includes("Groups: smoke-analysts"))
+  assert.deepEqual(
+    (await cli("member", ["connections", "list"])).data.connections.map(
+      (connection) => connection.name,
+    ),
+    ["smoke-group-metrics", "smoke-postgres"],
+    "two paths to one connection list it once",
+  )
+  // The effective listing names the subject and every configured path.
+  const effective = await cli("admin-one", [
+    "grants",
+    "list",
+    "--user",
+    "smoke-member",
+    "--effective",
+  ])
+  assert.equal(effective.data.user.id, member.id)
+  assert.equal(effective.data.user.username, "smoke-member")
+  assert.equal(effective.data.user.role, "member")
+  assert.deepEqual(
+    effective.data.entries.map((entry) => [
+      entry.connection.name,
+      entry.source,
+      entry.group?.name,
+    ]),
+    [
+      ["smoke-group-metrics", "direct", undefined],
+      ["smoke-group-metrics", "group", "smoke-analysts"],
+      ["smoke-postgres", "direct", undefined],
+    ],
+  )
+  assert.equal(effective.data.truncated, false)
+  // A member inspects their own paths and no one else's.
+  assert.deepEqual(
+    (await cli("member", ["grants", "list", "--effective"])).data.entries.map(
+      (entry) => entry.source,
+    ),
+    ["direct", "group", "direct"],
+  )
+  assert.equal(
+    (
+      await cli(
+        "member",
+        ["grants", "list", "--user", "smoke-admin", "--effective"],
+        1,
+      )
+    ).error.code,
+    "FORBIDDEN",
+  )
+  // Revoking one path leaves the other, and the group keeps the connection.
+  assert.equal(
+    (
+      await cli("admin-one", [
+        "grants",
+        "revoke",
+        "--user",
+        "smoke-member",
+        "--connection",
+        "smoke-group-metrics",
+      ])
+    ).data.revoked,
+    true,
+  )
+  assert.deepEqual(
+    (await cli("member", ["connections", "list"])).data.connections.map(
+      (connection) => connection.name,
+    ),
+    ["smoke-group-metrics", "smoke-postgres"],
+    "the group still supplies the connection",
+  )
+  const removedMember = await cli("admin-one", [
+    "groups",
+    "remove-member",
+    "--group",
+    "smoke-analysts",
+    "--user",
+    "smoke-member",
+  ])
+  assert.equal(removedMember.data.removed, true)
+  assert.deepEqual(
+    (await cli("member", ["connections", "list"])).data.connections.map(
+      (connection) => connection.name,
+    ),
+    ["smoke-postgres"],
+    "leaving the group ends the inherited access on the next call",
+  )
+  assert.equal(
+    (
+      await cli(
+        "member",
+        ["connections", "get", "--connection", "smoke-group-metrics"],
+        1,
+      )
+    ).error.code,
+    "CONNECTION_NOT_FOUND",
+  )
+  // A group that still holds a grant is not deleted, and the hint counts them.
+  const guardedGroup = await cli(
+    "admin-one",
+    ["groups", "delete", "--group", "smoke-analysts", "--dry-run"],
+    1,
+  )
+  assert.equal(guardedGroup.error.code, "GROUP_IN_USE")
+  assert(guardedGroup.error.hint.includes("1 grant"), guardedGroup.error.hint)
+  assert.equal(
+    (
+      await cli("admin-one", [
+        "grants",
+        "revoke",
+        "--group",
+        "smoke-analysts",
+        "--connection",
+        "smoke-group-metrics",
+      ])
+    ).data.revoked,
+    true,
+  )
+  const groupRehearsal = await cli("admin-one", [
+    "groups",
+    "delete",
+    "--group",
+    "smoke-analysts",
+    "--dry-run",
+  ])
+  assert.equal(groupRehearsal.data.dryRun, true)
+  assert.equal(
+    await sql("SELECT count(*) FROM groups", "groups-one"),
+    "1",
+    "a dry run changes nothing",
+  )
+  assert.equal(
+    (await cli("admin-one", ["groups", "delete", "--group", "smoke-analysts"]))
+      .data.group.id,
+    group.data.group.id,
+  )
+  assert.equal(
+    (await cli("admin-one", ["groups", "get", "--group", "smoke-analysts"], 1))
+      .error.code,
+    "GROUP_NOT_FOUND",
+  )
+  // The name is free again, and the new group inherits nothing from the old.
+  const recreated = await cli("admin-one", [
+    "groups",
+    "create",
+    "--name",
+    "smoke-analysts",
+  ])
+  assert.notEqual(recreated.data.group.id, group.data.group.id)
+  assert.equal(recreated.data.group.description, "")
+  assert.equal(recreated.data.group.members, 0)
+  assert.equal(recreated.data.group.grants, 0)
+  assert.deepEqual(
+    (await cli("admin-one", ["groups", "members", "--group", "smoke-analysts"]))
+      .data,
+    { members: [], truncated: false },
+  )
+  // Group management is administrator-only; a member learns their groups from
+  // whoami and never reads a roster.
+  for (const args of [
+    ["groups", "list"],
+    ["groups", "get", "--group", "smoke-analysts"],
+    ["groups", "members", "--group", "smoke-analysts"],
+    ["groups", "create", "--name", "smoke-shadow"],
+    [
+      "groups",
+      "add-member",
+      "--group",
+      "smoke-analysts",
+      "--user",
+      "smoke-member",
+    ],
+  ])
+    assert.equal((await cli("member", args, 1)).error.code, "FORBIDDEN")
+  summary.groupManagement = "passed"
+  console.log(
+    "[smoke] Real CLI groups, membership, inherited access, provenance and the delete guard passed",
+  )
+
   // The browser interface is exercised against the copied binary: one
-  // same-origin sign-in, the three administration pages fetched with the
+  // same-origin sign-in, the four administration pages fetched with the
   // session cookie, and sign-out. Rendering and interaction stay out of scope.
   const browserHeaders = {
     "Content-Type": "application/x-www-form-urlencoded",
@@ -1161,6 +1446,7 @@ try {
   const sessionCookie = issuedCookie.split(";")[0]
   for (const [path, heading] of [
     ["/admin/users", "Users"],
+    ["/admin/groups", "Groups"],
     ["/admin/connections", "Connections"],
     ["/admin/grants", "Grants"],
   ]) {
@@ -1198,7 +1484,7 @@ try {
   await signOut.text()
   summary.browserAdministration = "passed"
   console.log(
-    "[smoke] Browser sign-in, the three administration pages and sign-out passed",
+    "[smoke] Browser sign-in, the four administration pages and sign-out passed",
   )
 
   // Queries run through the product CLI against the smoke database itself:

@@ -39,6 +39,7 @@ func TestIconsEscapeDynamicClasses(t *testing.T) {
 		"shield-check": icon.ShieldCheck,
 		"sun":          icon.Sun,
 		"users":        icon.Users,
+		"users-round":  icon.UsersRound,
 	} {
 		t.Run(name, func(t *testing.T) {
 			var output bytes.Buffer

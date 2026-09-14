@@ -60,10 +60,13 @@ func (a *authHTTP) mount(router chi.Router) {
 		w.Header().Set("Cache-Control", "no-store")
 		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 	})
-	// One loader serves the three pages: the page value is the only difference
-	// between them, because the sidebar's counts come from all three lists.
+	// One loader serves the four pages: the page value is the only difference
+	// between them, because the sidebar's counts come from all four lists.
 	router.With(a.operation).Get("/admin/users", func(w http.ResponseWriter, r *http.Request) {
 		a.adminPage(w, r, web.PageUsers)
+	})
+	router.With(a.operation).Get("/admin/groups", func(w http.ResponseWriter, r *http.Request) {
+		a.adminPage(w, r, web.PageGroups)
 	})
 	router.With(a.operation).Get("/admin/connections", func(w http.ResponseWriter, r *http.Request) {
 		a.adminPage(w, r, web.PageConnections)
@@ -191,7 +194,7 @@ func (a *authHTTP) bounded(budget time.Duration, extendWrite bool, next http.Han
 				// before, so the fallback follows the prefix rather than a list
 				// of routes that would drift from the router.
 				if strings.HasPrefix(r.URL.Path, "/admin/") {
-					a.adminResult(buffer, r, auth.Session{}, auth.UserList{}, auth.ConnectionList{}, auth.GrantList{}, pageFor(r.URL.Path), failure)
+					a.adminResult(buffer, r, auth.Session{}, adminLists{}, pageFor(r.URL.Path), failure)
 				} else {
 					jsonFailure(buffer, failure)
 				}
@@ -761,11 +764,13 @@ func (a *authHTTP) logoutBrowser(w http.ResponseWriter, r *http.Request) {
 	a.logoutResult(w, r, auth.LogoutOutcome(true, err))
 }
 
-// pageFor maps an administration path to the page it renders. Only the three
+// pageFor maps an administration path to the page it renders. Only the four
 // routes above are mounted, so an unknown suffix never reaches it; the default
 // exists so the timeout fallback always has a page to render.
 func pageFor(path string) web.AdminPage {
 	switch path {
+	case "/admin/groups":
+		return web.PageGroups
 	case "/admin/connections":
 		return web.PageConnections
 	case "/admin/grants":
@@ -775,7 +780,17 @@ func pageFor(path string) web.AdminPage {
 	}
 }
 
-func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, users auth.UserList, connections auth.ConnectionList, grants auth.GrantList, page web.AdminPage, err error) {
+// adminLists is every bounded listing the shell shows at once: the table of
+// the page that was asked for and the counts beside it. They travel together
+// because the page renders none of them unless all of them are current.
+type adminLists struct {
+	users       auth.UserList
+	groups      auth.GroupList
+	connections auth.ConnectionList
+	grants      auth.GrantList
+}
+
+func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, lists adminLists, page web.AdminPage, err error) {
 	outcome := auth.AdminOutcome(err)
 	if outcome.Location != "" {
 		w.Header().Set("Cache-Control", "no-store")
@@ -789,14 +804,15 @@ func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session a
 	}
 	a.render(w, r, 200, a.views.Admin(web.AdminModel{
 		Page: page,
-		User: session.User, Users: users.Users, Truncated: users.Truncated,
-		Connections: connections.Connections, ConnectionsTruncated: connections.Truncated,
-		Grants: grants.Grants, GrantsTruncated: grants.Truncated,
+		User: session.User, Users: lists.users.Users, Truncated: lists.users.Truncated,
+		Groups: lists.groups.Groups, GroupsTruncated: lists.groups.Truncated,
+		Connections: lists.connections.Connections, ConnectionsTruncated: lists.connections.Truncated,
+		Grants: lists.grants.Grants, GrantsTruncated: lists.grants.Truncated,
 	}))
 }
 
-// adminPage loads every administration page: the shell shows the three bounded
-// counts, and a count is current data like the table itself, so all three lists
+// adminPage loads every administration page: the shell shows the four bounded
+// counts, and a count is current data like the table itself, so all four lists
 // load and the first failure fails the page closed.
 func (a *authHTTP) adminPage(w http.ResponseWriter, r *http.Request, page web.AdminPage) {
 	token, err := a.token(r)
@@ -812,28 +828,32 @@ func (a *authHTTP) adminPage(w http.ResponseWriter, r *http.Request, page web.Ad
 	}
 	// The page fails closed rather than rendering administration without the
 	// current list.
-	var users auth.UserList
+	var lists adminLists
 	if err == nil {
 		if err = a.requireAdministration(); err == nil {
-			users, err = a.admin.ListUsers(r.Context(), session)
+			lists.users, err = a.admin.ListUsers(r.Context(), session)
 		}
 	}
-	var connections auth.ConnectionList
+	// Groups load after users, because a group is about people too.
+	if err == nil {
+		if err = a.requireGroups(); err == nil {
+			lists.groups, err = a.groups.ListGroups(r.Context(), session, auth.MaxGroupListing)
+		}
+	}
 	if err == nil {
 		if a.connections == nil {
 			err = &auth.Error{Code: auth.ServiceUnavailable}
 		} else {
-			connections, err = a.connections.ListConnections(r.Context(), session, nil, auth.MaxConnectionListing)
+			lists.connections, err = a.connections.ListConnections(r.Context(), session, nil, auth.MaxConnectionListing)
 		}
 	}
 	// Grants load last and the page fails closed without them too.
-	var grants auth.GrantList
 	if err == nil {
 		if err = a.requireGrants(); err == nil {
-			grants, err = a.grants.ListGrants(r.Context(), session, auth.GrantFilter{Limit: auth.MaxGrantListing})
+			lists.grants, err = a.grants.ListGrants(r.Context(), session, auth.GrantFilter{Limit: auth.MaxGrantListing})
 		}
 	}
-	a.adminResult(w, r, session, users, connections, grants, page, err)
+	a.adminResult(w, r, session, lists, page, err)
 }
 
 func newAuthHTTP(origin string, service auth.Service, views AuthViews) (*authHTTP, error) {

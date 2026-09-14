@@ -54,6 +54,7 @@ func adminPageHandler(t *testing.T, f *backendFixture, admin auth.Administration
 	adapter, err := newAuthHTTP("http://127.0.0.1", f, fixtureViews())
 	require.NoError(t, err)
 	adapter.admin = admin
+	adapter.groups = f
 	adapter.connections = f
 	adapter.grants = f
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness {
@@ -156,28 +157,31 @@ func TestAdminPageFailsClosedWhenTheListingFails(t *testing.T) {
 	}
 }
 
-// pagesHandler composes the three page dependencies with the production views,
+// pagesHandler composes the four page dependencies with the production views,
 // so these assertions read the document an administrator actually receives.
-func pagesHandler(t *testing.T, users auth.Administration, connections auth.Connections, grants auth.Grants) http.Handler {
+func pagesHandler(t *testing.T, users auth.Administration, groups auth.Groups, connections auth.Connections, grants auth.Grants) http.Handler {
 	t.Helper()
 	adapter, err := newAuthHTTP("http://127.0.0.1", &backendFixture{}, AuthViews{})
 	require.NoError(t, err)
-	adapter.admin, adapter.connections, adapter.grants = users, connections, grants
+	adapter.admin, adapter.groups = users, groups
+	adapter.connections, adapter.grants = connections, grants
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness {
 		return platform.Readiness{State: platform.Ready}
 	})
 	return handler(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)), adapter)
 }
 
-// Every page announces itself as current and shows the three bounded counts,
+// Every page announces itself as current and shows the four bounded counts,
 // because a count is current data exactly like the table beside it.
 func TestAdminPagesMarkTheCurrentPageAndCountEveryList(t *testing.T) {
 	served := pagesHandler(t,
 		&listFake{list: listedUsers},
+		&fakeGroups{groupList: auth.GroupList{Groups: listedGroups.Groups}},
 		&connectionsPageFake{list: auth.ConnectionList{Connections: listedConnections.Connections}},
 		&fakeGrants{grantList: listedGrants})
 	for _, tc := range []struct{ path, heading string }{
-		{"/admin/users", "Users"}, {"/admin/connections", "Connections"}, {"/admin/grants", "Grants"},
+		{"/admin/users", "Users"}, {"/admin/groups", "Groups"},
+		{"/admin/connections", "Connections"}, {"/admin/grants", "Grants"},
 	} {
 		response := requestPage(served, tc.path)
 		require.Equal(t, 200, response.StatusCode, tc.path)
@@ -188,33 +192,30 @@ func TestAdminPagesMarkTheCurrentPageAndCountEveryList(t *testing.T) {
 		require.Contains(t, page, `<a href="`+tc.path+`" aria-current="page"`)
 		require.Equal(t, 1, strings.Count(page, `aria-current="page"`), tc.path)
 		require.Contains(t, page, ">"+tc.heading+"</h1>")
-		// The truncated user and grant lists report their bound with a plus.
-		for _, count := range []string{
-			`class="ml-auto text-xs tabular-nums text-muted-foreground">2+</span>`,
-			`class="ml-auto text-xs tabular-nums text-muted-foreground">2</span>`,
-			`class="ml-auto text-xs tabular-nums text-muted-foreground">1+</span>`,
-		} {
-			require.Contains(t, page, count, tc.path)
-		}
+		// The truncated user and grant lists report their bound with a plus;
+		// the untruncated group and connection lists report a plain count.
+		require.Equal(t, []string{"2+", "1", "2", "2+"}, sidebarCountsOf(page), tc.path)
 	}
 }
 
-// The counts make all three lists current data for every page, so any one of
+// The counts make all four lists current data for every page, so any one of
 // them failing fails every page closed.
 func TestEveryAdminPageFailsClosedWhenAnyListFails(t *testing.T) {
 	failure := errors.New("SENTINEL_PRIVATE_DRIVER")
 	for name, fakes := range map[string]struct {
 		users       auth.Administration
+		groups      auth.Groups
 		connections auth.Connections
 		grants      auth.Grants
 	}{
-		"users":       {&listFake{err: failure}, &connectionsPageFake{list: listedConnections}, &fakeGrants{grantList: listedGrants}},
-		"connections": {&listFake{list: listedUsers}, &connectionsPageFake{err: failure}, &fakeGrants{grantList: listedGrants}},
-		"grants":      {&listFake{list: listedUsers}, &connectionsPageFake{list: listedConnections}, &fakeGrants{grantErr: failure}},
+		"users":       {&listFake{err: failure}, &fakeGroups{groupList: listedGroups}, &connectionsPageFake{list: listedConnections}, &fakeGrants{grantList: listedGrants}},
+		"groups":      {&listFake{list: listedUsers}, &fakeGroups{groupErr: failure}, &connectionsPageFake{list: listedConnections}, &fakeGrants{grantList: listedGrants}},
+		"connections": {&listFake{list: listedUsers}, &fakeGroups{groupList: listedGroups}, &connectionsPageFake{err: failure}, &fakeGrants{grantList: listedGrants}},
+		"grants":      {&listFake{list: listedUsers}, &fakeGroups{groupList: listedGroups}, &connectionsPageFake{list: listedConnections}, &fakeGrants{grantErr: failure}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			served := pagesHandler(t, fakes.users, fakes.connections, fakes.grants)
-			for _, path := range []string{"/admin/users", "/admin/connections", "/admin/grants"} {
+			served := pagesHandler(t, fakes.users, fakes.groups, fakes.connections, fakes.grants)
+			for _, path := range []string{"/admin/users", "/admin/groups", "/admin/connections", "/admin/grants"} {
 				response := requestPage(served, path)
 				require.Equal(t, 503, response.StatusCode, path)
 				body, err := io.ReadAll(response.Body)

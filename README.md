@@ -8,15 +8,15 @@ Clavis is a CLI-first platform by heurema for controlled access to operational
 systems by people and agents.
 
 Currently, it provides automated initial administrator setup, local browser/CLI
-sign-in, revocable sessions, administrator-managed local users and registered
-data-source connections with encrypted credentials and connectivity checks, with
-external PostgreSQL. Goose manages embedded migrations and sqlc generates the pgx
-application queries. The embedded templ interface includes sign-in and
-administration pages for users, connections and grants, each a read-only list
-inside one shell; `/admin` redirects to `/admin/users`. There is
+sign-in, revocable sessions, administrator-managed local users and groups, and
+registered data-source connections with encrypted credentials and connectivity
+checks, with external PostgreSQL. Goose manages embedded migrations and sqlc
+generates the pgx application queries. The embedded templ interface includes
+sign-in and administration pages for users, groups, connections and grants, each
+a read-only list inside one shell; `/admin` redirects to `/admin/users`. There is
 no separate frontend server. Queries run against PostgreSQL, VictoriaMetrics
 and VictoriaLogs connections, and the agent skill installs through the CLI;
-groups remain planned; an audit journal, Google/OIDC sign-in, self-service password change and
+an audit journal, Google/OIDC sign-in, self-service password change and
 account recovery are outside the MVP.
 
 ## Quick start
@@ -255,8 +255,11 @@ output. Results default to one JSON document; `--output text` is also available.
 Sessions are stored privately under the user's configuration directory and keyed
 by server origin. `whoami` verifies the session with the server rather than
 trusting cached identity, and for members it lists the names of the connections
-they hold a grant on (`connections`, with `connectionsTruncated` when the list is
-cut); administrators see no list because they need no grants.
+they can use (`connections`, with `connectionsTruncated` when the list is
+cut), direct grants and group grants together; administrators see no list
+because they need no grants. Every caller's group names come back as `groups`
+(with `groupsTruncated`), so an agent's first call already says which groups it
+belongs to; the two lists are bounded independently.
 
 An administrator can run `./bin/clavis sessions revoke --user <uuid-or-username>`
 to revoke that user's existing browser and CLI sessions. Sessions have a fixed eight-hour
@@ -335,33 +338,94 @@ with an explicit `truncated` flag. Statement timeout and result caps default to 
 with ceilings of 120 s, 100,000 rows and 10 MiB; query execution enforces them.
 A dry run commits nothing.
 
+## Groups
+
+A group is a named set of users that a grant can name instead of one user, so
+access is described per team. Administrators manage groups through the CLI; the
+browser's Groups page only lists them. Group names follow the username grammar
+(`[a-z][a-z0-9._-]{2,63}`, never UUID-shaped) but live in their own namespace,
+so a user and a group may share a name and `--user` and `--group` keep every
+reference unambiguous. `--group` accepts a group UUID or a name everywhere:
+
+```sh
+clavis groups create --name finance-managers --description "Reads the payments sources"
+clavis groups list
+clavis groups get --group finance-managers
+clavis groups update --group finance-managers --name finance-analysts
+clavis groups add-member --group finance-analysts --user alice
+clavis groups members --group finance-analysts
+clavis groups remove-member --group finance-analysts --user alice
+clavis groups delete --group finance-analysts --dry-run
+```
+
+Membership is idempotent for retrying agents (`added: false` when the user was
+already a member, `removed: false` when there was nothing to remove), records
+who added the member, and survives blocking and renames. A member inherits every
+connection the group holds a grant on the moment they join and loses it on their
+next request after leaving or after the group's grant is revoked; nothing is
+materialized, so there is no stale derived row. Renaming a group moves no
+access, and a group has no enabled flag.
+
+Deleting a group requires zero grants: `GROUP_IN_USE` refuses it and the hint
+counts the grants that remain, on the real run and on the dry run alike.
+Deletion drops the memberships with the group, because membership alone confers
+nothing, and a group recreated under the same name is a new record that
+inherits nothing.
+Listings are bounded to 1,000 groups and 1,000 members with an explicit
+`truncated` flag, and a dry run commits nothing.
+
+The `groups` commands are administrator-only, like `users`: every attempt by a
+member is refused with `FORBIDDEN`. A member learns their own groups from
+`clavis whoami`, which names them, and never sees another member through a
+group, because no roster is readable to them.
+
 ## Grants
 
-A grant lets one user use one connection. Administrators use any connection
-without a grant; members may only use, list and inspect the connections they
-hold a grant on. Grants reference users and connections by UUID or name, are
-idempotent for retrying agents, and return both parties:
+A grant lets one recipient, a user or a group, use one connection.
+Administrators use any connection without a grant; members may only use, list
+and inspect the connections they have effective access to, the union of their
+direct grants and the grants of every group they belong to. Grants reference
+users, groups and connections by UUID or name, are idempotent for retrying
+agents, and return the recipient as `recipient` with its `kind` (`user` or
+`group`), `id` and `name`:
 
 ```sh
 clavis grants create --user alice --connection payments-prod-reporting
+clavis grants create --group finance-managers --connection payments-prod-reporting
 clavis grants list --connection payments-prod-reporting
+clavis grants list --group finance-managers
 clavis grants list --user alice --output text
-clavis grants revoke --user alice --connection payments-prod-reporting --dry-run
+clavis grants list --user alice --effective
+clavis grants revoke --group finance-managers --connection payments-prod-reporting --dry-run
 ```
+
+`create` and `revoke` take exactly one of `--user` or `--group` beside
+`--connection`; `list` filters on at most one of them. `grants list --effective`
+answers where one user's access comes from: it returns that user's own record
+(their role and whether they are blocked, which is what explains an
+administrator's bypass) and one entry per connection and configured path,
+`direct` or the group it came through, so revoking one path visibly leaves the
+others. It describes configuration, never usability: only the authorization
+check a query runs says whether a connection can be used now. An administrator
+must name the subject with `--user`; a member may omit it and read their own
+paths, and naming anyone else is `FORBIDDEN`. `--effective` and `--group` cannot
+be combined, because a group has no access of its own to report.
 
 `create` returns the grant with both identifiers and names (`created: false`
 when it already existed); `revoke` reports
 `revoked: false` when there was nothing to remove. A member's `connections list`
-and `connections get` return only granted connections in a reduced projection
+and `connections get` return only the connections they have effective access to,
+each listed once however many paths supply it, in a reduced projection
 (`id`, `name`, `title`, `description`, `scope`, `provider`, `labels`, `enabled`,
-`lastCheck`) that never carries a target, bounds or credentials; an ungranted
-connection is `CONNECTION_NOT_FOUND`, and a disabled granted connection stays
+`lastCheck`) that never carries a target, bounds or credentials; a connection
+they have no access to is `CONNECTION_NOT_FOUND`, and a disabled one stays
 listed with `enabled: false`, and the authorization check that later query operations run refuses it with `CONNECTION_DISABLED`. Members
 may run `grants list` and see only their own grants; every administrative
 attempt by a member is refused with `FORBIDDEN`. Revocation takes
 effect on the member's next request, and grants survive blocking and renames.
-Listing is bounded to 1,000 grants with an explicit `truncated` flag. The
-browser's Grants page lists them read-only.
+Listing is bounded to 1,000 grants with an explicit `truncated` flag, and the
+effective listing to 1,000 entries. The browser's Grants page lists grants
+read-only, naming the recipient and marking a group one.
 
 ## Queries
 
