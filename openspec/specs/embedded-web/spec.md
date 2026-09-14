@@ -12,12 +12,12 @@ The server executable SHALL contain the rendered interface implementation, platf
 
 #### Scenario: Run a copied executable
 - **WHEN** an operator copies only the built server executable to an otherwise empty working directory and supplies valid environment configuration for an initialized platform database
-- **THEN** the server starts and serves the complete styled, interactive setup/login pages and JSON health endpoints
+- **THEN** the server starts and serves the complete styled sign-in and administration pages and JSON health endpoints
 - **AND** it does not read application templates, SQL or browser assets from the working directory or require development tools in its executable search path
 
 #### Scenario: Browser assets work without third-party network access
 - **WHEN** the browser can reach Clavis but third-party HTTP requests are blocked
-- **THEN** the page's styles, icons, appearance control and readiness retry work using assets supplied by Clavis
+- **THEN** the pages' styles, icons and appearance control work using assets supplied by Clavis
 - **AND** no CDN, external font service or other asset origin is required
 
 #### Scenario: Initialize with an explicit mounted secret
@@ -26,16 +26,16 @@ The server executable SHALL contain the rendered interface implementation, platf
 
 ### Requirement: One origin for the interface and API
 
-The server SHALL serve the interface at `GET /`, its HTML readiness fragment at `GET /ui/readiness`, public assets below `/assets/`, the JSON health endpoints and the documented authentication pages/API on the same configured listener. The browser SHALL use same-origin URLs. An independently deployed frontend or development proxy SHALL NOT be required. Public setup/login documents and assets SHALL remain available while the process is running with an unavailable database; protected content SHALL fail closed.
+The server SHALL serve the interface on the same configured listener as the JSON health endpoints and the documented authentication pages/API: `GET /` SHALL redirect with `303 See Other` to the administration landing page without reading the database, public assets SHALL be served below `/assets/`, and the sign-in and administration documents SHALL use same-origin URLs. An independently deployed frontend or development proxy SHALL NOT be required. The public sign-in and error documents and the assets SHALL remain available while the process is running with an unavailable database; protected content SHALL fail closed. The server SHALL NOT serve an HTML readiness fragment; `GET /ui/readiness` is an unknown path.
 
 #### Scenario: Open the application with its database unavailable
 - **WHEN** the server is running with valid configuration and the configured database cannot be reached
-- **THEN** the browser can load the public setup/login documents and assets from the server's origin
-- **AND** the readiness check reports the dependency failure without blocking the initial document on database access
+- **THEN** `GET /` redirects to the administration landing page without a database access, and a signed-out browser is redirected on to `/login`
+- **AND** the browser can load the sign-in document and assets from the server's origin
 
 #### Scenario: Request an unknown public resource
-- **WHEN** a client requests an unknown asset, a directory listing or a path outside the public asset set
-- **THEN** the server returns a not-found response without serving a filesystem listing, private files or the setup document as a fallback
+- **WHEN** a client requests an unknown asset, a directory listing, `/ui/readiness` or a path outside the public asset set
+- **THEN** the server returns a not-found response without serving a filesystem listing, private files or a document as a fallback
 
 #### Scenario: Protected content during an outage
 - **WHEN** an authenticated browser requests administrator content while session storage is unavailable
@@ -43,7 +43,7 @@ The server SHALL serve the interface at `GET /`, its HTML readiness fragment at 
 
 ### Requirement: Distinct HTML and JSON representations
 
-JSON health routes SHALL retain their paths, success/database-failure bodies and cache prevention behavior, with the explicit initialization failures defined in project-bootstrap, regardless of browser-specific request headers. The HTML readiness route SHALL return a complete, safe fragment with HTTP 200 for a ready installation and HTTP 503 for dependency or initialization failure. HTML documents and readiness fragments SHALL prevent caching of operational state. Dynamic text SHALL be escaped, and unexpected response bodies SHALL NOT be displayed as diagnostic text. JSON authentication routes SHALL return their documented JSON rather than redirecting to login or becoming HTML under browser headers.
+JSON health routes SHALL retain their paths, success/database-failure bodies and cache prevention behavior, with the explicit initialization failures defined in project-bootstrap, regardless of browser-specific request headers. HTML documents SHALL prevent caching of operational state. Dynamic text SHALL be escaped. JSON authentication routes SHALL return their documented JSON rather than redirecting to login or becoming HTML under browser headers.
 
 #### Scenario: A CLI request encounters the new web server
 - **WHEN** the CLI requests `/health/ready` from the combined server
@@ -53,36 +53,9 @@ JSON health routes SHALL retain their paths, success/database-failure bodies and
 - **WHEN** a request to `/health/ready` includes `Accept: text/html` or headers used for partial page requests
 - **THEN** the endpoint still returns its documented JSON representation
 
-#### Scenario: Render a known dependency failure
-- **WHEN** a browser requests `/ui/readiness` and the database check fails
-- **THEN** the response is HTTP 503 with a safe HTML readiness fragment and cache prevention headers
-- **AND** it contains no connection string or raw dependency error
-
-#### Scenario: An unexpected response contains private text
-- **WHEN** a readiness request receives an unexpected status, content type or unrecognized fragment response containing a sentinel secret
-- **THEN** the loaded page presents an application-owned error message without inserting the response body into the document
-
-#### Scenario: Render initialization failure
-- **WHEN** the database is reachable but the installation is not ready
-- **THEN** the HTML readiness response uses the same safe initialization category as JSON and the existing application fragment marker
-
 #### Scenario: Browser headers reach JSON identity
 - **WHEN** a JSON authentication endpoint receives browser/partial-request headers without a valid CLI bearer credential
 - **THEN** it returns a safe documented JSON failure without a login redirect or HTML response
-
-### Requirement: Interactive controls survive partial updates
-
-Partial page replacement SHALL preserve usable controls, accessible names, keyboard behavior and status announcements. Initialization of newly inserted controls SHALL NOT duplicate handlers or reset unrelated appearance preferences. A status update SHALL NOT leave keyboard focus on a removed element when a stable retry control is available.
-
-#### Scenario: Repeat partial updates using the keyboard
-- **WHEN** a user performs several checks and retries with keyboard controls
-- **THEN** each activation starts one intended request, focus remains usable, and each final readiness state is announced
-- **AND** appearance remains unchanged by the status replacements
-
-#### Scenario: Insert an interactive component after the initial page load
-- **WHEN** a partial update inserts a supported interactive control
-- **THEN** the control initializes and responds to its documented keyboard interaction
-- **AND** subsequent initialization does not attach duplicate action handlers
 
 ### Requirement: Reproducible generated assets
 
