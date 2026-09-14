@@ -30,11 +30,15 @@ func TestComponentComposition(t *testing.T) {
 
 func TestIconsEscapeDynamicClasses(t *testing.T) {
 	for name, component := range map[string]func(...icon.Props) templ.Component{
-		"database":   icon.Database,
-		"key-round":  icon.KeyRound,
-		"moon":       icon.Moon,
-		"refresh-cw": icon.RefreshCw,
-		"sun":        icon.Sun,
+		"database":     icon.Database,
+		"key-round":    icon.KeyRound,
+		"link":         icon.Link,
+		"log-out":      icon.LogOut,
+		"moon":         icon.Moon,
+		"refresh-cw":   icon.RefreshCw,
+		"shield-check": icon.ShieldCheck,
+		"sun":          icon.Sun,
+		"users":        icon.Users,
 	} {
 		t.Run(name, func(t *testing.T) {
 			var output bytes.Buffer

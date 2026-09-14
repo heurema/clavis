@@ -245,6 +245,6 @@ func TestBrowserLoginNeverRetargetsAnExistingSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, oldSession.ID, stillOld.ID)
 	require.Equal(t, oldSession.Identity, stillOld.Identity)
-	response := requestAuth(handler, "GET", "/admin", "", http.Header{"Cookie": {oldCookie.Name + "=" + oldCookie.Value}})
+	response := requestAuth(handler, "GET", "/admin/users", "", http.Header{"Cookie": {oldCookie.Name + "=" + oldCookie.Value}})
 	require.Equal(t, 403, response.Code, "old member session must not inherit the new administrator login")
 }

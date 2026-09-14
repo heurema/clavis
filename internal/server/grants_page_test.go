@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,19 +41,25 @@ func grantsPageHandler(t *testing.T, f *backendFixture, connections auth.Connect
 	return handler(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)), adapter)
 }
 
-func TestGrantsPageRendersTheGrantsTableAfterConnections(t *testing.T) {
+func TestGrantsPageRendersTheGrantsTable(t *testing.T) {
 	f := &backendFixture{}
 	connections := &connectionsPageFake{list: listedConnections}
 	grants := &fakeGrants{grantList: listedGrants}
-	response := adminPage(grantsPageHandler(t, f, connections, grants))
+	response := requestPage(grantsPageHandler(t, f, connections, grants), "/admin/grants")
 	require.Equal(t, 200, response.StatusCode)
 	body := connectionsPageBody(t, response)
 	for _, fragment := range []string{
-		">Grants<", ">granted-member<", ">warehouse-primary<", ">personal-admin<", "2026-06-07 08:09 UTC",
+		">Grants</h1>", ">granted-member<", ">warehouse-primary<", ">personal-admin<", "2026-06-07 08:09 UTC",
 		"Showing the first 1000 grants; the list is limited.",
 	} {
 		require.Contains(t, body, fragment)
 	}
+	// The shell marks this page and counts all three lists beside it.
+	require.Contains(t, body, `<a href="/admin/grants" aria-current="page"`)
+	require.Equal(t, 1, strings.Count(body, `aria-current="page"`))
+	require.Equal(t, []string{"0", "2+", "1+"}, sidebarCountsOf(body))
+	// The grants page renders no other table.
+	require.NotContains(t, body, "Warehouse primary")
 	require.NotContains(t, body, "1234567890a1")
 	require.Equal(t, 1, connections.calls)
 	require.Len(t, grants.grantCalls, 1)
@@ -66,7 +73,7 @@ func TestGrantsPageRendersTheGrantsTableAfterConnections(t *testing.T) {
 func TestGrantsPageFailsClosedInOrder(t *testing.T) {
 	f := &backendFixture{}
 	grants := &fakeGrants{grantErr: errors.New("private grants outage")}
-	response := adminPage(grantsPageHandler(t, f, &connectionsPageFake{list: listedConnections}, grants))
+	response := requestPage(grantsPageHandler(t, f, &connectionsPageFake{list: listedConnections}, grants), "/admin/grants")
 	require.Equal(t, 503, response.StatusCode)
 	body := connectionsPageBody(t, response)
 	require.NotContains(t, body, "warehouse-primary")
@@ -75,12 +82,12 @@ func TestGrantsPageFailsClosedInOrder(t *testing.T) {
 	require.Len(t, grants.grantCalls, 1)
 
 	grants = &fakeGrants{grantList: listedGrants}
-	response = adminPage(grantsPageHandler(t, f, &connectionsPageFake{err: &auth.Error{Code: auth.Forbidden}}, grants))
+	response = requestPage(grantsPageHandler(t, f, &connectionsPageFake{err: &auth.Error{Code: auth.Forbidden}}, grants), "/admin/grants")
 	require.Equal(t, 403, response.StatusCode)
 	require.NoError(t, response.Body.Close())
 	require.Empty(t, grants.grantCalls, "the grants listing is not attempted after a failed connections listing")
 
-	response = adminPage(grantsPageHandler(t, &backendFixture{role: auth.Member}, &connectionsPageFake{list: listedConnections}, grants))
+	response = requestPage(grantsPageHandler(t, &backendFixture{role: auth.Member}, &connectionsPageFake{list: listedConnections}, grants), "/admin/grants")
 	require.Equal(t, 403, response.StatusCode)
 	require.NoError(t, response.Body.Close())
 	require.Empty(t, grants.grantCalls, "members never reach the listing")
@@ -90,7 +97,7 @@ func TestGrantsPageFailsClosedInOrder(t *testing.T) {
 	require.NoError(t, err)
 	adapter.admin, adapter.connections = f, &connectionsPageFake{list: listedConnections}
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
-	response = adminPage(handler(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)), adapter))
+	response = requestPage(handler(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)), adapter), "/admin/grants")
 	require.Equal(t, 503, response.StatusCode)
 	require.NoError(t, response.Body.Close())
 }

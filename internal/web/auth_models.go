@@ -3,10 +3,10 @@ package web
 import (
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/heurema/clavis/internal/auth"
-	"github.com/heurema/clavis/internal/web/ui/badge"
 )
 
 // These models are the backend/web ownership boundary. They contain only safe
@@ -17,7 +17,32 @@ type LoginModel struct {
 	RetryAfterSeconds int
 }
 
+// AdminPage names the administration page a request asked for. The shell needs
+// it to mark the current navigation entry and to pick the table to render, so
+// the three routes differ only by this value.
+type AdminPage string
+
+const (
+	PageUsers       AdminPage = "users"
+	PageConnections AdminPage = "connections"
+	PageGrants      AdminPage = "grants"
+)
+
+// pageHeading is the page title and its navigation label, kept in one place so
+// the heading, the sidebar entry and the document title cannot disagree.
+func pageHeading(page AdminPage) string {
+	switch page {
+	case PageConnections:
+		return "Connections"
+	case PageGrants:
+		return "Grants"
+	default:
+		return "Users"
+	}
+}
+
 type AdminModel struct {
+	Page                 AdminPage
 	User                 auth.User
 	Users                []auth.UserRecord
 	Truncated            bool
@@ -40,46 +65,62 @@ func createdLabel(value time.Time) string {
 	return value.UTC().Format(createdLayout)
 }
 
-func statusLabel(disabled bool) string {
+// initial is the decorative letter in the sidebar's identity row. It is hidden
+// from assistive technology, which reads the username beside it instead.
+func initial(username string) string {
+	if username == "" {
+		return ""
+	}
+	return strings.ToUpper(username[:1])
+}
+
+// listCount is what a sidebar entry shows. A truncated list is never presented
+// as a complete count, so the bound carries a trailing plus sign instead.
+func listCount(n int, truncated bool) string {
+	if truncated {
+		return strconv.Itoa(n) + "+"
+	}
+	return strconv.Itoa(n)
+}
+
+// statusKind selects the indicator colour only. Every status also renders the
+// word naming the state, so colour is reinforcement and never the signal.
+type statusKind string
+
+const (
+	statusOK  statusKind = "ok"
+	statusBad statusKind = "bad"
+	statusOff statusKind = "off"
+)
+
+func userStatus(disabled bool) (statusKind, string) {
 	if disabled {
-		return "Blocked"
+		return statusBad, "Blocked"
 	}
-	return "Enabled"
-}
-
-func statusVariant(disabled bool) badge.Variant {
-	if disabled {
-		return badge.VariantDestructive
-	}
-	return badge.VariantSecondary
-}
-
-func roleVariant(role auth.Role) badge.Variant {
-	if role == auth.Admin {
-		return badge.VariantDefault
-	}
-	return badge.VariantOutline
-}
-
-func truncationNotice() string {
-	return "Showing the first " + strconv.Itoa(auth.MaxUserListing) + " users; the list is limited."
+	return statusOK, "Active"
 }
 
 // The connection projection carries a target map; the table deliberately reads
 // only the identifying and operational fields, so no host, port, role or URL
 // can reach the page through display data.
-func connectionStatusLabel(enabled bool) string {
+func connectionStatus(enabled bool) (statusKind, string) {
 	if enabled {
-		return "Enabled"
+		return statusOK, "Enabled"
 	}
-	return "Disabled"
+	return statusOff, "Disabled"
 }
 
-func connectionStatusVariant(enabled bool) badge.Variant {
-	if enabled {
-		return badge.VariantSecondary
+// Only a reachable source is healthy. Every other outcome is a problem and is
+// named by the outcome itself rather than by an interpretation of it.
+func checkStatus(outcome auth.CheckOutcome) (statusKind, string) {
+	if outcome == auth.CheckReachable {
+		return statusOK, "Reachable"
 	}
-	return badge.VariantDestructive
+	return statusBad, string(outcome)
+}
+
+func truncationNotice() string {
+	return "Showing the first " + strconv.Itoa(auth.MaxUserListing) + " users; the list is limited."
 }
 
 // labelPairs renders a label set in a stable order so the same connection
@@ -93,17 +134,22 @@ func labelPairs(labels map[string]string) []string {
 	return pairs
 }
 
-func checkOutcomeVariant(outcome auth.CheckOutcome) badge.Variant {
-	if outcome == auth.CheckReachable {
-		return badge.VariantSecondary
-	}
-	return badge.VariantDestructive
-}
-
 func connectionsTruncationNotice() string {
 	return "Showing the first " + strconv.Itoa(auth.MaxConnectionListing) + " connections; the list is limited."
 }
 
 func grantsTruncationNotice() string {
 	return "Showing the first " + strconv.Itoa(auth.MaxGrantListing) + " grants; the list is limited."
+}
+
+// roleLabel names the two known roles for display; anything else renders as
+// its escaped raw value so an unexpected role is never hidden.
+func roleLabel(role auth.Role) string {
+	switch role {
+	case auth.Admin:
+		return "Admin"
+	case auth.Member:
+		return "Member"
+	}
+	return string(role)
 }

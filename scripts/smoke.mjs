@@ -361,6 +361,14 @@ try {
   assert.equal(rootRedirect.status, 303, "/ does not redirect")
   assert.equal(rootRedirect.headers.get("location"), "/admin/users")
   await rootRedirect.text()
+  // Signed out, the shell's own route sends the visitor on to sign-in.
+  const shellRedirect = await fetch(apiURL + "/admin/users", {
+    redirect: "manual",
+    signal: AbortSignal.timeout(2_000),
+  })
+  assert.equal(shellRedirect.status, 303, "/admin/users does not redirect")
+  assert.equal(shellRedirect.headers.get("location"), "/login")
+  await shellRedirect.text()
   // HTTP availability only: no rendering or client-side interaction is tested.
   for (const [path, contentType] of [
     ["/login", "text/html"],
@@ -1124,6 +1132,72 @@ try {
   summary.connectionGrants = "passed"
   console.log(
     "[smoke] Real CLI grants, member visibility, username references and revocation passed",
+  )
+
+  // The browser interface is exercised against the copied binary: one
+  // same-origin sign-in, the three administration pages fetched with the
+  // session cookie, and sign-out. Rendering and interaction stay out of scope.
+  const browserHeaders = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    Origin: apiURL,
+    "Sec-Fetch-Site": "same-origin",
+  }
+  const signIn = await fetch(apiURL + "/login", {
+    method: "POST",
+    headers: browserHeaders,
+    body: new URLSearchParams({
+      username: "smoke-admin",
+      password,
+    }).toString(),
+    redirect: "manual",
+    signal: AbortSignal.timeout(5_000),
+  })
+  assert.equal(signIn.status, 303, "browser sign-in did not redirect")
+  assert.equal(signIn.headers.get("location"), "/admin/users")
+  await signIn.text()
+  const issuedCookie = signIn.headers.get("set-cookie")
+  assert(issuedCookie, "browser sign-in issued no session cookie")
+  const sessionCookie = issuedCookie.split(";")[0]
+  for (const [path, heading] of [
+    ["/admin/users", "Users"],
+    ["/admin/connections", "Connections"],
+    ["/admin/grants", "Grants"],
+  ]) {
+    const response = await fetch(apiURL + path, {
+      headers: { Cookie: sessionCookie },
+      redirect: "error",
+      signal: AbortSignal.timeout(5_000),
+    })
+    assert.equal(response.status, 200, `${path} is unavailable`)
+    assert.equal(
+      response.headers.get("content-type")?.split(";")[0],
+      "text/html",
+    )
+    const page = await response.text()
+    assert(
+      page.includes(`<a href="${path}" aria-current="page"`),
+      `${path} does not mark itself current`,
+    )
+    assert(page.includes(`>${heading}</h1>`), `${path} has no heading`)
+    // No target host, URL or secret is display data on any of the pages.
+    for (const forbidden of ["sentinel", "postgres://", "127.0.0.1"])
+      assert(!page.includes(forbidden), `${path} rendered ${forbidden}`)
+    for (const secret of secrets)
+      assert(!page.includes(secret), `${path} rendered a secret`)
+  }
+  const signOut = await fetch(apiURL + "/logout", {
+    method: "POST",
+    headers: { ...browserHeaders, Cookie: sessionCookie },
+    body: "",
+    redirect: "manual",
+    signal: AbortSignal.timeout(5_000),
+  })
+  assert.equal(signOut.status, 303, "browser sign-out did not redirect")
+  assert.equal(signOut.headers.get("location"), "/login")
+  await signOut.text()
+  summary.browserAdministration = "passed"
+  console.log(
+    "[smoke] Browser sign-in, the three administration pages and sign-out passed",
   )
 
   // Queries run through the product CLI against the smoke database itself:

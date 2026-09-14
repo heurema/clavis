@@ -53,7 +53,23 @@ func (a *authHTTP) mount(router chi.Router) {
 	})
 	router.With(a.operation).Post("/login", a.loginBrowser)
 	router.With(a.operation).Post("/logout", a.logoutBrowser)
-	router.With(a.operation).Get("/admin", a.adminBrowser)
+	// Old bookmarks keep working. The redirect is public: it reads neither the
+	// database nor the request's cookies, so it answers during an outage.
+	router.Get("/admin", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
+	})
+	// One loader serves the three pages: the page value is the only difference
+	// between them, because the sidebar's counts come from all three lists.
+	router.With(a.operation).Get("/admin/users", func(w http.ResponseWriter, r *http.Request) {
+		a.adminPage(w, r, web.PageUsers)
+	})
+	router.With(a.operation).Get("/admin/connections", func(w http.ResponseWriter, r *http.Request) {
+		a.adminPage(w, r, web.PageConnections)
+	})
+	router.With(a.operation).Get("/admin/grants", func(w http.ResponseWriter, r *http.Request) {
+		a.adminPage(w, r, web.PageGrants)
+	})
 	router.With(a.operation).Post(auth.LoginPath, a.loginJSON)
 	router.With(a.operation).Get(auth.WhoAmIPath, a.identityJSON)
 	router.With(a.operation).Post(auth.LogoutPath, a.logoutJSON)
@@ -160,10 +176,15 @@ func (a *authHTTP) bounded(budget time.Duration, extendWrite bool, next http.Han
 				} else {
 					a.logoutResult(buffer, r, auth.LogoutOutcome(true, failure))
 				}
-			case "/admin":
-				a.adminResult(buffer, r, auth.Session{}, auth.UserList{}, auth.ConnectionList{}, auth.GrantList{}, failure)
 			default:
-				jsonFailure(buffer, failure)
+				// Every administration page renders the same safe document as
+				// before, so the fallback follows the prefix rather than a list
+				// of routes that would drift from the router.
+				if strings.HasPrefix(r.URL.Path, "/admin/") {
+					a.adminResult(buffer, r, auth.Session{}, auth.UserList{}, auth.ConnectionList{}, auth.GrantList{}, pageFor(r.URL.Path), failure)
+				} else {
+					jsonFailure(buffer, failure)
+				}
 			}
 		}
 		// Early rejections may deliberately leave an untrusted body unread.
@@ -656,10 +677,13 @@ func (a *authHTTP) loginBrowser(w http.ResponseWriter, r *http.Request) {
 		a.loginFailure(w, r, values.Get("username"), err)
 		return
 	}
+	// The contract owns where a successful browser sign-in lands, so the handler
+	// reads it rather than repeating the location.
+	outcome := auth.LoginOutcome(nil)
 	a.cookie(w, response.Token, response.ExpiresAt, false)
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Location", "/admin/users")
-	w.WriteHeader(303)
+	w.Header().Set("Location", outcome.Location)
+	w.WriteHeader(outcome.Status)
 }
 
 func (a *authHTTP) logoutResult(w http.ResponseWriter, r *http.Request, outcome auth.BrowserOutcome) {
@@ -702,7 +726,21 @@ func (a *authHTTP) logoutBrowser(w http.ResponseWriter, r *http.Request) {
 	a.logoutResult(w, r, auth.LogoutOutcome(true, err))
 }
 
-func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, users auth.UserList, connections auth.ConnectionList, grants auth.GrantList, err error) {
+// pageFor maps an administration path to the page it renders. Only the three
+// routes above are mounted, so an unknown suffix never reaches it; the default
+// exists so the timeout fallback always has a page to render.
+func pageFor(path string) web.AdminPage {
+	switch path {
+	case "/admin/connections":
+		return web.PageConnections
+	case "/admin/grants":
+		return web.PageGrants
+	default:
+		return web.PageUsers
+	}
+}
+
+func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session auth.Session, users auth.UserList, connections auth.ConnectionList, grants auth.GrantList, page web.AdminPage, err error) {
 	outcome := auth.AdminOutcome(err)
 	if outcome.Location != "" {
 		w.Header().Set("Cache-Control", "no-store")
@@ -715,13 +753,17 @@ func (a *authHTTP) adminResult(w http.ResponseWriter, r *http.Request, session a
 		return
 	}
 	a.render(w, r, 200, a.views.Admin(web.AdminModel{
+		Page: page,
 		User: session.User, Users: users.Users, Truncated: users.Truncated,
 		Connections: connections.Connections, ConnectionsTruncated: connections.Truncated,
 		Grants: grants.Grants, GrantsTruncated: grants.Truncated,
 	}))
 }
 
-func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
+// adminPage loads every administration page: the shell shows the three bounded
+// counts, and a count is current data like the table itself, so all three lists
+// load and the first failure fails the page closed.
+func (a *authHTTP) adminPage(w http.ResponseWriter, r *http.Request, page web.AdminPage) {
 	token, err := a.token(r)
 	var session auth.Session
 	if err == nil {
@@ -756,7 +798,7 @@ func (a *authHTTP) adminBrowser(w http.ResponseWriter, r *http.Request) {
 			grants, err = a.grants.ListGrants(r.Context(), session, auth.GrantFilter{Limit: auth.MaxGrantListing})
 		}
 	}
-	a.adminResult(w, r, session, users, connections, grants, err)
+	a.adminResult(w, r, session, users, connections, grants, page, err)
 }
 
 func newAuthHTTP(origin string, service auth.Service, views AuthViews) (*authHTTP, error) {

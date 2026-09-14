@@ -6,6 +6,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,17 +127,21 @@ func connectionsPageBody(t *testing.T, response *http.Response) string {
 func TestConnectionsPageRendersTheConnectionsTable(t *testing.T) {
 	f := &backendFixture{}
 	fake := &connectionsPageFake{list: listedConnections}
-	response := adminPage(connectionsPageHandler(t, f, fake))
+	response := requestPage(connectionsPageHandler(t, f, fake), "/admin/connections")
 	require.Equal(t, 200, response.StatusCode)
 	body := connectionsPageBody(t, response)
 	for _, fragment := range []string{
-		">Connections<", "warehouse-primary", "Warehouse primary", "metrics-eu", "Metrics EU",
-		">postgresql<", ">victoriametrics<", ">env=prod<", ">Enabled<", ">Disabled<",
-		">reachable<", "2026-03-04 05:06 UTC", ">Unchecked<",
+		">Connections</h1>", "warehouse-primary", "Warehouse primary", "metrics-eu", "Metrics EU",
+		">postgresql<", ">victoriametrics<", ">env=prod<", "Enabled", "Disabled",
+		"Reachable", "2026-03-04 05:06 UTC", "Not checked",
 		"Showing the first 1000 connections; the list is limited.",
 	} {
 		require.Contains(t, body, fragment)
 	}
+	// The shell marks this page and counts all three lists beside it.
+	require.Contains(t, body, `<a href="/admin/connections" aria-current="page"`)
+	require.Equal(t, 1, strings.Count(body, `aria-current="page"`))
+	require.Len(t, sidebarCountsOf(body), 3)
 	require.Equal(t, 1, fake.calls)
 	require.Equal(t, "12345678-1234-4234-8234-123456789aaa", fake.session.ID)
 	require.Equal(t, fixtureIdentity.User, fake.session.User)
@@ -146,7 +152,7 @@ func TestConnectionsPageRendersTheConnectionsTable(t *testing.T) {
 func TestConnectionsPageMemberIsForbiddenWithoutListing(t *testing.T) {
 	f := &backendFixture{role: auth.Member}
 	fake := &connectionsPageFake{list: listedConnections}
-	response := adminPage(connectionsPageHandler(t, f, fake))
+	response := requestPage(connectionsPageHandler(t, f, fake), "/admin/connections")
 	require.Equal(t, 403, response.StatusCode)
 	body := connectionsPageBody(t, response)
 	require.NotContains(t, body, "warehouse-primary")
@@ -164,14 +170,14 @@ func TestConnectionsPageFailsClosedWhenTheListingFails(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := &backendFixture{}
-			response := adminPage(connectionsPageHandler(t, f, connections))
+			response := requestPage(connectionsPageHandler(t, f, connections), "/admin/connections")
 			require.Equal(t, 503, response.StatusCode)
 			body := connectionsPageBody(t, response)
 			require.Contains(t, body, "<!doctype html>")
 			require.NotContains(t, body, "SENTINEL")
 			require.NotContains(t, body, "warehouse-primary")
 			require.NotContains(t, body, "metrics-eu")
-			require.NotContains(t, body, ">Connections<")
+			require.NotContains(t, body, ">Connections</h1>")
 		})
 	}
 }
@@ -179,10 +185,23 @@ func TestConnectionsPageFailsClosedWhenTheListingFails(t *testing.T) {
 func TestConnectionsPageUnauthenticatedListingRedirects(t *testing.T) {
 	f := &backendFixture{}
 	fake := &connectionsPageFake{err: &auth.Error{Code: auth.Unauthenticated}}
-	response := adminPage(connectionsPageHandler(t, f, fake))
+	response := requestPage(connectionsPageHandler(t, f, fake), "/admin/connections")
 	require.Equal(t, 303, response.StatusCode)
 	require.Equal(t, "/login", response.Header.Get("Location"))
 	require.Empty(t, response.Header.Get("Set-Cookie"))
 	require.NoError(t, response.Body.Close())
 	require.Equal(t, 1, fake.calls)
+}
+
+// sidebarCountsOf reads the shell's bounded counts in document order, so a test
+// sees all three at once rather than one fragment at a time.
+var sidebarCountPattern = regexp.MustCompile(`<span class="ml-auto text-xs tabular-nums text-muted-foreground">([^<]*)</span>`)
+
+func sidebarCountsOf(body string) []string {
+	matches := sidebarCountPattern.FindAllStringSubmatch(body, -1)
+	counts := make([]string, 0, len(matches))
+	for _, match := range matches {
+		counts = append(counts, match[1])
+	}
+	return counts
 }

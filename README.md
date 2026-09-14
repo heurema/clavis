@@ -11,8 +11,9 @@ Currently, it provides automated initial administrator setup, local browser/CLI
 sign-in, revocable sessions, administrator-managed local users and registered
 data-source connections with encrypted credentials and connectivity checks, with
 external PostgreSQL. Goose manages embedded migrations and sqlc generates the pgx
-application queries. The embedded templ interface includes sign-in and a
-protected admin page with read-only user, connection and grant lists. There is
+application queries. The embedded templ interface includes sign-in and
+administration pages for users, connections and grants, each a read-only list
+inside one shell; `/admin` redirects to `/admin/users`. There is
 no separate frontend server. Queries run against PostgreSQL, VictoriaMetrics
 and VictoriaLogs connections, and the agent skill installs through the CLI;
 groups remain planned; an audit journal, Google/OIDC sign-in, self-service password change and
@@ -58,7 +59,8 @@ values take precedence. Stop the server with Ctrl-C. There is no file watcher:
 after editing Go or browser scripts/styles, stop and rerun `make dev`. After
 editing `.templ` files, run `make generate-web` before restarting; after editing
 application queries, migration schema inputs or `sqlc.yaml`, run `make generate-db`.
-Open `http://127.0.0.1:8080` to sign in.
+Open `http://127.0.0.1:8080` to sign in; signing in lands on the Users page, and
+the sidebar reaches Connections and Grants.
 The same server exposes JSON health endpoints at `/health/live` and
 `/health/ready`, independently of HTML rendering.
 
@@ -187,8 +189,8 @@ Missing or stale generated templates/queries fail the server build without
 rewriting them. Run the relevant explicit generation command after source edits.
 
 The public sign-in document and the assets remain available when PostgreSQL is
-unavailable; protected requests fail closed. `GET /` redirects into the
-administration interface without reading the database. Readiness is reported by
+unavailable; protected requests fail closed. `GET /` and `GET /admin` redirect
+into the administration pages without reading the database. Readiness is reported by
 `GET /health/ready` and `clavis doctor`, which require no sign-in but do not
 change your deployment's network exposure. Readiness requires a reachable
 database, supported schema and completed initialization, distinguishing
@@ -264,7 +266,7 @@ the local credential but returns failure because remote revocation is unconfirme
 
 ## User administration
 
-Administrators manage local users through the CLI; the browser admin page only
+Administrators manage local users through the CLI; the browser's Users page only
 lists them:
 
 ```sh
@@ -297,7 +299,7 @@ administrator password is replaced by another administrator.
 A connection is a registered external data source: a stable UUID, a unique
 mutable name, a provider (`postgresql`, `victoriametrics` or `victorialogs`), non-secret target
 settings, labels, resource bounds and one encrypted secret. Administrators manage
-them through the CLI; the browser admin page only lists them. The commands follow
+them through the CLI; the browser's Connections page only lists them. The commands follow
 the same conventions as `users` and are designed for agents: one verb vocabulary,
 `--connection <uuid-or-name>` everywhere, `--dry-run` on every mutation, machine
 readable errors with a `hint` naming the next step, and secrets that never appear
@@ -359,7 +361,7 @@ may run `grants list` and see only their own grants; every administrative
 attempt by a member is refused with `FORBIDDEN`. Revocation takes
 effect on the member's next request, and grants survive blocking and renames.
 Listing is bounded to 1,000 grants with an explicit `truncated` flag. The
-browser admin page lists grants read-only below the connections.
+browser's Grants page lists them read-only.
 
 ## Queries
 

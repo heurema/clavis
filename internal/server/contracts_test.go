@@ -53,8 +53,20 @@ func TestRealRoutesNeverExposeAuthenticationFixtures(t *testing.T) {
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		require.Equal(t, http.StatusNotFound, response.Code)
 	}
+	// /admin redirects into the shell; the shell's own routes send a visitor
+	// without a session on to sign-in.
+	for path, location := range map[string]string{
+		"/admin":       "/admin/users",
+		"/admin/users": "/login",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		require.Equal(t, http.StatusSeeOther, response.Code, path)
+		require.Equal(t, location, response.Header().Get("Location"), path)
+		require.Empty(t, response.Header().Get("Set-Cookie"))
+		require.NotContains(t, response.Body.String(), "fixture")
+	}
 	for path, status := range map[string]int{
-		"/admin":           http.StatusSeeOther,
 		"/api/auth/login":  http.StatusMethodNotAllowed,
 		"/api/auth/whoami": http.StatusUnauthorized,
 	} {
