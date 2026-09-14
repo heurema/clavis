@@ -57,22 +57,25 @@ func TestTypeHintListsEveryProvider(t *testing.T) {
 	}
 }
 
-func TestExecuteUnsupportedProvider(t *testing.T) {
-	implementation, ok := Lookup(auth.ProviderVictoriaMetrics)
-	require.True(t, ok)
-	// A provider without the execution capability is refused by a type
-	// assertion, so a query against one can never reach a source or spend a
-	// credential; the PostgreSQL provider carries the capability.
-	_, executes := implementation.(Executor)
-	require.False(t, executes)
-	postgres, ok := Lookup(auth.ProviderPostgreSQL)
-	require.True(t, ok)
-	_, executes = postgres.(Executor)
-	require.True(t, executes)
+func TestExecutorCapability(t *testing.T) {
+	// The capability is decided by a type assertion rather than by calling
+	// anything, so a provider without it can never reach a source or spend a
+	// credential. Both registered providers execute.
+	for _, name := range Types() {
+		implementation, ok := Lookup(name)
+		require.True(t, ok)
+		_, executes := implementation.(Executor)
+		require.True(t, executes, string(name))
+	}
+	// A provider that is not registered has no capability to assert on, which
+	// is what PROVIDER_UNSUPPORTED reports.
+	unknown, ok := Lookup(auth.ProviderType(sentinel))
+	require.False(t, ok)
+	require.Nil(t, unknown)
 }
 
 func TestExecuteFailuresAreDistinctAndSilent(t *testing.T) {
-	failures := []error{ErrTimeout, ErrUnreachable, ErrAuthRejected, ErrUnsupported}
+	failures := []error{ErrTimeout, ErrUnreachable, ErrAuthRejected, ErrUnsupported, ErrUnsupportedInput}
 	for index, failure := range failures {
 		require.NotEmpty(t, failure.Error())
 		requireNoSentinel(t, failure.Error())
@@ -84,7 +87,9 @@ func TestExecuteFailuresAreDistinctAndSilent(t *testing.T) {
 	}
 	// A source rejection carries the source's words in its failure block and
 	// never in its own text, which is what keeps them out of a log.
-	rejected := &SourceError{Failure: auth.SourceFailure{SQLState: "42601", Message: sentinel, Statement: 2}}
+	rejected := &SourceError{Failure: auth.SourceFailure{
+		SQLState: "42601", Message: sentinel, Statement: auth.StatementIndex(2),
+	}}
 	require.NotEmpty(t, rejected.Error())
 	requireNoSentinel(t, rejected.Error())
 	require.Equal(t, sentinel, rejected.Failure.Message)

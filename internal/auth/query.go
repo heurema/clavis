@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -26,14 +27,72 @@ const (
 	QueryEnvelopeAllowance = 64 << 10
 )
 
-// QueryRequest is one pass-through execution. The SQL is forwarded to the
-// source unchanged: the platform never parses, rewrites or restricts it, and
-// the source's own role is the only boundary. MaxRows is optional and may only
-// lower the connection's row cap.
+// MetricsGrace is what a metrics request may spend beyond the connection's
+// timeout before the platform cuts the HTTP exchange. The source is asked to
+// abort its own evaluation at the timeout, so the grace only covers writing
+// and reading the answer; a source that stops answering is cut here.
+const MetricsGrace = 5 * time.Second
+
+// maxLabelNameBytes bounds a label name. Prometheus documents no limit, so
+// this is the platform's: the name forms a path segment on the source.
+const maxLabelNameBytes = 256
+
+// MetricsBodyCeiling is the hard bound on a metrics response body. It is four
+// times the connection's byte cap, which counts only kept label and sample
+// text, plus one MiB for the timestamps, the JSON framing and the envelope
+// around them. A body beyond it fails the request: presenting a cut body as
+// data would present something the platform never validated.
+func MetricsBodyCeiling(maxBytes int) int {
+	if maxBytes <= 0 {
+		maxBytes = DefaultMaxBytes
+	}
+	return 4*maxBytes + 1<<20
+}
+
+// ValidLabelName is the Prometheus label name grammar. A label name is
+// validated, alone among the metrics inputs, because it forms a path segment
+// on the source: anything else could reach a path no administrator granted.
+func ValidLabelName(name string) bool {
+	if name == "" || len(name) > maxLabelNameBytes {
+		return false
+	}
+	for index := range len(name) {
+		c := name[index]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c == '_':
+		case index > 0 && c >= '0' && c <= '9':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// QueryRequest is one pass-through execution. Exactly one input is set: SQL
+// for a PostgreSQL connection, or for a VictoriaMetrics connection a PromQL
+// expression or one of the three discovery inputs. Every string is forwarded
+// to the source unchanged: the platform never parses, rewrites or restricts an
+// expression, a time, a step or a selector, and the source's own rules are the
+// only boundary. MaxRows is optional and may only lower the connection's row
+// cap, which is a sample cap for metrics.
 type QueryRequest struct {
 	Connection string `json:"connection"`
-	SQL        string `json:"sql"`
-	MaxRows    int    `json:"maxRows,omitempty"`
+	SQL        string `json:"sql,omitempty"`
+	PromQL     string `json:"promql,omitempty"`
+	// At pins an instant query; Start, End and Step make it a range query.
+	// They carry the source's own time and duration formats, unparsed.
+	At    string `json:"at,omitempty"`
+	Start string `json:"start,omitempty"`
+	End   string `json:"end,omitempty"`
+	Step  string `json:"step,omitempty"`
+	// The three discovery inputs, each reaching one read-only metadata
+	// endpoint on the source.
+	Labels      bool   `json:"labels,omitempty"`
+	LabelValues string `json:"labelValues,omitempty"`
+	Series      string `json:"series,omitempty"`
+	// Match is an optional selector narrowing a discovery request.
+	Match   string `json:"match,omitempty"`
+	MaxRows int    `json:"maxRows,omitempty"`
 }
 
 // QueryColumn names one column and the source's own type name for it.
@@ -55,28 +114,47 @@ type QueryResult struct {
 	Truncated bool          `json:"truncated"`
 }
 
-// QueryResponse is always a list, even for a single statement, so a caller
-// never has to branch on the shape of what it sent. Truncated is true when any
-// result dropped a row against the bounds.
+// QueryResponse carries the shape the connection's provider defines, named by
+// Provider so a caller branches on one field rather than on what it sent. For
+// PostgreSQL that is Results, always a list even for a single statement. For
+// VictoriaMetrics it is ResultType and Result, the source's own data in the
+// Prometheus format, with the source's warnings, infos and partial-answer flag
+// beside it. Truncated is the platform's own word about the bounds it applied;
+// IsPartial is the source's about its data, and the two are never folded into
+// one another.
 type QueryResponse struct {
-	Results    []QueryResult `json:"results"`
-	Truncated  bool          `json:"truncated"`
-	DurationMS int64         `json:"durationMs"`
+	Provider   ProviderType    `json:"provider"`
+	Results    []QueryResult   `json:"results,omitempty"`
+	ResultType string          `json:"resultType,omitempty"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	Warnings   []string        `json:"warnings,omitempty"`
+	Infos      []string        `json:"infos,omitempty"`
+	IsPartial  bool            `json:"isPartial,omitempty"`
+	Truncated  bool            `json:"truncated"`
+	DurationMS int64           `json:"durationMs"`
 }
 
 // SourceFailure is the source's own rejection, passed to the caller who wrote
-// the SQL and never logged: its message may quote values from that SQL.
-// Statement is the zero-based index of the failing statement in the submitted
-// string, so zero is meaningful and always rendered. Position is the source's
+// the input and never logged: its message may quote values from that input.
+// ErrorType is a metrics source's own classification of the failure, or the
+// platform's http_<status> when the source answered an error carrying none.
+// Statement is the zero-based index of the failing statement in a submitted
+// SQL string, so zero is meaningful and is rendered whenever it is set; it is
+// absent for a source that has no statements. Position is the source's
 // one-based character offset and is absent when the source reported none.
 type SourceFailure struct {
 	SQLState  string `json:"sqlstate,omitempty"`
+	ErrorType string `json:"errorType,omitempty"`
 	Message   string `json:"message,omitempty"`
 	Detail    string `json:"detail,omitempty"`
 	Hint      string `json:"hint,omitempty"`
 	Position  int    `json:"position,omitempty"`
-	Statement int    `json:"statement"`
+	Statement *int   `json:"statement,omitempty"`
 }
+
+// StatementIndex is how a caller sets SourceFailure.Statement, where zero is a
+// meaningful index rather than an absent one.
+func StatementIndex(index int) *int { return &index }
 
 // QueryExecutor is the one execution entry point. Implementations authorize
 // the caller before opening any credential and hold no platform transaction

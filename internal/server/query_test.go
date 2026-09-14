@@ -67,6 +67,17 @@ var queryResults = auth.QueryResponse{
 	Truncated: true, DurationMS: 17,
 }
 
+// metricsAnswer is the other documented document: the source's own result
+// under the provider that named it, with its warnings and its partial flag.
+var metricsAnswer = auth.QueryResponse{
+	Provider:   auth.ProviderVictoriaMetrics,
+	ResultType: "vector",
+	Result:     json.RawMessage(`[{"metric":{"__name__":"up","job":"api"},"value":[1700000000,"1"]}]`),
+	Warnings:   []string{"the range is long"},
+	IsPartial:  true,
+	DurationMS: 9,
+}
+
 func queryFixture(t *testing.T) (*backendFixture, http.Handler) {
 	t.Helper()
 	f := &backendFixture{}
@@ -129,6 +140,68 @@ func TestQueryRouteAcceptsTheLargestDocumentedStatement(t *testing.T) {
 	require.Equal(t, script, f.queryCalls[0].request.SQL)
 }
 
+// Every metrics input reaches the service exactly as it was submitted: the
+// route decodes the strings and the one boolean and judges nothing about the
+// times, the steps or the selectors, which are the source's to interpret.
+func TestQueryRouteSendsTheMetricsInputsUnchanged(t *testing.T) {
+	for name, request := range map[string]auth.QueryRequest{
+		"instant": {Connection: queryConnection, PromQL: "up", At: "2026-09-13T00:00:00Z"},
+		"range": {Connection: queryConnection, PromQL: "sum(rate(errors_total[5m])) by (job)",
+			Start: "-1h", End: "now", Step: "1m", MaxRows: 10},
+		"labels":       {Connection: queryConnection, Labels: true, Match: `{job="api"}`, Start: "-1h"},
+		"label values": {Connection: queryConnection, LabelValues: "__name__", End: "now"},
+		"series":       {Connection: queryConnection, Series: `{__name__=~"up"}`, Match: `{job="api"}`},
+		// A reversed range is the source's to clamp, not the route's to refuse.
+		"reversed range": {Connection: queryConnection, PromQL: "up", Start: "now", End: "-1h", Step: "1m"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, handler := queryFixture(t)
+			f.queryResponse = metricsAnswer
+			body, err := json.Marshal(request)
+			require.NoError(t, err)
+			response := requestAuth(handler, "POST", auth.QueryPath, string(body), queryHeaders())
+			require.Equal(t, 200, response.Code, response.Body.String())
+			require.Equal(t, []queryCall{{request: request, role: auth.Admin}}, f.queryCalls)
+		})
+	}
+}
+
+// The metrics document is served as the service built it: the provider names
+// the shape, the result is the source's own JSON and no results list appears.
+func TestQueryRouteServesTheMetricsDocument(t *testing.T) {
+	f, handler := queryFixture(t)
+	f.queryResponse = metricsAnswer
+	response := requestAuth(handler, "POST", auth.QueryPath,
+		`{"connection":"`+queryConnection+`","promql":"up"}`, queryHeaders())
+	require.Equal(t, 200, response.Code)
+	expected, err := json.Marshal(metricsAnswer)
+	require.NoError(t, err)
+	require.JSONEq(t, string(expected), response.Body.String())
+	require.Contains(t, response.Body.String(), `"provider":"victoriametrics"`)
+	require.Contains(t, response.Body.String(), `"resultType":"vector"`)
+	require.Contains(t, response.Body.String(), `"isPartial":true`)
+	require.NotContains(t, response.Body.String(), `"results"`)
+}
+
+// A metrics source classifies its own failure, and it has no statements: the
+// envelope carries the errorType and leaves the statement out altogether.
+func TestQueryRouteRendersAMetricsSourceFailure(t *testing.T) {
+	f, handler := queryFixture(t)
+	f.queryErr = &auth.Error{Code: auth.SourceError, Source: &auth.SourceFailure{
+		ErrorType: "bad_data", Message: `unsupported expression "up ~~"`}}
+	response := requestAuth(handler, "POST", auth.QueryPath,
+		`{"connection":"`+queryConnection+`","promql":"up ~~"}`, queryHeaders())
+	require.Equal(t, 422, response.Code)
+	var failure auth.ErrorResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failure))
+	require.Equal(t, "bad_data", failure.Source.ErrorType)
+	require.Equal(t, `unsupported expression "up ~~"`, failure.Source.Message)
+	require.Empty(t, failure.Source.SQLState)
+	require.Nil(t, failure.Source.Statement)
+	require.NotContains(t, response.Body.String(), "statement")
+	require.NotContains(t, response.Body.String(), "sqlstate")
+}
+
 // A response above the connection's byte cap plus the envelope allowance is
 // still the source's answer: the drain keeps the row that crosses the cap and
 // JSON escaping grows values, so the route serves what the service produced
@@ -172,7 +245,7 @@ func TestQueryRouteRendersTheSourceFailureInsideTheEnvelope(t *testing.T) {
 	f, handler := queryFixture(t)
 	f.queryErr = &auth.Error{Code: auth.SourceError, Hint: "Correct the statement and try again",
 		Source: &auth.SourceFailure{SQLState: "42601", Message: `syntax error at or near "selec"`,
-			Detail: "detail line", Hint: "source hint", Position: 1, Statement: 0}}
+			Detail: "detail line", Hint: "source hint", Position: 1, Statement: auth.StatementIndex(0)}}
 	response := requestAuth(handler, "POST", auth.QueryPath, validQueryBody, queryHeaders())
 	require.Equal(t, 422, response.Code)
 	var failure auth.ErrorResponse
@@ -186,7 +259,8 @@ func TestQueryRouteRendersTheSourceFailureInsideTheEnvelope(t *testing.T) {
 	require.Equal(t, "source hint", failure.Source.Hint)
 	require.Equal(t, 1, failure.Source.Position)
 	// Zero is meaningful: the whole string was rejected before anything ran.
-	require.Equal(t, 0, failure.Source.Statement)
+	require.NotNil(t, failure.Source.Statement)
+	require.Equal(t, 0, *failure.Source.Statement)
 	require.Contains(t, response.Body.String(), `"source":{`)
 	// A failure that carries no source block does not grow one.
 	f, handler = queryFixture(t)
@@ -241,6 +315,9 @@ func TestQueryBodiesAndQueriesAreStrict(t *testing.T) {
 	oversized, err := json.Marshal(auth.QueryRequest{Connection: queryConnection,
 		SQL: "select '" + strings.Repeat("x", auth.MaxSQLBytes) + "'"})
 	require.NoError(t, err)
+	oversizedExpression, err := json.Marshal(auth.QueryRequest{Connection: queryConnection,
+		PromQL: strings.Repeat("u", auth.MaxSQLBytes+1)})
+	require.NoError(t, err)
 	for _, tc := range []struct {
 		name, path, body, contentType, hint string
 	}{
@@ -260,9 +337,20 @@ func TestQueryBodiesAndQueriesAreStrict(t *testing.T) {
 		{"missing connection", auth.QueryPath, `{"sql":"select 1"}`, "application/json", hintQueryConnection},
 		{"uppercase connection", auth.QueryPath, `{"connection":"PAYMENTS","sql":"select 1"}`, "application/json", hintQueryConnection},
 		{"spaced connection", auth.QueryPath, `{"connection":"c name","sql":"select 1"}`, "application/json", hintQueryConnection},
-		{"missing sql", auth.QueryPath, `{"connection":"c-name"}`, "application/json", hintQuerySQL},
-		{"empty sql", auth.QueryPath, `{"connection":"c-name","sql":""}`, "application/json", hintQuerySQL},
-		{"oversized sql", auth.QueryPath, string(oversized), "application/json", hintQuerySQL},
+		{"no input", auth.QueryPath, `{"connection":"c-name"}`, "application/json", hintQueryInput},
+		{"empty sql", auth.QueryPath, `{"connection":"c-name","sql":""}`, "application/json", hintQueryInput},
+		{"oversized sql", auth.QueryPath, string(oversized), "application/json", hintQueryText},
+		{"two inputs", auth.QueryPath, `{"connection":"c-name","sql":"x","promql":"up"}`, "application/json", hintQueryInput},
+		{"two metrics inputs", auth.QueryPath, `{"connection":"c-name","labels":true,"series":"up"}`, "application/json", hintQueryInput},
+		{"labels false alone", auth.QueryPath, `{"connection":"c-name","labels":false}`, "application/json", hintQueryInput},
+		{"quoted labels", auth.QueryPath, `{"connection":"c-name","labels":"true"}`, "application/json", hintQueryBody},
+		{"numeric promql", auth.QueryPath, `{"connection":"c-name","promql":7}`, "application/json", hintQueryBody},
+		{"null step", auth.QueryPath, `{"connection":"c-name","promql":"up","step":null}`, "application/json", hintQueryBody},
+		{"unknown metrics field", auth.QueryPath, `{"connection":"c-name","promql":"up","window":"5m"}`, "application/json", hintQueryBody},
+		{"duplicate promql", auth.QueryPath, `{"connection":"c-name","promql":"up","promql":"down"}`, "application/json", hintQueryBody},
+		{"bad label name", auth.QueryPath, `{"connection":"c-name","labelValues":"9metric"}`, "application/json", hintQueryLabel},
+		{"pathy label name", auth.QueryPath, `{"connection":"c-name","labelValues":"../admin"}`, "application/json", hintQueryLabel},
+		{"oversized promql", auth.QueryPath, string(oversizedExpression), "application/json", hintQueryText},
 		{"zero max rows", auth.QueryPath, `{"connection":"c-name","sql":"select 1","maxRows":0}`, "application/json", hintQueryMaxRows},
 		{"negative max rows", auth.QueryPath, `{"connection":"c-name","sql":"select 1","maxRows":-1}`, "application/json", hintQueryMaxRows},
 		{"unknown parameter", auth.QueryPath + "?dryRun=true", validQueryBody, "application/json", ""},
@@ -429,5 +517,5 @@ func TestQueryBoundsAreTheDocumentedOnes(t *testing.T) {
 	require.Equal(t, 256<<10, auth.MaxSQLBytes)
 	require.Equal(t, 64<<10, auth.QueryEnvelopeAllowance)
 	require.Equal(t, 4096, queryBodyAllowance)
-	require.Contains(t, hintQuerySQL, strconv.Itoa(auth.MaxSQLBytes))
+	require.Contains(t, hintQueryText, strconv.Itoa(auth.MaxSQLBytes))
 }

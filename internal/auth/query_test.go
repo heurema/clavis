@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,7 @@ func TestQueryResponseShape(t *testing.T) {
 	empty := ""
 	value := "42"
 	response := auth.QueryResponse{
+		Provider: auth.ProviderPostgreSQL,
 		Results: []auth.QueryResult{{
 			Command: "SELECT",
 			Columns: []auth.QueryColumn{{Name: "n", Type: "numeric"}, {Name: "n", Type: "text"}},
@@ -39,7 +41,7 @@ func TestQueryResponseShape(t *testing.T) {
 	}
 	encoded, err := json.Marshal(response)
 	require.NoError(t, err)
-	require.JSONEq(t, `{"results":[
+	require.JSONEq(t, `{"provider":"postgresql","results":[
 		{"command":"SELECT","columns":[{"name":"n","type":"numeric"},{"name":"n","type":"text"}],
 		 "rows":[["42",null],[null,""]],"rowCount":2,"truncated":false},
 		{"command":"UPDATE","columns":[],"rows":[],"rowCount":3,"truncated":false}
@@ -48,15 +50,101 @@ func TestQueryResponseShape(t *testing.T) {
 	require.Contains(t, string(encoded), `"columns":[]`)
 
 	// One statement is still a list, so a caller never branches on the shape
-	// of what it sent, and a response with no statement at all is an empty one.
-	single, err := json.Marshal(auth.QueryResponse{Results: []auth.QueryResult{{
+	// of what it sent, and the metrics fields stay out of a SQL response.
+	single, err := json.Marshal(auth.QueryResponse{Provider: auth.ProviderPostgreSQL, Results: []auth.QueryResult{{
 		Command: "CREATE", Columns: []auth.QueryColumn{}, Rows: [][]*string{},
 	}}})
 	require.NoError(t, err)
 	require.Contains(t, string(single), `"results":[{`)
-	none, err := json.Marshal(auth.QueryResponse{Results: []auth.QueryResult{}})
+	for _, key := range []string{"resultType", "result", "warnings", "infos", "isPartial"} {
+		require.NotContains(t, string(single), `"`+key+`":`)
+	}
+	// The list belongs to the provider that answers it: a response carrying no
+	// statement at all carries no results key either.
+	none, err := json.Marshal(auth.QueryResponse{Provider: auth.ProviderPostgreSQL, Results: []auth.QueryResult{}})
 	require.NoError(t, err)
-	require.Contains(t, string(none), `"results":[]`)
+	require.JSONEq(t, `{"provider":"postgresql","truncated":false,"durationMs":0}`, string(none))
+}
+
+// The metrics shape is the source's own answer: result travels verbatim, so
+// what the caller reads is what the source rendered.
+func TestQueryMetricsResponseShape(t *testing.T) {
+	result := `[{"metric":{"__name__":"up","job":"api"},"value":[1435781451.781,"1"]}]`
+	encoded, err := json.Marshal(auth.QueryResponse{
+		Provider:   auth.ProviderVictoriaMetrics,
+		ResultType: "vector",
+		Result:     json.RawMessage(result),
+		Warnings:   []string{"the query was rewritten"},
+		Infos:      []string{"an info line"},
+		IsPartial:  true,
+		Truncated:  true,
+		DurationMS: 12,
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"provider":"victoriametrics","resultType":"vector","result":`+result+`,
+		"warnings":["the query was rewritten"],"infos":["an info line"],"isPartial":true,
+		"truncated":true,"durationMs":12}`, string(encoded))
+	// Verbatim, not merely equivalent: the bytes the provider kept are the
+	// bytes the caller reads, in the order the source wrote them.
+	require.Contains(t, string(encoded), result)
+	require.NotContains(t, string(encoded), `"results":`)
+
+	// A source that attached nothing leaves nothing behind: no empty warning
+	// list, no false partial flag, no results key from the other provider.
+	quiet, err := json.Marshal(auth.QueryResponse{
+		Provider: auth.ProviderVictoriaMetrics, ResultType: "labels", Result: json.RawMessage(`["up"]`),
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"provider":"victoriametrics","resultType":"labels","result":["up"],
+		"truncated":false,"durationMs":0}`, string(quiet))
+}
+
+func TestQueryMetricsRequestShape(t *testing.T) {
+	encoded, err := json.Marshal(auth.QueryRequest{
+		Connection: "payments-metrics", PromQL: "rate(errors_total[5m])",
+		Start: "-1h", End: "now", Step: "1m", MaxRows: 500,
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"connection":"payments-metrics","promql":"rate(errors_total[5m])",
+		"start":"-1h","end":"now","step":"1m","maxRows":500}`, string(encoded))
+
+	// Every input the caller did not set is absent, so the service reads one
+	// input rather than an empty string that looks like one.
+	discovery, err := json.Marshal(auth.QueryRequest{
+		Connection: "payments-metrics", Labels: true, Match: `{job="api"}`,
+	})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"connection":"payments-metrics","labels":true,"match":"{job=\"api\"}"}`, string(discovery))
+	values, err := json.Marshal(auth.QueryRequest{Connection: "c", LabelValues: "__name__"})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"connection":"c","labelValues":"__name__"}`, string(values))
+	series, err := json.Marshal(auth.QueryRequest{Connection: "c", Series: "up", At: "now"})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"connection":"c","series":"up","at":"now"}`, string(series))
+}
+
+// The bounds a metrics execution runs under are the platform's own numbers,
+// documented so a caller can predict the ceiling from the connection's cap.
+func TestQueryMetricsBounds(t *testing.T) {
+	require.Equal(t, 5*time.Second, auth.MetricsGrace)
+	require.Equal(t, 4*(1<<20)+1<<20, auth.MetricsBodyCeiling(1<<20))
+	require.Equal(t, 4*1024+1<<20, auth.MetricsBodyCeiling(1024))
+	// A missing cap is the documented default rather than a ceiling of one MiB
+	// that would refuse an ordinary answer.
+	require.Equal(t, auth.MetricsBodyCeiling(auth.DefaultMaxBytes), auth.MetricsBodyCeiling(0))
+	require.Equal(t, auth.MetricsBodyCeiling(auth.DefaultMaxBytes), auth.MetricsBodyCeiling(-1))
+}
+
+func TestValidLabelName(t *testing.T) {
+	for _, name := range []string{"a", "_", "up", "__name__", "job_1", "A_b9", strings.Repeat("a", 256)} {
+		require.True(t, auth.ValidLabelName(name), name)
+	}
+	for _, name := range []string{
+		"", "1up", "9", "-up", "up-down", "up.down", "up down", "up/values",
+		"../secret", "up\n", "naïve", "up{}", strings.Repeat("a", 257),
+	} {
+		require.False(t, auth.ValidLabelName(name), name)
+	}
 }
 
 func TestQueryRequestShape(t *testing.T) {
@@ -98,7 +186,7 @@ func TestQuerySourceFailureEnvelope(t *testing.T) {
 		Hint: "check the statement",
 		Source: &auth.SourceFailure{
 			SQLState: "42601", Message: `syntax error at or near "slect"`,
-			Detail: "detail text", Hint: "source hint", Position: 1, Statement: 1,
+			Detail: "detail text", Hint: "source hint", Position: 1, Statement: auth.StatementIndex(1),
 		},
 	}
 	status, response := auth.FailureFor(failure)
@@ -117,12 +205,39 @@ func TestQuerySourceFailureEnvelope(t *testing.T) {
 	require.Equal(t, response, decoded)
 
 	// A zero statement index is the first statement, not an absent one, so it
-	// is always rendered; the optional text and position are omitted instead.
-	_, minimal := auth.FailureFor(&auth.Error{Code: auth.SourceError, Source: &auth.SourceFailure{SQLState: "57014"}})
+	// is rendered whenever it is set; the optional text and position are
+	// omitted instead.
+	_, minimal := auth.FailureFor(&auth.Error{Code: auth.SourceError, Source: &auth.SourceFailure{
+		SQLState: "57014", Statement: auth.StatementIndex(0),
+	}})
 	encoded, err = json.Marshal(minimal)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"error":{"code":"SOURCE_ERROR","message":"The source rejected the SQL",
 		"source":{"sqlstate":"57014","statement":0}}}`, string(encoded))
+}
+
+// A source without statements carries its own classification instead: no
+// sqlstate, no statement index, and a client reads the block back as it is.
+func TestQuerySourceFailureWithoutStatement(t *testing.T) {
+	_, response := auth.FailureFor(&auth.Error{
+		Code: auth.SourceError,
+		Hint: "check the expression",
+		Source: &auth.SourceFailure{
+			ErrorType: "bad_data",
+			Message:   `unsupported operation "%" for ranges`,
+		},
+	})
+	encoded, err := json.Marshal(response)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"error":{"code":"SOURCE_ERROR","message":"The source rejected the SQL",
+		"hint":"check the expression","source":{"errorType":"bad_data",
+		"message":"unsupported operation \"%\" for ranges"}}}`, string(encoded))
+	require.NotContains(t, string(encoded), `"statement"`)
+	require.NotContains(t, string(encoded), `"sqlstate"`)
+	var decoded auth.ErrorResponse
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	require.Equal(t, response, decoded)
+	require.Nil(t, decoded.Source.Statement)
 }
 
 func TestQueryFailureWithoutSource(t *testing.T) {
@@ -144,7 +259,7 @@ func TestQueryFailureWithoutSource(t *testing.T) {
 
 func TestQueryErrorTextCarriesNoStatement(t *testing.T) {
 	failure := &auth.Error{Code: auth.SourceError, Source: &auth.SourceFailure{
-		SQLState: "42601", Message: "syntax error in " + sentinelSQL, Statement: 0,
+		SQLState: "42601", Message: "syntax error in " + sentinelSQL, Statement: auth.StatementIndex(0),
 	}}
 	// The error's own text is the allowlisted message: the source's words, and
 	// with them any fragment of the caller's statement, travel only in the

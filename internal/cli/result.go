@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -172,11 +173,25 @@ const nullMark = "∅"
 // missing result rather than a real one.
 const emptyStatementLabel = "(empty statement)"
 
-// renderQueryResponse prints one aligned table per row-producing result, the
-// command tag and affected count for the others, then the truncation notice
-// and the duration. The values are printed exactly as the source rendered
-// them; only NULL is marked, because nothing in the value itself could be.
+// renderQueryResponse prints the shape the provider named: for a SQL source
+// one aligned table per row-producing result and the command tag and affected
+// count for the others; for a metrics source the source's own samples. The
+// source's warnings come first and the platform's own notices last. The values
+// are printed exactly as the source rendered them; only NULL is marked,
+// because nothing in the value itself could be.
 func renderQueryResponse(w io.Writer, response auth.QueryResponse) error {
+	// The source's warnings come before the data they are about, so a reader
+	// knows what the answer is qualified by before reading it.
+	for _, warning := range response.Warnings {
+		if _, err := fmt.Fprintf(w, "Warning: %s\n", warning); err != nil {
+			return err
+		}
+	}
+	if response.Provider == auth.ProviderVictoriaMetrics {
+		if err := renderMetricsResult(w, response.ResultType, response.Result); err != nil {
+			return err
+		}
+	}
 	for _, result := range response.Results {
 		if err := renderQueryResult(w, result); err != nil {
 			return err
@@ -187,9 +202,124 @@ func renderQueryResponse(w io.Writer, response auth.QueryResponse) error {
 			return err
 		}
 	}
+	// The source's own word about its data, never folded into the platform's
+	// word about the bounds it applied.
+	if response.IsPartial {
+		if _, err := fmt.Fprint(w, "Partial: true\n"); err != nil {
+			return err
+		}
+	}
 	_, err := fmt.Fprintf(w, "Duration: %d ms\n", response.DurationMS)
 	return err
 }
+
+// renderMetricsResult prints the source's own answer: one line per vector
+// sample, a labelled block per matrix series, one line for a scalar or a
+// string and one item per line for discovery. The values are printed exactly
+// as the source rendered them; only the label sets are ordered, because a map
+// has no order of its own to print.
+func renderMetricsResult(w io.Writer, resultType string, result json.RawMessage) error {
+	switch resultType {
+	case "vector":
+		var series []metricsSeries
+		if err := json.Unmarshal(result, &series); err != nil {
+			return nil
+		}
+		for _, entry := range series {
+			if err := renderMetricsSample(w, labelSet(entry.Metric)+" ", entry.Value); err != nil {
+				return err
+			}
+		}
+	case "matrix":
+		var series []metricsSeries
+		if err := json.Unmarshal(result, &series); err != nil {
+			return nil
+		}
+		for _, entry := range series {
+			if _, err := fmt.Fprintln(w, labelSet(entry.Metric)); err != nil {
+				return err
+			}
+			for _, sample := range entry.Values {
+				if len(sample) != 2 {
+					continue
+				}
+				if _, err := fmt.Fprintf(w, "%s %s\n", rawText(sample[0]), rawText(sample[1])); err != nil {
+					return err
+				}
+			}
+		}
+	case "scalar", "string":
+		var sample []json.RawMessage
+		if err := json.Unmarshal(result, &sample); err != nil {
+			return nil
+		}
+		return renderMetricsSample(w, "", sample)
+	case "labels", "labelValues":
+		var names []string
+		if err := json.Unmarshal(result, &names); err != nil {
+			return nil
+		}
+		for _, name := range names {
+			if _, err := fmt.Fprintln(w, name); err != nil {
+				return err
+			}
+		}
+	default:
+		var sets []map[string]string
+		if err := json.Unmarshal(result, &sets); err != nil {
+			return nil
+		}
+		for _, set := range sets {
+			if _, err := fmt.Fprintln(w, labelSet(set)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// renderMetricsSample prints one sample as its value at its timestamp, which
+// is the order a reader wants it in: the value first, the time it belongs to
+// after it.
+func renderMetricsSample(w io.Writer, prefix string, sample []json.RawMessage) error {
+	if len(sample) != 2 {
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "%s%s @%s\n", prefix, rawText(sample[1]), rawText(sample[0]))
+	return err
+}
+
+// rawText renders one JSON value as the text it holds: a quoted string without
+// its quotes, anything else as it was encoded.
+func rawText(raw json.RawMessage) string {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	return string(raw)
+}
+
+// labelSet renders a label set the way the source's own query language writes
+// one: the metric name, then the remaining labels in name order. The order is
+// the platform's because a map has none, which is the one thing here that is
+// not the source's own rendering.
+func labelSet(labels map[string]string) string {
+	names := make([]string, 0, len(labels))
+	for name := range labels {
+		if name != metricNameLabel {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	pairs := make([]string, 0, len(names))
+	for _, name := range names {
+		pairs = append(pairs, name+"="+strconv.Quote(labels[name]))
+	}
+	return labels[metricNameLabel] + "{" + strings.Join(pairs, ",") + "}"
+}
+
+// metricNameLabel is the label a metric's own name travels in.
+const metricNameLabel = "__name__"
 
 func renderQueryResult(w io.Writer, result auth.QueryResult) error {
 	if len(result.Columns) == 0 {
@@ -260,9 +390,15 @@ func renderSourceFailure(w io.Writer, source *auth.SourceFailure) error {
 	if source == nil {
 		return nil
 	}
+	// The source's own classification leads the line: a SQLSTATE from a SQL
+	// source, an errorType from a metrics one, and neither from a source that
+	// reported only a message.
 	headline := source.Message
-	if source.SQLState != "" {
+	switch {
+	case source.SQLState != "":
 		headline = source.SQLState + " " + source.Message
+	case source.ErrorType != "":
+		headline = source.ErrorType + " " + source.Message
 	}
 	if _, err := fmt.Fprintf(w, "ERROR: %s\n", headline); err != nil {
 		return err
@@ -281,7 +417,11 @@ func renderSourceFailure(w io.Writer, source *auth.SourceFailure) error {
 		}
 	}
 	// Zero is meaningful: the whole string was rejected before anything ran.
-	_, err := fmt.Fprintf(w, "Statement: %d\n", source.Statement)
+	// A source without statements reports none, and the line is left out.
+	if source.Statement == nil {
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "Statement: %d\n", *source.Statement)
 	return err
 }
 

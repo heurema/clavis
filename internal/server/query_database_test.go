@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,10 +75,22 @@ func TestRealHTTPQueryRouteRoundTrip(t *testing.T) {
 		MaxRows: 50,
 	}))
 	require.Equal(t, 201, response.Code)
+	// The metrics half of the round trip: a fake source, reached over the wire
+	// under the connection's own bounds exactly as a real one would be.
+	source := newFakeMetrics(t)
 	response = send(admin, "POST", auth.ConnectionsPath, body(auth.CreateConnectionRequest{
 		Name: "metrics-eu", Provider: auth.ProviderVictoriaMetrics,
-		Target: map[string]string{"url": "http://127.0.0.1:8428", "auth": "none"}, Labels: map[string]string{},
+		Target: map[string]string{"url": source.url, "auth": "none"}, Labels: map[string]string{}, MaxRows: 2,
 	}))
+	require.Equal(t, 201, response.Code)
+	// A second metrics connection nobody grants the member, so an ungranted
+	// connection stays indistinguishable from an absent one.
+	response = send(admin, "POST", auth.ConnectionsPath, body(auth.CreateConnectionRequest{
+		Name: "metrics-us", Provider: auth.ProviderVictoriaMetrics,
+		Target: map[string]string{"url": source.url, "auth": "none"}, Labels: map[string]string{},
+	}))
+	require.Equal(t, 201, response.Code)
+	response = send(admin, "POST", auth.GrantsPath, body(auth.GrantRequest{User: "alice", Connection: "metrics-eu"}))
 	require.Equal(t, 201, response.Code)
 	response = send(admin, "POST", auth.GrantsPath, body(auth.GrantRequest{User: "alice", Connection: "ledger-primary"}))
 	require.Equal(t, 201, response.Code)
@@ -123,22 +137,72 @@ func TestRealHTTPQueryRouteRoundTrip(t *testing.T) {
 	require.Equal(t, auth.SourceError, failure.Error.Code)
 	require.NotNil(t, failure.Source)
 	require.Equal(t, "42P01", failure.Source.SQLState)
-	require.Equal(t, 1, failure.Source.Statement)
+	require.NotNil(t, failure.Source.Statement)
+	require.Equal(t, 1, *failure.Source.Statement)
 	require.Contains(t, failure.Source.Message, "missing_relation_sentinel")
 	response = query(member, auth.QueryRequest{Connection: "ledger-primary", SQL: "selec 1"})
 	require.Equal(t, 422, response.Code)
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failure))
 	require.Equal(t, "42601", failure.Source.SQLState)
-	require.Equal(t, 0, failure.Source.Statement)
+	require.NotNil(t, failure.Source.Statement)
+	require.Equal(t, 0, *failure.Source.Statement)
 	require.Positive(t, failure.Source.Position)
 
 	// Authorization and provider refusals never reach a source.
-	response = query(member, auth.QueryRequest{Connection: "metrics-eu", SQL: "select 1"})
+	response = query(member, auth.QueryRequest{Connection: "metrics-us", PromQL: "up"})
 	require.Equal(t, 404, response.Code)
 	require.Contains(t, response.Body.String(), auth.ConnectionNotFound)
 	response = query(admin, auth.QueryRequest{Connection: "metrics-eu", SQL: "select 1"})
 	require.Equal(t, 400, response.Code)
-	require.Contains(t, response.Body.String(), auth.ProviderUnsupported)
+	require.Contains(t, response.Body.String(), auth.InvalidArgument)
+	require.Contains(t, response.Body.String(), "victoriametrics")
+	response = query(admin, auth.QueryRequest{Connection: "ledger-primary", PromQL: "up"})
+	require.Equal(t, 400, response.Code)
+	require.Contains(t, response.Body.String(), auth.InvalidArgument)
+	require.Contains(t, response.Body.String(), "postgresql")
+
+	// A granted member's range query reaches the fake source as submitted and
+	// comes back as the source's own matrix, cut at the connection's cap.
+	source.reply(`{"status":"success","data":{"resultType":"matrix","result":[` +
+		`{"metric":{"job":"api"},"values":[[1,"1"],[2,"2"],[3,"3"]]}]}}`)
+	response = query(member, auth.QueryRequest{Connection: "metrics-eu", PromQL: "up", Start: "-1h", End: "now", Step: "1m"})
+	require.Equal(t, 200, response.Code, response.Body.String())
+	// A fresh value each time: a document decoded over another would inherit
+	// the members the new one leaves out, which is the very thing under test.
+	var metrics auth.QueryResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &metrics))
+	require.Equal(t, auth.ProviderVictoriaMetrics, metrics.Provider)
+	require.Equal(t, "matrix", metrics.ResultType)
+	require.JSONEq(t, `[{"metric":{"job":"api"},"values":[[1,"1"],[2,"2"]],"truncated":true}]`, string(metrics.Result))
+	require.True(t, metrics.Truncated)
+	require.Empty(t, metrics.Results)
+	call := source.last(t)
+	require.Equal(t, "/api/v1/query_range", call.path)
+	require.Equal(t, []string{"up"}, call.values["query"])
+	require.Equal(t, []string{"-1h"}, call.values["start"])
+	require.Equal(t, []string{"now"}, call.values["end"])
+	require.Equal(t, []string{"1m"}, call.values["step"])
+
+	// Discovery is the same request with a different endpoint, and the source's
+	// own rejection keeps its own classification with no statement index.
+	source.reply(`{"status":"success","data":["up","go_info"]}`)
+	response = query(member, auth.QueryRequest{Connection: "metrics-eu", LabelValues: "__name__", Match: `{job="api"}`})
+	require.Equal(t, 200, response.Code, response.Body.String())
+	metrics = auth.QueryResponse{}
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &metrics))
+	require.Equal(t, "labelValues", metrics.ResultType)
+	require.JSONEq(t, `["up","go_info"]`, string(metrics.Result))
+	require.Equal(t, "/api/v1/label/__name__/values", source.last(t).path)
+	source.reply(`{"status":"error","errorType":"bad_data","error":"unparsed data in metrics_sentinel"}`)
+	response = query(member, auth.QueryRequest{Connection: "metrics-eu", PromQL: "metrics_sentinel ~~"})
+	require.Equal(t, 422, response.Code)
+	var rejected auth.ErrorResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &rejected))
+	require.Equal(t, auth.SourceError, rejected.Error.Code)
+	require.Equal(t, "bad_data", rejected.Source.ErrorType)
+	require.Contains(t, rejected.Source.Message, "metrics_sentinel")
+	require.Nil(t, rejected.Source.Statement, "a metrics source has no statements")
+	require.Empty(t, rejected.Source.SQLState)
 	response = send(admin, "POST", strings.Replace(auth.ConnectionDisablePath, "{connectionID}", "ledger-primary", 1), "")
 	require.Equal(t, 200, response.Code)
 	response = query(member, auth.QueryRequest{Connection: "ledger-primary", SQL: "select 1"})
@@ -179,3 +243,50 @@ func TestRealHTTPQueryRouteRoundTrip(t *testing.T) {
 }
 
 func intPointer(value int) *int { return &value }
+
+// fakeMetrics is an external metrics source for the round trip: it records
+// every request as it arrived and answers whatever the test set, so the whole
+// path from the route through the service and the provider is exercised
+// without a container.
+type fakeMetrics struct {
+	url   string
+	mu    sync.Mutex
+	calls []metricsCall
+	body  string
+}
+
+type metricsCall struct {
+	path   string
+	values url.Values
+}
+
+func newFakeMetrics(t *testing.T) *fakeMetrics {
+	t.Helper()
+	source := &fakeMetrics{body: `{"status":"success","data":{"resultType":"vector","result":[]}}`}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		source.mu.Lock()
+		source.calls = append(source.calls, metricsCall{r.URL.Path, r.Form})
+		body := source.body
+		source.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(server.Close)
+	source.url = server.URL
+	return source
+}
+
+func (f *fakeMetrics) reply(body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.body = body
+}
+
+func (f *fakeMetrics) last(t *testing.T) metricsCall {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	require.NotEmpty(t, f.calls)
+	return f.calls[len(f.calls)-1]
+}

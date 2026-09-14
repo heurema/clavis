@@ -15,14 +15,28 @@ import (
 	urfave "github.com/urfave/cli/v3"
 )
 
-// sqlInputHint names the three channels a statement may arrive through. It
-// never repeats the statement itself, which is true of every message this
-// command produces.
-const sqlInputHint = "Supply the SQL through exactly one of: --sql <text>, --sql-stdin, " +
-	"or --sql-file <absolute path to a regular file>"
+// queryInputHint names every channel an input may arrive through: the three a
+// statement or an expression takes, and the three discovery flags. It never
+// repeats the input itself, which is true of every message this command
+// produces.
+const queryInputHint = "Supply exactly one input: --sql <text>, --sql-stdin, --sql-file <absolute path>, " +
+	"--promql <expr>, --promql-stdin, --promql-file <absolute path>, --labels, " +
+	"--label-values <name> or --series <selector>"
 
-// sqlBoundHint states the one local bound on a statement.
-var sqlBoundHint = "The SQL must be non-empty, valid UTF-8 and at most " + strconv.Itoa(auth.MaxSQLBytes) + " bytes"
+// queryTimeHint states which input each time flag belongs to. The source
+// parses the strings themselves; only their applicability is decided here.
+const queryTimeHint = "--at applies to --promql without --start, --step requires --start, " +
+	"--match applies to --labels, --label-values and --series, and --start and --end apply to " +
+	"the PromQL and discovery inputs only"
+
+// queryLabelHint states the one input the platform validates, because it forms
+// a path segment on the source.
+const queryLabelHint = "--label-values takes one Prometheus label name: a letter or underscore " +
+	"followed by letters, digits or underscores"
+
+// sqlBoundHint states the one local bound on a statement or an expression.
+var sqlBoundHint = "The SQL or expression must be non-empty, valid UTF-8 and at most " +
+	strconv.Itoa(auth.MaxSQLBytes) + " bytes"
 
 // maxRowsHint states what a caller may ask for. The connection's own cap is
 // the server's to apply; only a value no connection could honor is refused here.
@@ -41,12 +55,23 @@ var errSQLInput = errors.New("SQL input unavailable or invalid")
 // group. No flag carries a secret: the SQL is not one, and the credential is
 // the stored session.
 func queryCommand(makeCommand func(operation, usage string, extra ...urfave.Flag) *urfave.Command) *urfave.Command {
-	return makeCommand("query", "Execute SQL against a connection you may use",
+	return makeCommand("query", "Execute SQL or PromQL against a connection you may use",
 		&urfave.StringFlag{Name: "connection", Usage: "Target connection UUID or name"},
 		&urfave.StringFlag{Name: "sql", Usage: "The statement or script to execute"},
 		&urfave.BoolFlag{Name: "sql-stdin", Usage: "Read the bounded SQL from stdin, for example from a heredoc"},
 		&urfave.StringFlag{Name: "sql-file", Usage: "Absolute path of a regular file holding the SQL"},
-		&urfave.IntFlag{Name: "max-rows", Usage: "Keep at most this many rows, at or below the connection's cap"})
+		&urfave.StringFlag{Name: "promql", Usage: "The PromQL expression to evaluate"},
+		&urfave.BoolFlag{Name: "promql-stdin", Usage: "Read the bounded PromQL expression from stdin"},
+		&urfave.StringFlag{Name: "promql-file", Usage: "Absolute path of a regular file holding the expression"},
+		&urfave.BoolFlag{Name: "labels", Usage: "List the source's label names"},
+		&urfave.StringFlag{Name: "label-values", Usage: "List the values of one label, such as __name__"},
+		&urfave.StringFlag{Name: "series", Usage: "List the label sets matching a selector"},
+		&urfave.StringFlag{Name: "at", Usage: "Evaluation time of an instant query, in the source's own format"},
+		&urfave.StringFlag{Name: "start", Usage: "Range start, in the source's own format"},
+		&urfave.StringFlag{Name: "end", Usage: "Range end, in the source's own format"},
+		&urfave.StringFlag{Name: "step", Usage: "Range resolution, in the source's own format"},
+		&urfave.StringFlag{Name: "match", Usage: "Selector narrowing a discovery request"},
+		&urfave.IntFlag{Name: "max-rows", Usage: "Keep at most this many rows or samples, at or below the connection's cap"})
 }
 
 // validateQueryArguments refuses a malformed reference or bound before any SQL
@@ -61,40 +86,117 @@ func validateQueryArguments(command *urfave.Command) *Result {
 	return nil
 }
 
-// readSQL is the statement input path. Exactly one channel may be used, and
-// the statement is bounded before anything is sent, so an oversized script is
-// refused locally rather than by the route. Every rejection happens before any
-// cache or network access and none of them echoes the statement.
-func readSQL(ctx context.Context, command *urfave.Command, streams IO) (string, *Result) {
-	inline, stdin, file := command.IsSet("sql"), command.Bool("sql-stdin"), command.String("sql-file")
+// textChannels is one text input's three channels. The SQL and the PromQL
+// inputs take exactly the same three, so they share this shape and the reading
+// below; the discovery inputs are flags and take none.
+type textChannels struct {
+	inline, stdin bool
+	text, file    string
+}
+
+func channelsFor(command *urfave.Command, name string) textChannels {
+	return textChannels{
+		inline: command.IsSet(name), stdin: command.Bool(name + "-stdin"),
+		text: command.String(name), file: command.String(name + "-file"),
+	}
+}
+
+// used counts the channels of one input, so two of them are a rejection rather
+// than a silent preference.
+func (c textChannels) used() int {
 	given := 0
-	for _, used := range []bool{inline, stdin, file != ""} {
-		if used {
+	for _, set := range []bool{c.inline, c.stdin, c.file != ""} {
+		if set {
+			given++
+		}
+	}
+	return given
+}
+
+// readSQL is the query input path. Exactly one input may be given, its time
+// flags must belong to it, and the text it carries is bounded before anything
+// is sent, so an input the route would refuse is refused locally instead. It
+// returns the text of whichever text channel was used and the empty string for
+// a discovery input, which carries none. Every rejection happens before any
+// cache or network access and none of them echoes the input.
+func readSQL(ctx context.Context, command *urfave.Command, streams IO) (string, *Result) {
+	sql, promql := channelsFor(command, "sql"), channelsFor(command, "promql")
+	labelValues, series := command.String("label-values"), command.String("series")
+	given := sql.used() + promql.used()
+	for _, set := range []bool{command.Bool("labels"), labelValues != "", series != ""} {
+		if set {
 			given++
 		}
 	}
 	if given != 1 {
-		return "", argumentFailure("Provide exactly one SQL input", sqlInputHint)
+		return "", argumentFailure("Provide exactly one query input", queryInputHint)
 	}
+	if failed := validateQueryTimes(command, promql.used() == 1); failed != nil {
+		return "", failed
+	}
+	if labelValues != "" && !auth.ValidLabelName(labelValues) {
+		return "", argumentFailure("Provide one Prometheus label name", queryLabelHint)
+	}
+	// Selectors travel as request members rather than as the text input, but
+	// they are bounded by the same rule, and locally, so an oversized one is
+	// refused before any request like an oversized expression.
+	for _, selector := range []string{series, command.String("match")} {
+		if selector != "" && (len(selector) > auth.MaxSQLBytes || !utf8.ValidString(selector)) {
+			return "", argumentFailure("Provide a selector within the documented bound", sqlBoundHint)
+		}
+	}
+	if sql.used()+promql.used() == 0 {
+		return "", nil
+	}
+	channels := sql
+	if promql.used() == 1 {
+		channels = promql
+	}
+	return readTextInput(ctx, channels, streams)
+}
+
+// validateQueryTimes refuses a time flag the chosen input does not take. The
+// strings themselves are never parsed: their format is the source's business,
+// and only the platform's own rule about which input takes which flag is
+// decided here.
+func validateQueryTimes(command *urfave.Command, expression bool) *Result {
+	at, start, end := command.String("at"), command.String("start"), command.String("end")
+	step, match := command.String("step"), command.String("match")
+	discovery := command.Bool("labels") || command.String("label-values") != "" || command.String("series") != ""
+	switch {
+	case at != "" && (!expression || start != ""),
+		step != "" && (!expression || start == ""),
+		match != "" && !discovery,
+		end != "" && !discovery && (!expression || start == ""),
+		start != "" && !expression && !discovery:
+		return argumentFailure("Provide time flags the input takes", queryTimeHint)
+	}
+	return nil
+}
+
+// readTextInput reads one text input from the channel that was used and bounds
+// it, so an oversized script or expression is refused locally rather than by
+// the route.
+func readTextInput(ctx context.Context, channels textChannels, streams IO) (string, *Result) {
 	var value []byte
 	var err error
 	switch {
-	case inline:
-		value = []byte(command.String("sql"))
-	case stdin:
+	case channels.inline:
+		value = []byte(channels.text)
+	case channels.stdin:
 		value, err = sqlFromStdin(ctx, streams.Stdin)
 	default:
-		value, err = sqlFromFile(file)
+		value, err = sqlFromFile(channels.file)
 	}
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		r := failure("TIMEOUT", "SQL input was canceled", nil)
+		r := failure("TIMEOUT", "Query input was canceled", nil)
 		return "", &r
 	}
 	if err != nil {
-		return "", argumentFailure("Provide readable SQL from one input", sqlInputHint)
+		return "", argumentFailure("Provide a readable input from one channel", queryInputHint)
 	}
 	if len(value) == 0 || len(value) > auth.MaxSQLBytes || !utf8.Valid(value) {
-		return "", argumentFailure("Provide SQL within the documented bound", sqlBoundHint)
+		return "", argumentFailure("Provide SQL or an expression within the documented bound", sqlBoundHint)
 	}
 	return string(value), nil
 }
@@ -157,11 +259,28 @@ func sqlFromFile(path string) ([]byte, error) {
 	return body, nil
 }
 
-// runQuery sends exactly one request. The reference, the bound and the
-// statement were validated before the cached session was read; the server
-// authorizes the caller and the source judges the SQL.
-func runQuery(ctx context.Context, command *urfave.Command, api authTransport, token auth.Secret, sql string) Result {
-	input := auth.QueryRequest{Connection: command.String("connection"), SQL: sql}
+// runQuery sends exactly one request carrying the one input that was given.
+// The reference, the bound and the input were validated before the cached
+// session was read; the server authorizes the caller, decides whether the
+// input fits the connection's provider and the source judges the input itself.
+func runQuery(ctx context.Context, command *urfave.Command, api authTransport, token auth.Secret, text string) Result {
+	input := auth.QueryRequest{Connection: command.String("connection"),
+		At: command.String("at"), Start: command.String("start"), End: command.String("end"),
+		Step: command.String("step"), Match: command.String("match")}
+	// The body carries the one input that was given and nothing else: an
+	// absent field is an absent parameter on the source.
+	switch {
+	case channelsFor(command, "promql").used() == 1:
+		input.PromQL = text
+	case command.Bool("labels"):
+		input.Labels = true
+	case command.String("label-values") != "":
+		input.LabelValues = command.String("label-values")
+	case command.String("series") != "":
+		input.Series = command.String("series")
+	default:
+		input.SQL = text
+	}
 	if command.IsSet("max-rows") {
 		input.MaxRows = command.Int("max-rows")
 	}
@@ -175,7 +294,11 @@ func runQuery(ctx context.Context, command *urfave.Command, api authTransport, t
 
 // listedResults keeps the documented list shape in the rendered envelope even
 // when a server omitted an empty one, so a caller never has to branch on null.
+// A metrics answer has no results list at all and is rendered as it arrived.
 func listedResults(response auth.QueryResponse) auth.QueryResponse {
+	if response.Provider != auth.ProviderPostgreSQL {
+		return response
+	}
 	if response.Results == nil {
 		response.Results = []auth.QueryResult{}
 	}
