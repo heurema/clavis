@@ -21,6 +21,9 @@
   --color-border: var(--border);
   --color-input: var(--border);
   --color-ring: var(--ring);
+  --color-status-ok: var(--status-ok);
+  --color-status-bad: var(--status-bad);
+  --color-status-off: var(--status-off);
 }
 
 :root {
@@ -35,6 +38,9 @@
   --destructive: #b91c1c;
   --border: #cbd5e1;
   --ring: #2563eb;
+  --status-ok: #16a34a;
+  --status-bad: #dc2626;
+  --status-off: #cbd5e1;
 }
 
 .dark {
@@ -49,30 +55,9 @@
   --destructive: #fca5a5;
   --border: #475569;
   --ring: #93c5fd;
-}
-
-.status-success {
-  border-color: #86efac;
-  background: #f0fdf4;
-  color: #166534;
-}
-
-.status-warning {
-  border-color: #fcd34d;
-  background: #fffbeb;
-  color: #92400e;
-}
-
-.dark .status-success {
-  border-color: #166534;
-  background: #052e16;
-  color: #86efac;
-}
-
-.dark .status-warning {
-  border-color: #92400e;
-  background: #451a03;
-  color: #fcd34d;
+  --status-ok: #4ade80;
+  --status-bad: #f87171;
+  --status-off: #475569;
 }
 
 @layer base {

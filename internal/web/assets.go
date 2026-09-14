@@ -15,7 +15,7 @@ import (
 // These files are prepared by make build-web-assets. An explicit embed list
 // makes every file required and prevents extra staging files from being exposed.
 //
-//go:embed assets/app.css assets/htmx.min.js assets/notices.txt assets/appearance.js assets/readiness.js
+//go:embed assets/app.css assets/appearance.js assets/notices.txt
 var publicAssets embed.FS
 
 func ServeAsset(w http.ResponseWriter, r *http.Request) {

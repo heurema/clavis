@@ -136,21 +136,21 @@ async function checkCopiedServer(directory) {
       }
     }
     assert.ok(running, `Copied server did not start: ${output}`)
-    for (const [path, status, type, text] of [
-      ["/", 200, "text/html", "Environment setup"],
-      ["/assets/app.css", 200, "text/css", ".sr-only"],
+    for (const [path, status, type, text, location] of [
+      ["/", 303, "text/html", "/admin/users", "/admin/users"],
+      ["/assets/app.css", 200, "text/css", ".bg-card{"],
       ["/assets/appearance.js", 200, "text/javascript", "clavis.appearance"],
-      ["/assets/readiness.js", 200, "text/javascript", "htmx:before:response"],
-      ["/assets/htmx.min.js", 200, "text/javascript", "htmx"],
       ["/assets/notices.txt", 200, "text/plain", "Cole Bemis"],
-      ["/ui/readiness", 503, "text/html", "Database unavailable"],
+      ["/ui/readiness", 404, "text/plain", "404 page not found"],
       ["/health/ready", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
     ]) {
       const response = await fetch(`${origin}${path}`, {
+        redirect: "manual",
         signal: AbortSignal.timeout(2_000),
       })
       assert.equal(response.status, status, path)
       assert.ok(response.headers.get("content-type").startsWith(type), path)
+      if (location) assert.equal(response.headers.get("location"), location)
       const body = await response.text()
       assert.ok(body.includes(text), path)
       assert.ok(!body.includes("sentinel-private"), path)
@@ -254,10 +254,12 @@ async function checkDevelopment(directory, target, signal) {
     assert.ok(running, `make ${target} did not start: ${output}`)
     pids = descendants(child.pid)
     for (const [path, status, type, text] of [
-      ["/", 200, "text/html", "Environment setup"],
+      ["/", 303, "text/html", "/admin/users"],
+      ["/login", 200, "text/html", "Sign in"],
       ["/health/ready", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
     ]) {
       const response = await fetch(`${origin}${path}`, {
+        redirect: "manual",
         signal: AbortSignal.timeout(2_000),
       })
       assert.equal(response.status, status)
@@ -299,7 +301,7 @@ async function checkDevelopment(directory, target, signal) {
 test("server builds from clean assets and runs as a copied executable", async (t) => {
   const directory = fixture(t)
   assert.equal(existsSync(join(directory, "internal/web/assets")), false)
-  const generated = join(directory, "internal/web/page_templ.go")
+  const generated = join(directory, "internal/web/auth_templ.go")
   const before = digest(generated)
   execute(directory, "make", ["build-server"])
   assert.equal(digest(generated), before)
@@ -341,12 +343,12 @@ test("server builds from clean assets and runs as a copied executable", async (t
       "internal/database/sqlc/db.go",
       `${readFileSync(join(directory, "internal/database/sqlc/db.go"), "utf8")}\n// stale\n`,
     ],
-    ["missing generated source", "internal/web/page_templ.go", null],
+    ["missing generated source", "internal/web/auth_templ.go", null],
     [
       "stale generated source",
-      "internal/web/page.templ",
-      readFileSync(join(directory, "internal/web/page.templ"), "utf8").replace(
-        "Environment setup",
+      "internal/web/auth.templ",
+      readFileSync(join(directory, "internal/web/auth.templ"), "utf8").replace(
+        "Dark appearance",
         "Changed without generation.",
       ),
     ],

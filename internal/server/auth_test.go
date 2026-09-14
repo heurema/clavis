@@ -154,7 +154,7 @@ func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
 				{"POST", auth.LogoutPath, "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}, 503, code, 1},
 				{"POST", "/api/admin/users/not-a-user/sessions/revoke", "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}, 503, code, 1},
 				{"POST", "/login", "username=personal-admin&password=valid+test+password", http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}, 503, code, 1},
-				{"GET", "/admin", "", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 503, code, 1},
+				{"GET", "/admin/users", "", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 503, code, 1},
 				{"POST", "/logout", "", http.Header{"Origin": {"http://127.0.0.1"}, "Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 503, auth.ServiceUnavailable, 1},
 				{"POST", auth.LoginPath, "{}", http.Header{"Origin": {"https://attacker.invalid"}, "Content-Type": {"application/json"}}, 403, auth.Forbidden, 0},
 				{"POST", auth.LoginPath, "{}", http.Header{"Content-Type": {"application/json"}}, 400, auth.InvalidArgument, 0},
@@ -244,7 +244,7 @@ func TestNilServiceFixturesFailClosed(t *testing.T) {
 		{"POST", auth.LogoutPath, "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}},
 		{"POST", "/api/admin/users/" + fixtureIdentity.User.ID + "/sessions/revoke", "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}},
 		{"POST", "/login", "username=personal-admin&password=valid+test+password", http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}},
-		{"GET", "/admin", "", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}},
+		{"GET", "/admin/users", "", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}},
 		{"POST", "/logout", "", http.Header{"Origin": {"http://127.0.0.1"}, "Cookie": {developmentCookie + "=" + string(fixtureToken)}}},
 	} {
 		response := requestAuth(handler, tc.method, tc.path, tc.body, tc.headers)
@@ -375,7 +375,7 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 		body := url.Values{"username": {"personal-admin"}, "password": {"SENTINEL_PRIVATE_PASSWORD"}}.Encode()
 		response := requestAuth(handler, "POST", "/login", body, http.Header{"Origin": {origin}, "Content-Type": {"application/x-www-form-urlencoded"}})
 		require.Equal(t, 303, response.Code)
-		require.Equal(t, "/admin", response.Header().Get("Location"))
+		require.Equal(t, "/admin/users", response.Header().Get("Location"))
 		require.NotContains(t, response.Body.String(), string(fixtureToken))
 		require.Equal(t, auth.Browser, f.lastInput.Kind)
 		cookies := response.Result().Cookies()
@@ -423,7 +423,7 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 		}{{auth.Admin, nil, 200}, {auth.Member, nil, 403}, {"", &auth.Error{Code: auth.Unauthenticated}, 303}, {"", errors.New("SENTINEL"), 503}} {
 			f.role = tc.role
 			f.errorAuth = tc.err
-			response := requestAuth(handler, "GET", "/admin", "", http.Header{"Cookie": {cookie.Name + "=" + cookie.Value}})
+			response := requestAuth(handler, "GET", "/admin/users", "", http.Header{"Cookie": {cookie.Name + "=" + cookie.Value}})
 			require.Equal(t, tc.status, response.Code)
 			require.Empty(t, response.Header().Get("Set-Cookie"))
 		}
@@ -434,10 +434,16 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 	})
 	f := &backendFixture{}
 	handler := authHandler(t, f, checker, "http://127.0.0.1")
-	for _, path := range []string{"/", "/login", "/assets/appearance.js", "/health/live"} {
+	// The root redirect is local-only as well: it answers without the database.
+	for path, status := range map[string]int{
+		"/": 303, "/login": 200, "/assets/appearance.js": 200, "/health/live": 200,
+	} {
 		for _, cookie := range []string{"", developmentCookie + "=malformed", developmentCookie + "=" + string(fixtureToken)} {
 			response := requestAuth(handler, "GET", path, "", http.Header{"Cookie": {cookie}})
-			require.Equal(t, 200, response.Code)
+			require.Equal(t, status, response.Code, path)
+			if status == 303 {
+				require.Equal(t, "/admin/users", response.Header().Get("Location"))
+			}
 		}
 	}
 	for _, cookie := range []string{"", developmentCookie + "=malformed"} {
@@ -464,6 +470,25 @@ func TestLogoutDeadlineReturnsSafeFailure(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	require.Equal(t, 503, response.Code)
 	require.Less(t, time.Since(start), time.Second)
+}
+
+// The timeout fallback follows the administration prefix, so every page answers
+// with the same safe document instead of a JSON body meant for the API.
+func TestAdminPageDeadlineReturnsTheSafeDocument(t *testing.T) {
+	for _, path := range []string{"/admin/users", "/admin/connections", "/admin/grants"} {
+		f := &backendFixture{block: func(ctx context.Context) { <-ctx.Done() }}
+		handler := authHandler(t, f, nil, "http://127.0.0.1")
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		request := httptest.NewRequest("GET", path, nil).WithContext(ctx)
+		request.Header.Set("Cookie", developmentCookie+"="+string(fixtureToken))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		cancel()
+		require.Equal(t, 503, response.Code, path)
+		require.Contains(t, response.Body.String(), "<!doctype html>", path)
+		require.Contains(t, response.Body.String(), auth.ServiceUnavailable, path)
+		require.Empty(t, response.Header().Get("Set-Cookie"), path)
+	}
 }
 
 func TestRealSocketBodyDeadlineReturnsSafeJSON(t *testing.T) {

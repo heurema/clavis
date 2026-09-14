@@ -116,7 +116,7 @@ The server SHALL start public HTTP diagnostics and documents independently of in
 
 #### Scenario: Start while PostgreSQL is unavailable
 - **WHEN** valid server configuration is supplied but the database cannot be reached
-- **THEN** liveness, setup/login documents and embedded assets remain available
+- **THEN** liveness, the root redirect, the sign-in document and embedded assets remain available
 - **AND** readiness and authentication report safe unavailability
 
 #### Scenario: Database and mounted secret recover

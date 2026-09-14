@@ -1,10 +1,4 @@
-# embedded-web Specification
-
-## Purpose
-
-Let an operator run the Clavis API and usable web interface from one server executable, with complete browser assets and predictable behavior independent of the source checkout.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Self-contained server distribution
 
@@ -57,18 +51,8 @@ JSON health routes SHALL retain their paths, success/database-failure bodies and
 - **WHEN** a JSON authentication endpoint receives browser/partial-request headers without a valid CLI bearer credential
 - **THEN** it returns a safe documented JSON failure without a login redirect or HTML response
 
-### Requirement: Reproducible generated assets
+## REMOVED Requirements
 
-The documented server build SHALL generate or verify its templates and browser assets from pinned inputs before packaging the executable. Missing inputs, failed generation or inconsistent generated files SHALL cause a failed build or check instead of a successful executable containing stale assets. Routine setup and builds SHALL NOT fetch an unpinned component release. Required attribution notices SHALL travel with the embedded distribution.
-
-#### Scenario: Build from a clean checkout
-- **WHEN** a contributor follows the documented setup and server build commands from a clean checkout
-- **THEN** required generation runs in dependency order and produces a server executable containing matching code and browser assets
-
-#### Scenario: Asset generation fails
-- **WHEN** a required template or stylesheet fails to generate
-- **THEN** the build exits unsuccessfully and does not present an older executable as the successful result of that build
-
-#### Scenario: Check generated source consistency
-- **WHEN** a maintained template changes without its checked-in generated source being updated
-- **THEN** the consistency check fails without silently rewriting maintained or checked-in generated source
+### Requirement: Interactive controls survive partial updates
+**Reason**: The readiness widget was the only partial page update. With the status page removed (owner decision 2026-09-14), no document replaces part of itself, and htmx is no longer shipped.
+**Migration**: None for operators. Readiness is checked through `GET /health/ready` and `clavis doctor`.

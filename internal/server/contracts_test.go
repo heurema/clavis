@@ -23,12 +23,17 @@ func TestInjectedReadinessIsBoundedAndPublicDocumentsBypassIt(t *testing.T) {
 		return platform.Readiness{State: platform.SetupRequired}
 	})
 	handler := HandlerWithReadiness(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)))
-	for _, path := range []string{"/", "/health/live", "/assets/appearance.js"} {
+	// The root redirect is public too: it never reaches the checker.
+	for path, status := range map[string]int{
+		"/":                     http.StatusSeeOther,
+		"/health/live":          http.StatusOK,
+		"/assets/appearance.js": http.StatusOK,
+	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("Cookie", "clavis.session=malformed")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		require.Equal(t, http.StatusOK, response.Code, path)
+		require.Equal(t, status, response.Code, path)
 	}
 	require.Zero(t, calls)
 	response := httptest.NewRecorder()
@@ -48,8 +53,20 @@ func TestRealRoutesNeverExposeAuthenticationFixtures(t *testing.T) {
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 		require.Equal(t, http.StatusNotFound, response.Code)
 	}
+	// /admin redirects into the shell; the shell's own routes send a visitor
+	// without a session on to sign-in.
+	for path, location := range map[string]string{
+		"/admin":       "/admin/users",
+		"/admin/users": "/login",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		require.Equal(t, http.StatusSeeOther, response.Code, path)
+		require.Equal(t, location, response.Header().Get("Location"), path)
+		require.Empty(t, response.Header().Get("Set-Cookie"))
+		require.NotContains(t, response.Body.String(), "fixture")
+	}
 	for path, status := range map[string]int{
-		"/admin":           http.StatusSeeOther,
 		"/api/auth/login":  http.StatusMethodNotAllowed,
 		"/api/auth/whoami": http.StatusUnauthorized,
 	} {

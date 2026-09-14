@@ -195,7 +195,7 @@ func TestNormalServeInitializesAndResolvesPortZero(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = response.Body.Close() }()
 	require.Equal(t, 303, response.StatusCode)
-	require.Equal(t, "/admin", response.Header.Get("Location"))
+	require.Equal(t, "/admin/users", response.Header.Get("Location"))
 	require.Len(t, response.Cookies(), 1)
 	require.Equal(t, developmentCookie, response.Cookies()[0].Name)
 	require.False(t, response.Cookies()[0].Secure)
@@ -245,6 +245,6 @@ func TestBrowserLoginNeverRetargetsAnExistingSession(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, oldSession.ID, stillOld.ID)
 	require.Equal(t, oldSession.Identity, stillOld.Identity)
-	response := requestAuth(handler, "GET", "/admin", "", http.Header{"Cookie": {oldCookie.Name + "=" + oldCookie.Value}})
+	response := requestAuth(handler, "GET", "/admin/users", "", http.Header{"Cookie": {oldCookie.Name + "=" + oldCookie.Value}})
 	require.Equal(t, 403, response.Code, "old member session must not inherit the new administrator login")
 }

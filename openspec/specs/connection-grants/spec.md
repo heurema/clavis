@@ -76,11 +76,11 @@ The server SHALL expose `GET /api/admin/grants`, `POST /api/admin/grants` and `P
 
 ### Requirement: Read-only grants table in the browser
 
-The protected administrator page SHALL list grants with username, connection name, granted time in UTC and the granting administrator's username, escaped and bounded like the other tables, with a truncation notice and no forms. It SHALL fail closed when the list cannot be loaded.
+The administration shell SHALL provide a Grants page at `/admin/grants` that lists grants with username, connection name, granted time in UTC and the granting administrator's username, escaped and bounded like the other tables, with a truncation notice and no forms. The sidebar entry SHALL show the number of listed grants, suffixed with `+` when truncated. The page SHALL fail closed when the list cannot be loaded.
 
 #### Scenario: Administrator opens the page
-- **WHEN** a signed-in administrator requests the administration page
-- **THEN** the grants table renders below the connections table with the documented columns
+- **WHEN** a signed-in administrator requests `/admin/grants`
+- **THEN** the grants table renders with the documented columns and the Grants entry is marked current
 
 #### Scenario: Grant list unavailable
 - **WHEN** the grant listing fails

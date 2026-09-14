@@ -2,6 +2,7 @@ package web
 
 import (
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -10,7 +11,6 @@ import (
 	"github.com/a-h/templ"
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/platform"
-	"github.com/heurema/clavis/internal/web/ui/badge"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +26,11 @@ func renderAuth(t *testing.T, status int, view templ.Component) string {
 	assert.Contains(t, body, "<!doctype html>")
 	assert.Contains(t, body, `lang="en"`)
 	assert.Contains(t, body, `data-appearance="true"`)
-	assert.Contains(t, body, "/assets/notices.txt")
+	// The appearance control is a button whose state assistive technology reads.
+	assert.Contains(t, body, `<button type="button" data-appearance="true"`)
+	assert.Contains(t, body, `aria-pressed=`)
+	assert.Contains(t, body, `aria-label="Dark appearance"`)
+	assert.NotContains(t, body, "/assets/notices.txt", "the notices travel as an asset, not as a page link")
 	assert.NotContains(t, body, "hx-post")
 	return body
 }
@@ -51,6 +55,10 @@ func TestLoginFailureDocuments(t *testing.T) {
 			assert.Contains(t, body, `id="auth-error"`)
 			assert.Contains(t, body, `role="alert"`)
 			assert.Contains(t, body, "Your password has been cleared")
+			assert.Contains(t, body, `>Sign in</h1>`)
+			// The username format is enforced by the input, not explained in prose.
+			assert.NotContains(t, body, "username-help")
+			assert.NotContains(t, body, "lowercase letters")
 		})
 	}
 }
@@ -62,14 +70,30 @@ func TestUsernameRetentionAndIdentityEscaping(t *testing.T) {
 	for _, value := range []string{"abc", "admin.user-1_2", strings.Repeat("a", 64)} {
 		assert.Equal(t, value, retainedUsername(value))
 	}
-	body := renderAuth(t, 200, Admin(AdminModel{User: auth.User{
+	body := renderAuth(t, 200, Admin(AdminModel{Page: PageUsers, User: auth.User{
 		ID: "not-for-display", Username: `<script>alert("identity")</script>`, Role: auth.Admin,
 	}}))
 	assert.NotContains(t, body, "<script>alert")
 	assert.Contains(t, body, "&lt;script&gt;")
 	assert.NotContains(t, body, "not-for-display")
 	assert.Contains(t, body, `action="/logout" method="post"`)
-	assert.NotContains(t, body, "href=\"/admin/users")
+	// The shell navigates between the three pages.
+	assert.Contains(t, body, `href="/admin/users"`)
+	assert.Empty(t, initial(""))
+	assert.Equal(t, "P", initial("personal-admin"))
+}
+
+// countPattern reads the sidebar counts in document order, so a test asserts all
+// three at once and catches a count rendered against the wrong list.
+var countPattern = regexp.MustCompile(`<span class="ml-auto text-xs tabular-nums text-muted-foreground">([^<]*)</span>`)
+
+func sidebarCounts(body string) []string {
+	matches := countPattern.FindAllStringSubmatch(body, -1)
+	counts := make([]string, 0, len(matches))
+	for _, match := range matches {
+		counts = append(counts, match[1])
+	}
+	return counts
 }
 
 func adminBody(t *testing.T, model AdminModel) string {
@@ -77,56 +101,102 @@ func adminBody(t *testing.T, model AdminModel) string {
 	body := renderAuth(t, 200, Admin(model))
 	assert.Equal(t, 1, strings.Count(body, "<form"), "only the sign-out form belongs on this page")
 	assert.Contains(t, body, `action="/logout" method="post"`)
+	assert.Contains(t, body, "Sign out")
 	assert.NotContains(t, body, "hx-")
 	assert.Equal(t, 1, strings.Count(body, "<script"), "only the shared appearance script belongs on this page")
 	assert.Contains(t, body, `<script src="/assets/appearance.js">`)
-	assert.Contains(t, body, "Manage users and connections through the CLI")
-	assert.NotContains(t, body, "User and connection management are not available")
+	// The shell lists the three pages and announces exactly one as current.
+	assert.Contains(t, body, `aria-label="Administration"`)
+	for _, href := range []string{"/admin/users", "/admin/connections", "/admin/grants"} {
+		assert.Contains(t, body, `href="`+href+`"`)
+	}
+	assert.Equal(t, 1, strings.Count(body, `aria-current="page"`), "one current page per document")
+	assert.Len(t, sidebarCounts(body), 3, "one count per navigation entry")
+	// The explanatory copy went with the single administration card.
+	assert.NotContains(t, body, "Manage users and connections through the CLI")
+	assert.NotContains(t, body, "Signed in as")
+	assert.NotContains(t, body, "Administrator access")
 	return body
 }
 
-func TestAdminUserListRendering(t *testing.T) {
-	identity := auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}
-	users := []auth.UserRecord{
+// adminPage renders one page of the shell and asserts what the shell owes every
+// page: the heading, the current entry and the three bounded counts.
+func adminPage(t *testing.T, model AdminModel, page AdminPage, href string, counts []string) string {
+	t.Helper()
+	model.Page = page
+	body := adminBody(t, model)
+	assert.Contains(t, body, `<a href="`+href+`" aria-current="page"`)
+	assert.Contains(t, body, `<h1 class="text-xl font-semibold tracking-tight">`+pageHeading(page)+`</h1>`)
+	assert.Equal(t, counts, sidebarCounts(body))
+	return body
+}
+
+var pageIdentity = auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}
+
+func userFixtures() []auth.UserRecord {
+	return []auth.UserRecord{
 		{ID: "12345678-1234-4234-8234-1234567890a1", Username: "a.b-c_d", Role: auth.Admin, CreatedAt: time.Date(2024, 3, 4, 5, 6, 7, 0, time.UTC)},
 		{ID: "12345678-1234-4234-8234-1234567890a2", Username: "blocked_member-9", Role: auth.Member, Disabled: true, CreatedAt: time.Date(2025, 12, 31, 23, 59, 30, 0, time.FixedZone("ahead", 2*60*60))},
 	}
-	body := adminBody(t, AdminModel{User: identity, Users: users})
-	assert.Contains(t, body, ">Users<")
+}
+
+func TestAdminUsersPageRendering(t *testing.T) {
+	model := AdminModel{
+		User: pageIdentity, Users: userFixtures(),
+		Connections: connectionFixtures(), Grants: grantFixtures(),
+	}
+	body := adminPage(t, model, PageUsers, "/admin/users", []string{"2", "3", "2"})
 	assert.Contains(t, body, "overflow-x-auto")
 	assert.Contains(t, body, "<table")
 	for _, fragment := range []string{
-		"a.b-c_d", "blocked_member-9", ">admin<", ">member<",
-		">Enabled<", ">Blocked<", "2024-03-04 05:06 UTC", "2025-12-31 21:59 UTC",
+		">Username<", ">Role<", ">Status<", ">Created<",
+		"a.b-c_d", "blocked_member-9", ">Admin<", ">Member<",
+		"Active", "Blocked", "2024-03-04 05:06 UTC", "2025-12-31 21:59 UTC",
+		"bg-status-ok", "bg-status-bad", "text-status-bad",
+		"personal-admin", "· Admin",
 	} {
 		assert.Contains(t, body, fragment)
 	}
+	// Role is plain capitalised text now, not a badge holding the raw value.
+	assert.NotContains(t, body, ">admin<")
+	assert.NotContains(t, body, ">member<")
 	assert.NotContains(t, body, "1234567890a1", "user identifiers are not display data")
 	assert.NotContains(t, body, "the list is limited")
-	assert.NotContains(t, body, `href="/admin/users`)
+	// Only the page's own list renders a table; the other two supply counts.
+	assert.Equal(t, 1, strings.Count(body, "<table"))
+	assert.NotContains(t, body, "warehouse-primary")
+	assert.NotContains(t, body, ">alice<")
 
-	empty := adminBody(t, AdminModel{User: identity})
+	empty := adminPage(t, AdminModel{User: pageIdentity}, PageUsers, "/admin/users", []string{"0", "0", "0"})
 	assert.Contains(t, empty, "No user accounts are listed.")
 	assert.NotContains(t, empty, "<table")
 	assert.NotContains(t, empty, "the list is limited")
 
-	truncated := adminBody(t, AdminModel{User: identity, Users: users, Truncated: true})
+	truncated := adminPage(t, AdminModel{User: pageIdentity, Users: userFixtures(), Truncated: true},
+		PageUsers, "/admin/users", []string{"2+", "0", "0"})
 	assert.Contains(t, truncated, "Showing the first 1000 users; the list is limited.")
 	assert.Equal(t, "Showing the first "+strconv.Itoa(auth.MaxUserListing)+" users; the list is limited.", truncationNotice())
+	assert.Equal(t, "7", listCount(7, false))
+	assert.Equal(t, "1000+", listCount(auth.MaxUserListing, true))
 }
 
-func TestAdminUserListEscapesUntrustedText(t *testing.T) {
-	body := adminBody(t, AdminModel{
+func TestAdminUsersPageEscapesUntrustedText(t *testing.T) {
+	body := adminPage(t, AdminModel{
 		User:  auth.User{Username: "x<y", Role: auth.Admin},
 		Users: []auth.UserRecord{{Username: "x<y", Role: auth.Role(`"><script>alert(1)</script>`)}},
-	})
+	}, PageUsers, "/admin/users", []string{"1", "0", "0"})
 	assert.Contains(t, body, "x&lt;y")
 	assert.NotContains(t, body, "x<y")
 	assert.NotContains(t, body, "<script>alert")
+	// An unknown role renders as its escaped value rather than a guessed label.
 	assert.Contains(t, body, "&lt;script&gt;alert(1)&lt;/script&gt;")
 	assert.Equal(t, "2026-09-11 07:08 UTC", createdLabel(time.Date(2026, 9, 11, 9, 8, 7, 0, time.FixedZone("ahead", 2*60*60))))
-	assert.Equal(t, "Blocked", statusLabel(true))
-	assert.Equal(t, "Enabled", statusLabel(false))
+	kind, text := userStatus(false)
+	assert.Equal(t, statusOK, kind)
+	assert.Equal(t, "Active", text)
+	kind, text = userStatus(true)
+	assert.Equal(t, statusBad, kind)
+	assert.Equal(t, "Blocked", text)
 }
 
 func TestAuthErrorDocuments(t *testing.T) {
@@ -135,36 +205,14 @@ func TestAuthErrorDocuments(t *testing.T) {
 	assert.Contains(t, body, "remote session revocation could not be confirmed")
 	assert.NotContains(t, body, "SENTINEL_SECRET")
 	assert.NotContains(t, body, "<form")
+	assert.Contains(t, body, `href="/login"`)
 	body = renderAuth(t, 403, AuthError(AuthErrorModel{ErrorCode: auth.Forbidden}))
 	assert.Contains(t, body, "administrator access is required")
+	assert.Contains(t, body, `href="/login"`)
 	assert.Contains(t, body, `action="/logout"`)
 	assert.Equal(t, "Wait a few minutes before trying again.", retryMessage(-1))
 	assert.Equal(t, "Wait a few minutes before trying again.", retryMessage(1<<30))
 	assert.Equal(t, "Try again in 30 seconds.", retryMessage(30))
-}
-
-func TestInitializationFragments(t *testing.T) {
-	for state, title := range map[platform.State]string{
-		platform.Initializing:    "Initialization in progress",
-		platform.SetupRequired:   "Administrator setup required",
-		platform.BootstrapFailed: "Administrator setup failed",
-		platform.SchemaError:     "Platform schema requires attention",
-	} {
-		t.Run(string(state), func(t *testing.T) {
-			response := httptest.NewRecorder()
-			require.NoError(t, Render(response, httptest.NewRequest("GET", "/ui/readiness", nil), 503, Readiness(platform.Readiness{State: state})))
-			body := response.Body.String()
-			assert.Contains(t, body, `data-readiness-state="`+string(state)+`"`)
-			assert.Contains(t, body, title)
-			assert.NotContains(t, body, "<form")
-			assert.NotContains(t, body, "Database unavailable")
-			assert.NotContains(t, body, "CLAVIS_BOOTSTRAP")
-		})
-	}
-	response := httptest.NewRecorder()
-	require.NoError(t, Render(response, httptest.NewRequest("GET", "/", nil), 503, Readiness(platform.Readiness{State: "SENTINEL_SECRET"})))
-	assert.NotContains(t, response.Body.String(), "SENTINEL_SECRET")
-	assert.Contains(t, response.Body.String(), "Database unavailable")
 }
 
 // sentinelTarget holds everything a connection record carries that the page
@@ -204,21 +252,29 @@ func connectionFixtures() []auth.Connection {
 	}
 }
 
-func TestAdminConnectionListRendering(t *testing.T) {
-	identity := auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}
-	body := adminBody(t, AdminModel{
-		User:        identity,
-		Users:       []auth.UserRecord{{Username: "personal-admin", Role: auth.Admin}},
-		Connections: connectionFixtures(),
-	})
-	assert.Contains(t, body, ">Connections<")
-	assert.Less(t, strings.Index(body, ">Users<"), strings.Index(body, ">Connections<"), "connections render below the users table")
-	assert.Equal(t, 2, strings.Count(body, "overflow-x-auto"), "both tables scroll instead of widening the page")
+// sentinelValues is every stored target value, so one assertion covers the whole
+// map rather than a hand-copied subset of it.
+func sentinelValues() []string {
+	values := make([]string, 0, len(sentinelTarget))
+	for _, value := range sentinelTarget {
+		values = append(values, value)
+	}
+	return values
+}
+
+func TestAdminConnectionsPageRendering(t *testing.T) {
+	model := AdminModel{
+		User: pageIdentity, Users: userFixtures(),
+		Connections: connectionFixtures(), Grants: grantFixtures(),
+	}
+	body := adminPage(t, model, PageConnections, "/admin/connections", []string{"2", "3", "2"})
+	assert.Equal(t, 1, strings.Count(body, "overflow-x-auto"), "the table scrolls instead of widening the page")
 	for _, fragment := range []string{
 		">Name<", ">Title<", ">Provider<", ">Labels<", ">Status<", ">Last check<",
 		"warehouse-primary", "Warehouse primary", "metrics-eu", "Metrics EU", "metrics-us", "Metrics US",
 		">postgresql<", ">victoriametrics<", ">env=prod<", ">zone=eu-west<", ">env=staging<",
-		">Enabled<", ">Disabled<", ">reachable<", ">auth_rejected<", ">Unchecked<",
+		"Enabled", "Disabled", "Reachable", "auth_rejected", "Not checked",
+		"bg-status-ok", "bg-status-bad", "bg-status-off", "text-status-bad",
 		"2026-04-05 06:09 UTC", "2026-05-06 07:08 UTC",
 	} {
 		assert.Contains(t, body, fragment)
@@ -228,46 +284,49 @@ func TestAdminConnectionListRendering(t *testing.T) {
 	assert.Empty(t, labelPairs(nil))
 	// Nothing a connection knows about its target, its credentials or its
 	// identifiers may reach the page.
-	for _, forbidden := range []string{
-		"postgres://", "sentinel-host.invalid", "sentinel-role", "sentinel-db", "5432",
-		"secret", "sentinel-description", "sentinel-scope", "1234567890c1",
-	} {
+	for _, forbidden := range append(sentinelValues(), "postgres://", "secret", "sentinel-description", "sentinel-scope", "1234567890c1") {
 		assert.NotContains(t, body, forbidden)
 	}
-	assert.NotContains(t, body, `href="/admin/connections`)
 	assert.NotContains(t, body, "the list is limited")
+	assert.Equal(t, 1, strings.Count(body, "<table"))
+	assert.NotContains(t, body, "blocked_member-9")
 }
 
-func TestAdminConnectionListEmptyTruncatedAndEscaped(t *testing.T) {
-	identity := auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}
-
-	empty := adminBody(t, AdminModel{User: identity})
+func TestAdminConnectionsPageEmptyTruncatedAndEscaped(t *testing.T) {
+	empty := adminPage(t, AdminModel{User: pageIdentity}, PageConnections, "/admin/connections", []string{"0", "0", "0"})
 	assert.Contains(t, empty, "No connections are registered.")
 	assert.NotContains(t, empty, "<table")
 
-	truncated := adminBody(t, AdminModel{User: identity, Connections: connectionFixtures(), ConnectionsTruncated: true})
+	truncated := adminPage(t, AdminModel{User: pageIdentity, Connections: connectionFixtures(), ConnectionsTruncated: true},
+		PageConnections, "/admin/connections", []string{"0", "3+", "0"})
 	assert.Contains(t, truncated, "Showing the first 1000 connections; the list is limited.")
 	assert.Equal(t, "Showing the first "+strconv.Itoa(auth.MaxConnectionListing)+" connections; the list is limited.", connectionsTruncationNotice())
 
-	escaped := adminBody(t, AdminModel{User: identity, Connections: []auth.Connection{{
+	escaped := adminPage(t, AdminModel{User: pageIdentity, Connections: []auth.Connection{{
 		Name: "hostile", Title: `<script>alert("title")</script>`, Provider: auth.ProviderPostgreSQL,
 		Labels:    map[string]string{"env": `prod"><script>alert(1)</script>`},
 		LastCheck: &auth.CheckResult{Outcome: auth.CheckOutcome("<unreachable>"), CheckedAt: time.Unix(0, 0)},
-	}}})
-
+	}}}, PageConnections, "/admin/connections", []string{"0", "1", "0"})
 	assert.NotContains(t, escaped, "<script>alert")
 	assert.Contains(t, escaped, "&lt;script&gt;alert(&#34;title&#34;)&lt;/script&gt;")
 	assert.Contains(t, escaped, "&lt;script&gt;alert(1)&lt;/script&gt;")
 	assert.Contains(t, escaped, "&lt;unreachable&gt;")
 	assert.Contains(t, escaped, "1970-01-01 00:00 UTC")
 
-	assert.Equal(t, "Enabled", connectionStatusLabel(true))
-	assert.Equal(t, "Disabled", connectionStatusLabel(false))
-	assert.Equal(t, badge.VariantSecondary, connectionStatusVariant(true))
-	assert.Equal(t, badge.VariantDestructive, connectionStatusVariant(false))
-	assert.Equal(t, badge.VariantSecondary, checkOutcomeVariant(auth.CheckReachable))
+	kind, text := connectionStatus(true)
+	assert.Equal(t, statusOK, kind)
+	assert.Equal(t, "Enabled", text)
+	kind, text = connectionStatus(false)
+	assert.Equal(t, statusOff, kind)
+	assert.Equal(t, "Disabled", text)
+	kind, text = checkStatus(auth.CheckReachable)
+	assert.Equal(t, statusOK, kind)
+	assert.Equal(t, "Reachable", text)
+	// Every other outcome is a problem named by the outcome itself.
 	for _, outcome := range []auth.CheckOutcome{auth.CheckAuthRejected, auth.CheckUnreachable, auth.CheckCredentialsUnavailable} {
-		assert.Equal(t, badge.VariantDestructive, checkOutcomeVariant(outcome))
+		kind, text = checkStatus(outcome)
+		assert.Equal(t, statusBad, kind)
+		assert.Equal(t, string(outcome), text)
 	}
 }
 
@@ -288,19 +347,15 @@ func grantFixtures() []auth.Grant {
 	}
 }
 
-func TestAdminGrantListRendering(t *testing.T) {
-	identity := auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}
-	body := adminBody(t, AdminModel{
-		User:        identity,
-		Users:       []auth.UserRecord{{Username: "personal-admin", Role: auth.Admin}},
-		Connections: connectionFixtures(),
-		Grants:      grantFixtures(),
-	})
-	assert.Contains(t, body, ">Grants<")
-	assert.Less(t, strings.Index(body, ">Connections<"), strings.Index(body, ">Grants<"), "grants render below the connections table")
-	assert.Equal(t, 3, strings.Count(body, "overflow-x-auto"), "every table scrolls instead of widening the page")
+func TestAdminGrantsPageRendering(t *testing.T) {
+	model := AdminModel{
+		User: pageIdentity, Users: userFixtures(),
+		Connections: connectionFixtures(), Grants: grantFixtures(),
+	}
+	body := adminPage(t, model, PageGrants, "/admin/grants", []string{"2", "3", "2"})
+	assert.Equal(t, 1, strings.Count(body, "overflow-x-auto"), "the table scrolls instead of widening the page")
 	for _, fragment := range []string{
-		">Username<", ">Connection<", ">Granted<", ">Granted by<",
+		">User<", ">Connection<", ">Granted<", ">Granted by<",
 		">alice<", ">bob<", ">warehouse-primary<", ">metrics-eu<", ">personal-admin<",
 		"2026-06-07 08:11 UTC", "2026-07-08 09:10 UTC",
 	} {
@@ -311,21 +366,24 @@ func TestAdminGrantListRendering(t *testing.T) {
 	for _, forbidden := range []string{"1234567890a1", "1234567890a2", "1234567890c1", "1234567890c2", "the list is limited"} {
 		assert.NotContains(t, body, forbidden)
 	}
-	assert.NotContains(t, body, `href="/admin/grants`)
+	assert.Equal(t, 1, strings.Count(body, "<table"))
+	assert.NotContains(t, body, "Warehouse primary", "the grants page lists names, not connection titles")
 
-	empty := adminBody(t, AdminModel{User: identity})
+	empty := adminPage(t, AdminModel{User: pageIdentity}, PageGrants, "/admin/grants", []string{"0", "0", "0"})
 	assert.Contains(t, empty, "No grants are recorded.")
+	assert.NotContains(t, empty, "<table")
 
-	truncated := adminBody(t, AdminModel{User: identity, Grants: grantFixtures(), GrantsTruncated: true})
+	truncated := adminPage(t, AdminModel{User: pageIdentity, Grants: grantFixtures(), GrantsTruncated: true},
+		PageGrants, "/admin/grants", []string{"0", "0", "2+"})
 	assert.Contains(t, truncated, "Showing the first 1000 grants; the list is limited.")
 	assert.Equal(t, "Showing the first "+strconv.Itoa(auth.MaxGrantListing)+" grants; the list is limited.", grantsTruncationNotice())
 
-	escaped := adminBody(t, AdminModel{User: identity, Grants: []auth.Grant{{
+	escaped := adminPage(t, AdminModel{User: pageIdentity, Grants: []auth.Grant{{
 		User:       auth.GrantParty{Name: `<script>alert("user")</script>`},
 		Connection: auth.GrantParty{Name: `<img src=x onerror=alert(1)>`},
 		CreatedBy:  auth.GrantParty{Name: `<b>admin</b>`},
 		CreatedAt:  time.Unix(0, 0),
-	}}})
+	}}}, PageGrants, "/admin/grants", []string{"0", "0", "1"})
 	assert.NotContains(t, escaped, "<script>alert")
 	assert.NotContains(t, escaped, "<img src")
 	assert.NotContains(t, escaped, "<b>admin</b>")

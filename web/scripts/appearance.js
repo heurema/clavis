@@ -16,17 +16,18 @@
     const dark = selected ? selected === "dark" : system.matches
     root.classList.toggle("dark", dark)
     root.style.colorScheme = dark ? "dark" : "light"
-    for (const control of document.querySelectorAll("input[data-appearance]"))
-      control.checked = dark
+    for (const control of document.querySelectorAll("button[data-appearance]"))
+      control.setAttribute("aria-pressed", String(dark))
   }
   apply()
   system.addEventListener("change", apply)
   document.addEventListener("DOMContentLoaded", apply)
-  document.addEventListener("htmx:after:process", apply)
-  // Delegation also covers a templUI switch inserted by a later partial update.
-  document.addEventListener("change", (event) => {
-    if (!event.target.matches("input[data-appearance]")) return
-    selected = event.target.checked ? "dark" : "light"
+  // Delegation covers every appearance button in the document, whichever
+  // page rendered it.
+  document.addEventListener("click", (event) => {
+    const control = event.target.closest("button[data-appearance]")
+    if (!control) return
+    selected = root.classList.contains("dark") ? "light" : "dark"
     try {
       localStorage.setItem(key, selected)
     } catch {

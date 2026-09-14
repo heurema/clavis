@@ -14,7 +14,7 @@ type BrowserOutcome struct {
 
 func LoginOutcome(err error) BrowserOutcome {
 	if err == nil {
-		return BrowserOutcome{Status: http.StatusSeeOther, Location: "/admin"}
+		return BrowserOutcome{Status: http.StatusSeeOther, Location: "/admin/users"}
 	}
 	status, response := FailureFor(err)
 	return BrowserOutcome{Status: status, ErrorCode: response.Error.Code}

@@ -16,7 +16,6 @@ func Render(w http.ResponseWriter, r *http.Request, status int, component templ.
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	var buffer bytes.Buffer
 	if err := component.Render(r.Context(), &buffer); err != nil {
-		w.Header().Del("X-Clavis-Fragment")
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = io.WriteString(w, "<p>Unable to display this page. Try again.</p>")
 		return err

@@ -92,21 +92,12 @@ func handler(checkTimeout time.Duration, checker platform.Checker, logger *slog.
 		}
 		writeJSON(w, status, result.Response())
 	})
+	// The origin has no document of its own: the administration shell owns the
+	// interface and sends a visitor without a session on to sign-in. The
+	// redirect is public, so it never reads the database.
 	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		if err := web.Render(w, r, http.StatusOK, web.Page()); err != nil {
-			logger.Error("web_response_failed", "code", "WEB_RESPONSE_FAILED")
-		}
-	})
-	router.Get("/ui/readiness", func(w http.ResponseWriter, r *http.Request) {
-		result := check(r.Context())
-		status := http.StatusServiceUnavailable
-		if result.Ready() {
-			status = http.StatusOK
-		}
-		w.Header().Set("X-Clavis-Fragment", "readiness")
-		if err := web.Render(w, r, status, web.Readiness(result)); err != nil {
-			logger.Error("web_response_failed", "code", "WEB_RESPONSE_FAILED")
-		}
+		w.Header().Set("Cache-Control", "no-store")
+		http.Redirect(w, r, "/admin/users", http.StatusSeeOther)
 	})
 	router.Get("/assets/*", web.ServeAsset)
 	router.Head("/assets/*", web.ServeAsset)

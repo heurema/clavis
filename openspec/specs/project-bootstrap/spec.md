@@ -141,55 +141,21 @@ The CLI SHALL exit with code 0 for success, code 1 for a failed diagnostic opera
 - **THEN** doctor exits 1 with that code and an application-owned message, reporting the API reachable and database ready
 - **AND** its existing data fields and schema version are preserved
 
-### Requirement: Web foundation displays actual readiness
-
-The web application SHALL provide a consistent application shell with a public setup/status page served by the same process as the API. Once loaded, the page SHALL retrieve readiness from that origin and represent loading, ready, initialization in progress, setup required, bootstrap/schema failure, dependency unavailable, and server unavailable states separately. It SHALL support retrying a failed check without reloading the page and SHALL NOT present placeholder data as an operational integration. The page SHALL explain deployment-driven initialization, expose no administrator-creation form and offer normal sign-in once ready.
-
-Checks SHALL run on page entry and explicit user request, without automatic retries, polling or focus/reconnect refetches. Each browser check SHALL settle within five seconds, including response-body consumption. A fresh check SHALL display a checking state instead of presenting a previous success as current evidence. A superseded result SHALL NOT overwrite a newer result.
-
-An already-loaded page SHALL display a safe server-unavailable message when its server cannot be reached. A fresh navigation while the server process is stopped is outside this in-page diagnostic guarantee; no independently served fallback page is required.
-
-#### Scenario: Load the page with a ready server
-- **WHEN** a user opens the setup/status page while the server, database, schema and installation are ready
-- **THEN** the page transitions from loading to a ready state using the server response and offers sign-in
-
-#### Scenario: Distinguish a dependency failure from a server failure
-- **WHEN** a loaded page receives a documented dependency failure or cannot reach the server
-- **THEN** the page explains the corresponding state and offers a retry action
-
-#### Scenario: Recover through the retry action
-- **WHEN** the user retries after the failed dependency or server has recovered and initialization is complete
-- **THEN** the loaded page updates to ready without a browser reload
-
-#### Scenario: Ignore a superseded result
-- **WHEN** an earlier check completes after a newer user-requested check has completed
-- **THEN** the page retains the newer result and does not display or announce the stale result
-
-#### Scenario: Bound a stalled response body
-- **WHEN** the server sends response headers but does not complete the readiness body
-- **THEN** the page exits the checking state within five seconds with a safe timeout message and an enabled retry action
-
-#### Scenario: Open a page while the server is stopped
-- **WHEN** the user starts a fresh navigation with the server process stopped
-- **THEN** no Clavis page can be served and the browser handles the connection failure
-- **AND** documentation does not promise a separate status server or an offline application shell
-
-#### Scenario: Explain incomplete installation
-- **WHEN** a loaded page receives a documented initialization/setup/bootstrap/schema failure
-- **THEN** it displays the corresponding safe state and deployment guidance without exposing secrets, paths or account details
-- **AND** checking again does not itself trigger administrator creation
-
 ### Requirement: Usable visual foundation
 
-The web shell SHALL use a consistent set of shared controls, support light and dark appearance, and expose keyboard focus and accessible names for its interactive controls. Status information SHALL remain understandable without relying on color alone. Appearance preference SHALL persist across page reloads in the same browser.
+The web interface SHALL use a consistent set of shared controls across the public documents and the administration shell, support light and dark appearance, and expose keyboard focus and accessible names for its interactive controls. The administration shell SHALL present the three list pages as navigation entries with the current page marked for assistive technology. Status information SHALL be rendered as text accompanied by a colour indicator and SHALL remain understandable without relying on colour alone. The appearance control SHALL be a button that reports its state to assistive technology, and the appearance preference SHALL persist across page reloads in the same browser.
 
 #### Scenario: Operate the shell with a keyboard
-- **WHEN** a user navigates the appearance and retry controls using the keyboard
-- **THEN** focus is visible, the controls have accessible names, and their actions can be completed without a pointer
+- **WHEN** a user navigates the appearance control, the sidebar entries and the sign-out control using the keyboard
+- **THEN** focus is visible, the controls have accessible names, the current page is announced, and their actions can be completed without a pointer
 
 #### Scenario: Retain the selected appearance
 - **WHEN** a user selects light or dark appearance and reloads the page
 - **THEN** the application restores that preference and status labels remain readable
+
+#### Scenario: Read a status without colour
+- **WHEN** a blocked user, a disabled connection or a failed connectivity check is listed
+- **THEN** the state is conveyed by its text, with the colour indicator as reinforcement only
 
 ### Requirement: Local infrastructure isolation
 

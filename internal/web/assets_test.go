@@ -15,9 +15,7 @@ func TestPublicAssets(t *testing.T) {
 	}{
 		{"app.css", "text/css; charset=utf-8"},
 		{"appearance.js", "text/javascript; charset=utf-8"},
-		{"htmx.min.js", "text/javascript; charset=utf-8"},
 		{"notices.txt", "text/plain; charset=utf-8"},
-		{"readiness.js", "text/javascript; charset=utf-8"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
@@ -54,8 +52,9 @@ func TestAssetBoundary(t *testing.T) {
 		"/", "/assets", "/assets/", "/assets/.", "/assets/..",
 		"/assets//app.css", "/assets/unknown.css", "/assets/app.css/",
 		"/assets/../go.mod", "/assets/%2e%2e/go.mod",
-		"/assets/.env", "/assets/.git/config", "/assets/node_modules/htmx.org/package.json",
-		"/assets/ui/button/button.templ", "/assets/page_templ.go", "/assets/assets.go",
+		"/assets/.env", "/assets/.git/config", "/assets/node_modules/tailwindcss/package.json",
+		"/assets/htmx.min.js", "/assets/readiness.js",
+		"/assets/ui/button/button.templ", "/assets/auth_templ.go", "/assets/assets.go",
 	} {
 		t.Run(path, func(t *testing.T) {
 			response := httptest.NewRecorder()
