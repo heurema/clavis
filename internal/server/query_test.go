@@ -78,6 +78,21 @@ var metricsAnswer = auth.QueryResponse{
 	DurationMS: 9,
 }
 
+// logsAnswer is the third documented document: the source's own rows under the
+// provider that named them. A log source writes no warnings, no infos and no
+// partial flag, so none of them appears beside it.
+var logsAnswer = auth.QueryResponse{
+	Provider:   auth.ProviderVictoriaLogs,
+	ResultType: "logs",
+	Result: json.RawMessage(`[{"_time":"2026-09-14T10:00:00Z","_msg":"boom","level":"error"},` +
+		`{"_time":"2026-09-14T10:00:01Z","_msg":"again","level":"warn"}]`),
+	DurationMS: 11,
+}
+
+// limitOf is how a test sets the one optional integer, where an absent limit
+// and an explicit zero are different requests.
+func limitOf(value int64) *int64 { return &value }
+
 func queryFixture(t *testing.T) (*backendFixture, http.Handler) {
 	t.Helper()
 	f := &backendFixture{}
@@ -206,6 +221,79 @@ func TestQueryRouteRendersAMetricsSourceFailure(t *testing.T) {
 // still the source's answer: the drain keeps the row that crosses the cap and
 // JSON escaping grows values, so the route serves what the service produced
 // rather than turning a correct execution into a fault.
+// Every log input reaches the service exactly as it was submitted, and an
+// absent limit stays a different request from an explicit zero: the source is
+// told nothing in the one case and told the caller's own zero in the other.
+func TestQueryRouteSendsTheLogInputsUnchanged(t *testing.T) {
+	for name, request := range map[string]auth.QueryRequest{
+		"logsql":        {Connection: queryConnection, LogsQL: "error | sort by (_time) desc", Start: "-1h", End: "now"},
+		"limited":       {Connection: queryConnection, LogsQL: "error", Limit: limitOf(50)},
+		"explicit zero": {Connection: queryConnection, LogsQL: "error", Limit: limitOf(0)},
+		"field names":   {Connection: queryConnection, FieldNames: true, Match: "*", Filter: "err"},
+		"field values": {Connection: queryConnection, FieldValues: "level", Match: "*",
+			Filter: "err", Limit: limitOf(5), Start: "-1h"},
+		"streams":            {Connection: queryConnection, Streams: true, Match: "*", Limit: limitOf(5)},
+		"stream field names": {Connection: queryConnection, StreamFieldNames: true, Match: "*", Filter: "j"},
+		"stream field values": {Connection: queryConnection, StreamFieldValues: "job", Match: "*",
+			Filter: "api", MaxRows: 10},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, handler := queryFixture(t)
+			f.queryResponse = logsAnswer
+			body, err := json.Marshal(request)
+			require.NoError(t, err)
+			response := requestAuth(handler, "POST", auth.QueryPath, string(body), queryHeaders())
+			require.Equal(t, 200, response.Code, response.Body.String())
+			require.Equal(t, []queryCall{{request: request, role: auth.Admin}}, f.queryCalls)
+		})
+	}
+	// The two limits are different bodies as well as different requests: the
+	// absent one carries no member at all.
+	absent, err := json.Marshal(auth.QueryRequest{Connection: queryConnection, LogsQL: "error"})
+	require.NoError(t, err)
+	require.NotContains(t, string(absent), "limit")
+	zero, err := json.Marshal(auth.QueryRequest{Connection: queryConnection, LogsQL: "error", Limit: limitOf(0)})
+	require.NoError(t, err)
+	require.Contains(t, string(zero), `"limit":0`)
+}
+
+// The log document is served as the service built it: the provider names the
+// shape, the result is the source's own rows and no results list appears.
+func TestQueryRouteServesTheLogDocument(t *testing.T) {
+	f, handler := queryFixture(t)
+	f.queryResponse = logsAnswer
+	response := requestAuth(handler, "POST", auth.QueryPath,
+		`{"connection":"`+queryConnection+`","logsql":"error","limit":2}`, queryHeaders())
+	require.Equal(t, 200, response.Code)
+	expected, err := json.Marshal(logsAnswer)
+	require.NoError(t, err)
+	require.JSONEq(t, string(expected), response.Body.String())
+	require.Contains(t, response.Body.String(), `"provider":"victorialogs"`)
+	require.Contains(t, response.Body.String(), `"resultType":"logs"`)
+	require.NotContains(t, response.Body.String(), `"results"`)
+	require.NotContains(t, response.Body.String(), `"isPartial"`)
+	require.Len(t, f.queryCalls, 1)
+	require.Equal(t, int64(2), *f.queryCalls[0].request.Limit)
+}
+
+// A log source classifies nothing of its own: the platform names the status it
+// answered with, and the envelope carries no sqlstate and no statement.
+func TestQueryRouteRendersALogSourceFailure(t *testing.T) {
+	f, handler := queryFixture(t)
+	f.queryErr = &auth.Error{Code: auth.SourceError, Source: &auth.SourceFailure{
+		ErrorType: "http_400", Message: `cannot parse "error ~~"`}}
+	response := requestAuth(handler, "POST", auth.QueryPath,
+		`{"connection":"`+queryConnection+`","logsql":"error ~~"}`, queryHeaders())
+	require.Equal(t, 422, response.Code)
+	var failure auth.ErrorResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failure))
+	require.Equal(t, "http_400", failure.Source.ErrorType)
+	require.Equal(t, `cannot parse "error ~~"`, failure.Source.Message)
+	require.Empty(t, failure.Source.SQLState)
+	require.Nil(t, failure.Source.Statement)
+	require.NotContains(t, response.Body.String(), "sqlstate")
+}
+
 func TestQueryRouteServesAnOversizedResponseUnchanged(t *testing.T) {
 	f, handler := queryFixture(t)
 	// Every byte of the value escapes to six, so the encoded body is far above
@@ -318,6 +406,12 @@ func TestQueryBodiesAndQueriesAreStrict(t *testing.T) {
 	oversizedExpression, err := json.Marshal(auth.QueryRequest{Connection: queryConnection,
 		PromQL: strings.Repeat("u", auth.MaxSQLBytes+1)})
 	require.NoError(t, err)
+	oversizedQuery, err := json.Marshal(auth.QueryRequest{Connection: queryConnection,
+		LogsQL: strings.Repeat("e", auth.MaxSQLBytes+1)})
+	require.NoError(t, err)
+	oversizedFilter, err := json.Marshal(auth.QueryRequest{Connection: queryConnection,
+		FieldNames: true, Match: "*", Filter: strings.Repeat("f", auth.MaxFilterBytes+1)})
+	require.NoError(t, err)
 	for _, tc := range []struct {
 		name, path, body, contentType, hint string
 	}{
@@ -353,6 +447,22 @@ func TestQueryBodiesAndQueriesAreStrict(t *testing.T) {
 		{"oversized promql", auth.QueryPath, string(oversizedExpression), "application/json", hintQueryText},
 		{"zero max rows", auth.QueryPath, `{"connection":"c-name","sql":"select 1","maxRows":0}`, "application/json", hintQueryMaxRows},
 		{"negative max rows", auth.QueryPath, `{"connection":"c-name","sql":"select 1","maxRows":-1}`, "application/json", hintQueryMaxRows},
+		// The log half of the same rules: one input, one decoder per member, and
+		// a limit that is a JSON integer or nothing at all.
+		{"two log inputs", auth.QueryPath, `{"connection":"c-name","logsql":"error","streams":true}`, "application/json", hintQueryInput},
+		{"log and sql", auth.QueryPath, `{"connection":"c-name","sql":"x","logsql":"error"}`, "application/json", hintQueryInput},
+		{"streams false alone", auth.QueryPath, `{"connection":"c-name","streams":false}`, "application/json", hintQueryInput},
+		{"empty logsql", auth.QueryPath, `{"connection":"c-name","logsql":""}`, "application/json", hintQueryInput},
+		{"quoted field names", auth.QueryPath, `{"connection":"c-name","fieldNames":"true"}`, "application/json", hintQueryBody},
+		{"numeric logsql", auth.QueryPath, `{"connection":"c-name","logsql":7}`, "application/json", hintQueryBody},
+		{"quoted limit", auth.QueryPath, `{"connection":"c-name","logsql":"error","limit":"5"}`, "application/json", hintQueryBody},
+		{"float limit", auth.QueryPath, `{"connection":"c-name","logsql":"error","limit":1.5}`, "application/json", hintQueryBody},
+		{"exponent limit", auth.QueryPath, `{"connection":"c-name","logsql":"error","limit":1e2}`, "application/json", hintQueryBody},
+		{"null limit", auth.QueryPath, `{"connection":"c-name","logsql":"error","limit":null}`, "application/json", hintQueryBody},
+		{"duplicate limit", auth.QueryPath, `{"connection":"c-name","logsql":"error","limit":1,"limit":2}`, "application/json", hintQueryBody},
+		{"unknown log field", auth.QueryPath, `{"connection":"c-name","logsql":"error","tail":true}`, "application/json", hintQueryBody},
+		{"oversized logsql", auth.QueryPath, string(oversizedQuery), "application/json", hintQueryText},
+		{"oversized filter", auth.QueryPath, string(oversizedFilter), "application/json", hintQueryText},
 		{"unknown parameter", auth.QueryPath + "?dryRun=true", validQueryBody, "application/json", ""},
 		{"malformed query", auth.QueryPath + "?limit=%zz", validQueryBody, "application/json", ""},
 	} {

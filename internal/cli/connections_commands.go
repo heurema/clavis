@@ -23,7 +23,13 @@ var connectionAuthMethods = []string{"none", "basic", "bearer", "header"}
 // actually given are sent, so the server sees exactly what was asked for.
 var targetFlags = []struct{ flag, key string }{
 	{"url", "url"}, {"auth", "auth"}, {"auth-user", "user"}, {"auth-header", "header"},
+	{"account-id", "accountId"}, {"project-id", "projectId"},
 }
+
+// tenantFlags are the two victorialogs target settings the CLI validates
+// locally, because each travels to the source as a request header the source
+// reads as an identity rather than as a value it parses.
+var tenantFlags = []string{"account-id", "project-id"}
 
 // connectionsCommands builds the administrator connection group. It shares the
 // verb vocabulary of users: list, get, create, update, enable, disable, delete.
@@ -44,6 +50,8 @@ func connectionsCommands(makeCommand func(operation, usage string, extra ...urfa
 			&urfave.StringFlag{Name: "auth", Usage: "Authentication method: none, basic, bearer or header"},
 			&urfave.StringFlag{Name: "auth-user", Usage: "Non-secret user name for basic authentication"},
 			&urfave.StringFlag{Name: "auth-header", Usage: "Non-secret header name for header authentication"},
+			&urfave.StringFlag{Name: "account-id", Usage: "victorialogs tenant account, an unsigned 32-bit integer"},
+			&urfave.StringFlag{Name: "project-id", Usage: "victorialogs tenant project, an unsigned 32-bit integer"},
 			&urfave.StringSliceFlag{Name: "label", Usage: "Label as key=value; repeat to add more (update replaces the whole set)"},
 			&urfave.StringFlag{Name: "title", Usage: "Human-readable title"},
 			&urfave.StringFlag{Name: "description", Usage: "What the connection exposes"},
@@ -69,7 +77,7 @@ func connectionsCommands(makeCommand func(operation, usage string, extra ...urfa
 		makeCommand("connections.create", "Register a connection with an encrypted credential",
 			join([]urfave.Flag{
 				&urfave.StringFlag{Name: "name", Usage: "New connection name"},
-				&urfave.StringFlag{Name: "provider", Usage: "Provider: postgresql or victoriametrics"},
+				&urfave.StringFlag{Name: "provider", Usage: "Provider: postgresql, victoriametrics or victorialogs"},
 			}, settings(), []urfave.Flag{dryRun()}, secretFlags())...),
 		makeCommand("connections.update", "Change the supplied fields of a connection",
 			join(target(&urfave.StringFlag{Name: "name", Usage: "New connection name"}), settings(), []urfave.Flag{dryRun()})...),
@@ -89,13 +97,18 @@ func secretCommand(operation string) bool {
 	return operation == "connections.create" || operation == "connections.set-credentials"
 }
 
-// connectionSecretRequired mirrors the one provider case that authenticates
-// with nothing: VictoriaMetrics with the none method.
+// connectionSecretRequired mirrors the provider cases that authenticate with
+// nothing: either HTTP source with the none method. A SQL source always carries
+// a credential.
 func connectionSecretRequired(operation string, command *urfave.Command) bool {
 	if operation != "connections.create" {
 		return secretCommand(operation)
 	}
-	return command.String("provider") != string(auth.ProviderVictoriaMetrics) || command.String("auth") != "none"
+	provider := auth.ProviderType(command.String("provider"))
+	if provider != auth.ProviderVictoriaMetrics && provider != auth.ProviderVictoriaLogs {
+		return true
+	}
+	return command.String("auth") != "none"
 }
 
 // argumentFailure is the shared local-validation refusal of the connection and
@@ -143,7 +156,8 @@ func validateConnectionArguments(operation string, command *urfave.Command) *Res
 				"A name matches [a-z][a-z0-9._-]{2,63} and is never shaped like a UUID")
 		}
 		if !auth.ValidProvider(auth.ProviderType(command.String("provider"))) {
-			return argumentFailure("Provide a registered provider", "--provider accepts postgresql or victoriametrics")
+			return argumentFailure("Provide a registered provider",
+				"--provider accepts postgresql, victoriametrics or victorialogs")
 		}
 		if !printableSetting(command.String("url")) {
 			return argumentFailure("Provide a target URL", "--url takes the source URL without credentials")
@@ -177,7 +191,7 @@ func validateConnectionSettings(operation string, command *urfave.Command) *Resu
 				"--"+field.flag+" takes printable text of up to "+strconv.Itoa(field.limit)+" bytes")
 		}
 	}
-	for _, flag := range []string{"url", "auth-user", "auth-header"} {
+	for _, flag := range []string{"url", "auth-user", "auth-header", "account-id", "project-id"} {
 		if command.IsSet(flag) && !printableSetting(command.String(flag)) {
 			return argumentFailure("Provide a valid --"+flag+" value", "The value must be printable and non-empty")
 		}
@@ -185,6 +199,15 @@ func validateConnectionSettings(operation string, command *urfave.Command) *Resu
 	if command.IsSet("auth") && !slices.Contains(connectionAuthMethods, command.String("auth")) {
 		return argumentFailure("Provide a supported authentication method",
 			"--auth accepts "+strings.Join(connectionAuthMethods, ", "))
+	}
+	// A tenant identifier is validated here as well as on the server: it is a
+	// header the source reads as an identity, so a sign, a space or a stray
+	// byte is refused before it can travel as one.
+	for _, flag := range tenantFlags {
+		if command.IsSet(flag) && !auth.ValidTenantID(command.String(flag)) {
+			return argumentFailure("Provide a valid --"+flag+" value",
+				"--"+flag+" takes an unsigned 32-bit decimal integer and is a victorialogs setting")
+		}
 	}
 	if timeout := command.Duration("statement-timeout"); command.IsSet("statement-timeout") &&
 		(timeout < auth.MinStatementTimeout || timeout > auth.MaxStatementTimeout ||
@@ -203,7 +226,7 @@ func validateConnectionSettings(operation string, command *urfave.Command) *Resu
 	}
 	if operation == "connections.update" && !updateRequested(command) {
 		return argumentFailure("Provide at least one field to update",
-			"Pass any of --name, --url, --auth, --auth-user, --auth-header, --label, --title, --description, --scope, --statement-timeout, --max-rows or --max-bytes")
+			"Pass any of --name, --url, --auth, --auth-user, --auth-header, --account-id, --project-id, --label, --title, --description, --scope, --statement-timeout, --max-rows or --max-bytes")
 	}
 	if operation == "connections.update" && !command.IsSet("url") {
 		// The target is replaced as a whole, so a partial target can never be
@@ -211,7 +234,7 @@ func validateConnectionSettings(operation string, command *urfave.Command) *Resu
 		for _, mapping := range targetFlags {
 			if mapping.flag != "url" && command.IsSet(mapping.flag) {
 				return argumentFailure("Provide --url together with any target flag",
-					"The target is replaced as a whole on update; pass --url with --auth, --auth-user or --auth-header")
+					"The target is replaced as a whole on update; pass --url with --auth, --auth-user, --auth-header, --account-id or --project-id")
 			}
 		}
 	}
@@ -219,7 +242,7 @@ func validateConnectionSettings(operation string, command *urfave.Command) *Resu
 }
 
 var updateFields = []string{
-	"name", "url", "auth", "auth-user", "auth-header", "label",
+	"name", "url", "auth", "auth-user", "auth-header", "account-id", "project-id", "label",
 	"title", "description", "scope", "statement-timeout", "max-rows", "max-bytes",
 }
 

@@ -27,6 +27,7 @@ const (
 	querySourceHint      = "Correct the statement and try again"
 	queryWantsSQLHint    = "This connection is postgresql: send sql"
 	queryWantsPromQLHint = "This connection is victoriametrics: send promql, labels, labelValues or series"
+	queryWantsLogsQLHint = "This connection is victorialogs: send logsql or a log discovery input"
 )
 
 // serveQuery implements the design's execution route over the fixture's
@@ -45,11 +46,14 @@ func (f *cliAuthFixture) serveQuery(w http.ResponseWriter, r *http.Request, acto
 	inputs := 0
 	strict := strictJSON(body, &input)
 	for _, set := range []bool{input.SQL != "", input.PromQL != "", input.Labels,
-		input.LabelValues != "", input.Series != ""} {
+		input.LabelValues != "", input.Series != "", input.LogsQL != "", input.FieldNames,
+		input.FieldValues != "", input.Streams, input.StreamFieldNames, input.StreamFieldValues != ""} {
 		if set {
 			inputs++
 		}
 	}
+	logs := input.LogsQL != "" || input.FieldNames || input.FieldValues != "" ||
+		input.Streams || input.StreamFieldNames || input.StreamFieldValues != ""
 	if r.Method != http.MethodPost || r.Header.Get("Content-Type") != "application/json" ||
 		!strict || !auth.ValidConnectionRef(input.Connection) || inputs != 1 ||
 		len(input.SQL)+len(input.PromQL) > auth.MaxSQLBytes || input.MaxRows < 0 {
@@ -78,8 +82,16 @@ func (f *cliAuthFixture) serveQuery(w http.ResponseWriter, r *http.Request, acto
 	}
 	// The input must fit the connection's provider, exactly as the service
 	// decides it on the record.
+	if connection.Provider == auth.ProviderVictoriaLogs {
+		if !logs {
+			failWith(&auth.Error{Code: auth.InvalidArgument, Hint: queryWantsLogsQLHint})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(f.queryResponse)
+		return
+	}
 	if connection.Provider == auth.ProviderVictoriaMetrics {
-		if input.SQL != "" {
+		if input.SQL != "" || logs {
 			failWith(&auth.Error{Code: auth.InvalidArgument, Hint: queryWantsPromQLHint})
 			return
 		}
@@ -157,7 +169,9 @@ func queryFixture(t *testing.T) (*cliAuthFixture, *httptest.Server) {
 	disabled.ID, disabled.Name, disabled.Enabled = testUserID(), "warehouse-primary", false
 	metrics := testConnection("metrics-prod")
 	metrics.ID, metrics.Name, metrics.Provider = testUserID(), "metrics-prod", auth.ProviderVictoriaMetrics
-	fixture.connections = append(fixture.connections, granted, disabled, metrics)
+	logs := testConnection("logs-prod")
+	logs.ID, logs.Name, logs.Provider = testUserID(), "logs-prod", auth.ProviderVictoriaLogs
+	fixture.connections = append(fixture.connections, granted, disabled, metrics, logs)
 	fixture.queryResponse = queryRows()
 	fixture.mu.Unlock()
 	return fixture, server
@@ -1070,6 +1084,407 @@ func TestQueryMetricsSourceBlockIsStrict(t *testing.T) {
 			require.Equal(t, auth.SourceError, failed.Error.Code)
 			require.NotNil(t, failed.Error.Source)
 			require.Equal(t, "cannot parse", failed.Error.Source.Message)
+		})
+	}
+}
+
+// logsRows is the third documented document: the source's own rows under the
+// provider that named them, with every field and value type as it wrote them.
+func logsRows() auth.QueryResponse {
+	return auth.QueryResponse{
+		Provider:   auth.ProviderVictoriaLogs,
+		ResultType: "logs",
+		Result: json.RawMessage(`[{"_time":"2026-09-14T10:00:00Z","_msg":"boom","level":"error",` +
+			`"_stream":"{job=\"api\"}"},{"_time":"2026-09-14T10:00:01Z","_msg":"again","level":"warn"}]`),
+		DurationMS: 12,
+	}
+}
+
+func logsAnswer(resultType, result string) auth.QueryResponse {
+	return auth.QueryResponse{Provider: auth.ProviderVictoriaLogs, ResultType: resultType,
+		Result: json.RawMessage(result), DurationMS: 12}
+}
+
+func logsFixture(t *testing.T) (*cliAuthFixture, *httptest.Server) {
+	t.Helper()
+	fixture, server := queryFixture(t)
+	fixture.mu.Lock()
+	fixture.queryResponse = logsRows()
+	fixture.mu.Unlock()
+	return fixture, server
+}
+
+// Every log input is sent as one request carrying only the fields that were
+// given: the query, the times, the match, the filter and the caller's own limit
+// travel exactly as typed, and a limit that was not given is absent altogether
+// because the platform never adds one.
+func TestQueryLogInputsAreSentAsTyped(t *testing.T) {
+	zero, five, fifty := int64(0), int64(5), int64(50)
+	for name, tc := range map[string]struct {
+		args    []string
+		request auth.QueryRequest
+	}{
+		"logsql": {[]string{"--logsql", "error | sort by (_time) desc"},
+			auth.QueryRequest{LogsQL: "error | sort by (_time) desc"}},
+		"bounded": {[]string{"--logsql", "error", "--start", "-1h", "--end", "now", "--limit", "50"},
+			auth.QueryRequest{LogsQL: "error", Start: "-1h", End: "now", Limit: &fifty}},
+		"explicit zero": {[]string{"--logsql", "error", "--limit", "0"},
+			auth.QueryRequest{LogsQL: "error", Limit: &zero}},
+		"field names": {[]string{"--field-names", "--match", "*", "--filter", "err"},
+			auth.QueryRequest{FieldNames: true, Match: "*", Filter: "err"}},
+		"field values": {[]string{"--field-values", "level", "--match", "*", "--limit", "5", "--max-rows", "10"},
+			auth.QueryRequest{FieldValues: "level", Match: "*", Limit: &five, MaxRows: 10}},
+		"streams": {[]string{"--streams", "--match", `{job="api"}`, "--limit", "50"},
+			auth.QueryRequest{Streams: true, Match: `{job="api"}`, Limit: &fifty}},
+		"stream field names": {[]string{"--stream-field-names", "--match", "*", "--filter", "j"},
+			auth.QueryRequest{StreamFieldNames: true, Match: "*", Filter: "j"}},
+		"stream field values": {[]string{"--stream-field-values", "job", "--match", "*", "--filter", "api"},
+			auth.QueryRequest{StreamFieldValues: "job", Match: "*", Filter: "api"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture, server := logsFixture(t)
+			exit, result, _ := queryRun(t, server, append([]string{"query", "--connection", "logs-prod"}, tc.args...)...)
+			require.Equal(t, 0, exit, "%+v", result.Error)
+			tc.request.Connection = "logs-prod"
+			expected, err := json.Marshal(tc.request)
+			require.NoError(t, err)
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			require.Equal(t, string(expected), string(fixture.queryBody))
+		})
+	}
+	// A query without --limit carries no limit at all: absent and zero are two
+	// different requests, and the CLI invents neither.
+	fixture, server := logsFixture(t)
+	exit, result, _ := queryRun(t, server, "query", "--connection", "logs-prod", "--logsql", "error")
+	require.Equal(t, 0, exit, "%+v", result.Error)
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	require.NotContains(t, string(fixture.queryBody), "limit")
+}
+
+// The LogsQL input takes the same three channels the SQL and PromQL inputs
+// take, and the query is bounded on all of them before anything is sent.
+func TestQueryReadsLogsQLFromEveryChannel(t *testing.T) {
+	fixture, server := logsFixture(t)
+	query := "error | stats by (level) count() as n"
+	exit, output := queryText(t, server, query, "query", "--connection", "logs-prod", "--logsql-stdin")
+	require.Equal(t, 0, exit, output)
+	fixture.mu.Lock()
+	var sent auth.QueryRequest
+	require.NoError(t, json.Unmarshal(fixture.queryBody, &sent))
+	fixture.mu.Unlock()
+	require.Equal(t, query, sent.LogsQL)
+	require.Empty(t, sent.SQL)
+	require.Empty(t, sent.PromQL)
+
+	path := filepath.Join(t.TempDir(), "query.logsql")
+	require.NoError(t, os.WriteFile(path, []byte(query), 0o644))
+	exit, result, _ := queryRun(t, server, "query", "--connection", "logs-prod", "--logsql-file", path)
+	require.Equal(t, 0, exit, "%+v", result.Error)
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	require.NoError(t, json.Unmarshal(fixture.queryBody, &sent))
+	require.Equal(t, query, sent.LogsQL)
+}
+
+// The log document reaches the caller as the source wrote it: the provider
+// names the shape and the rows pass through with their own fields.
+func TestQueryLogDocumentAsJSON(t *testing.T) {
+	_, server := logsFixture(t)
+	exit, result, _ := queryRun(t, server, "query", "--connection", "logs-prod", "--logsql", "error", "--limit", "20")
+	require.Equal(t, 0, exit, "%+v", result.Error)
+	document := result.Data.(map[string]any)
+	require.Equal(t, "victorialogs", document["provider"])
+	require.Equal(t, "logs", document["resultType"])
+	rows := document["result"].([]any)
+	require.Len(t, rows, 2)
+	require.Equal(t, map[string]any{"_time": "2026-09-14T10:00:00Z", "_msg": "boom",
+		"level": "error", "_stream": `{job="api"}`}, rows[0])
+	require.Nil(t, document["results"], "a log answer carries no results list")
+	require.Nil(t, document["warnings"], "a log source writes no warnings")
+}
+
+// The text rendering is the agent-facing one: one physical line per row, the
+// time first, the message after it, the remaining fields sorted and the stream
+// fields last, with Go quoting wherever a bare value would be ambiguous.
+func TestQueryLogTextRendering(t *testing.T) {
+	truncated := logsRows()
+	truncated.Truncated = true
+	for name, tc := range map[string]struct {
+		result Result
+		want   string
+	}{
+		"rows": {success(logsRows()),
+			"2026-09-14T10:00:00Z boom level=error _stream=\"{job=\\\"api\\\"}\"\n" +
+				"2026-09-14T10:00:01Z again level=warn\n" +
+				"Duration: 12 ms\n"},
+		"truncated": {success(truncated),
+			"2026-09-14T10:00:00Z boom level=error _stream=\"{job=\\\"api\\\"}\"\n" +
+				"2026-09-14T10:00:01Z again level=warn\n" +
+				"Truncated: true\nDuration: 12 ms\n"},
+		// A message spanning two lines stays one physical line, quoted.
+		"multiline message": {success(logsAnswer("logs",
+			`[{"_time":"2026-09-14T10:00:00Z","_msg":"line one\nline two","_stream_id":"0000"}]`)),
+			"2026-09-14T10:00:00Z \"line one\\nline two\" _stream_id=0000\nDuration: 12 ms\n"},
+		// A value carrying the separator, an empty one and a name with a space
+		// are each quoted, so the line stays readable as pairs.
+		"quoted values": {success(logsAnswer("logs",
+			`[{"_time":"t","expr":"a=b","empty":"","two words":"x"}]`)),
+			"t empty=\"\" expr=\"a=b\" \"two words\"=x\nDuration: 12 ms\n"},
+		// A value the source did not write as a string is printed as the JSON
+		// it wrote, so a count stays a count and an object stays an object.
+		"typed values": {success(logsAnswer("logs",
+			`[{"_time":"t","n":12,"ok":true,"nested":{"a":1},"none":null}]`)),
+			"t n=12 nested=\"{\\\"a\\\":1}\" none=null ok=true\nDuration: 12 ms\n"},
+		// An aggregate row has neither time nor message and prints as pairs.
+		"aggregate": {success(logsAnswer("logs", `[{"level":"error","n":12}]`)),
+			"level=error n=12\nDuration: 12 ms\n"},
+		"empty": {success(logsAnswer("logs", `[]`)), "Duration: 12 ms\n"},
+		// Discovery is the source's value and its own hit count, one per line.
+		"field names": {success(logsAnswer("fieldNames",
+			`[{"value":"level","hits":12},{"value":"_msg","hits":300}]`)),
+			"level\t12\n_msg\t300\nDuration: 12 ms\n"},
+		"field values": {success(logsAnswer("fieldValues",
+			`[{"value":"","hits":0},{"value":"a b","hits":9007199254740993}]`)),
+			"\"\"\t0\n\"a b\"\t9007199254740993\nDuration: 12 ms\n"},
+		"logsql-error": {failureWithSource(auth.SourceError, "The source rejected the SQL", querySourceHint,
+			&auth.SourceFailure{ErrorType: "http_400", Message: "cannot parse the query"}),
+			"SOURCE_ERROR: The source rejected the SQL\nHint: " + querySourceHint + "\n" +
+				"ERROR: http_400 cannot parse the query\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			require.NoError(t, render(&out, tc.result, "text"))
+			require.Equal(t, tc.want, out.String())
+			var encoded bytes.Buffer
+			require.NoError(t, render(&encoded, tc.result, "json"))
+			require.Equal(t, 1, decode(t, encoded.String()).SchemaVersion)
+		})
+	}
+}
+
+// The rendering reaches the caller through the command as well: a two-line
+// message stays one line and the truncation notice appears only when the
+// server reported it.
+func TestQueryLogRowsAsText(t *testing.T) {
+	fixture, server := logsFixture(t)
+	answer := logsAnswer("logs", `[{"_time":"2026-09-14T10:00:00Z","_msg":"line one\nline two",`+
+		`"level":"error","_stream":"{job=\"api\"}"}]`)
+	answer.Truncated = true
+	fixture.mu.Lock()
+	fixture.queryResponse = answer
+	fixture.mu.Unlock()
+	exit, output := queryText(t, server, "", "query", "--connection", "logs-prod", "--logsql", "error")
+	require.Equal(t, 0, exit, output)
+	require.Equal(t, "2026-09-14T10:00:00Z \"line one\\nline two\" level=error "+
+		"_stream=\"{job=\\\"api\\\"}\"\nTruncated: true\nDuration: 12 ms\n", output)
+	require.Len(t, strings.Split(strings.TrimSuffix(output, "\n"), "\n"), 3,
+		"the row, the notice and the duration are three physical lines")
+}
+
+// Discovery as text is the source's value and its hit count per line, and the
+// command exits 0 with the notice only when the server reported truncation.
+func TestQueryLogDiscoveryAsText(t *testing.T) {
+	fixture, server := logsFixture(t)
+	fixture.mu.Lock()
+	fixture.queryResponse = logsAnswer("fieldValues", `[{"value":"error","hits":12},{"value":"warn","hits":3}]`)
+	fixture.mu.Unlock()
+	exit, output := queryText(t, server, "", "query", "--connection", "logs-prod",
+		"--field-values", "level", "--match", "*")
+	require.Equal(t, 0, exit, output)
+	require.Equal(t, "error\t12\nwarn\t3\nDuration: 12 ms\n", output)
+}
+
+// A LogsQL failure prints the status the platform named and the source's own
+// text, with no position and no statement line, and never repeats the query.
+func TestQueryLogsQLSourceErrorAsText(t *testing.T) {
+	fixture, server := logsFixture(t)
+	fixture.mu.Lock()
+	fixture.queryFailure = &auth.Error{Code: auth.SourceError, Hint: querySourceHint,
+		Source: &auth.SourceFailure{ErrorType: "http_400", Message: "cannot parse the query"}}
+	fixture.mu.Unlock()
+	exit, output := queryText(t, server, "", "query", "--connection", "logs-prod", "--logsql", "error ~~ sentinel")
+	require.Equal(t, 1, exit)
+	require.Equal(t, "SOURCE_ERROR: The source rejected the SQL\nHint: "+querySourceHint+"\n"+
+		"ERROR: http_400 cannot parse the query\n", output)
+	require.NotContains(t, output, "sentinel")
+}
+
+// A mismatch the server decides on the record passes through both ways, with
+// the hint naming the input that connection takes.
+func TestQueryLogProviderMismatchPassesThrough(t *testing.T) {
+	_, server := logsFixture(t)
+	exit, result, output := queryRun(t, server, "query", "--connection", "logs-prod", "--sql", "select 1")
+	require.Equal(t, 2, exit)
+	require.Equal(t, auth.InvalidArgument, result.Error.Code)
+	require.Equal(t, queryWantsLogsQLHint, result.Error.Hint)
+	require.NotContains(t, output, "select 1")
+
+	exit, result, _ = queryRun(t, server, "query", "--connection", "payments-prod-reporting", "--logsql", "error")
+	require.Equal(t, 2, exit)
+	require.Equal(t, auth.InvalidArgument, result.Error.Code)
+	require.Equal(t, queryWantsSQLHint, result.Error.Hint)
+
+	exit, result, _ = queryRun(t, server, "query", "--connection", "metrics-prod", "--logsql", "error")
+	require.Equal(t, 2, exit)
+	require.Equal(t, auth.InvalidArgument, result.Error.Code)
+	require.Equal(t, queryWantsPromQLHint, result.Error.Hint)
+}
+
+// Every log argument rule is decided locally, exits 2 and reaches no request.
+func TestQueryLogArgumentsRejectedBeforeIO(t *testing.T) {
+	fixture, server := logsFixture(t)
+	fixture.mu.Lock()
+	before := fixture.queryCalls
+	fixture.mu.Unlock()
+	for _, tc := range []struct {
+		name string
+		args []string
+		hint string
+	}{
+		{"two log inputs", []string{"--logsql", "error", "--streams", "--match", "*"}, queryInputHint},
+		{"two discovery inputs", []string{"--field-names", "--streams", "--match", "*"}, queryInputHint},
+		{"log and sql", []string{"--sql", "select 1", "--logsql", "error"}, queryInputHint},
+		{"log and promql", []string{"--promql", "up", "--logsql", "error"}, queryInputHint},
+		{"two query channels", []string{"--logsql", "error", "--logsql-stdin"}, queryInputHint},
+		{"relative query file", []string{"--logsql-file", "query.logsql"}, queryInputHint},
+		{"empty query", []string{"--logsql", ""}, sqlBoundHint},
+		{"oversized query", []string{"--logsql", strings.Repeat("e", auth.MaxSQLBytes+1)}, sqlBoundHint},
+		{"oversized field name", []string{"--field-values", strings.Repeat("f", auth.MaxSQLBytes+1), "--match", "*"}, sqlBoundHint},
+		{"oversized match", []string{"--field-names", "--match", strings.Repeat("m", auth.MaxSQLBytes+1)}, sqlBoundHint},
+		{"discovery without match", []string{"--field-values", "level"}, queryMatchHint},
+		{"streams without match", []string{"--streams"}, queryMatchHint},
+		{"field names without match", []string{"--field-names"}, queryMatchHint},
+		{"stream field names without match", []string{"--stream-field-names"}, queryMatchHint},
+		{"stream field values without match", []string{"--stream-field-values", "job"}, queryMatchHint},
+		{"match with logsql", []string{"--logsql", "error", "--match", "*"}, queryMatchHint},
+		{"limit on field names", []string{"--field-names", "--match", "*", "--limit", "5"}, queryLimitHint},
+		{"limit on stream field names", []string{"--stream-field-names", "--match", "*", "--limit", "5"}, queryLimitHint},
+		{"limit on sql", []string{"--sql", "select 1", "--limit", "5"}, queryLimitHint},
+		{"limit on promql", []string{"--promql", "up", "--limit", "5"}, queryLimitHint},
+		{"negative limit", []string{"--logsql", "error", "--limit", "-1"}, queryLimitHint},
+		{"filter on logsql", []string{"--logsql", "error", "--filter", "err"}, queryFilterHint},
+		{"filter on streams", []string{"--streams", "--match", "*", "--filter", "err"}, queryFilterHint},
+		{"filter on sql", []string{"--sql", "select 1", "--filter", "err"}, queryFilterHint},
+		{"oversized filter", []string{"--field-names", "--match", "*",
+			"--filter", strings.Repeat("f", auth.MaxFilterBytes+1)}, queryFilterHint},
+		{"at with logsql", []string{"--logsql", "error", "--at", "now"}, queryTimeHint},
+		{"step with logsql", []string{"--logsql", "error", "--start", "-1h", "--step", "1m"}, queryTimeHint},
+		{"at with discovery", []string{"--field-names", "--match", "*", "--at", "now"}, queryTimeHint},
+		{"step with discovery", []string{"--streams", "--match", "*", "--start", "-1h", "--step", "1m"}, queryTimeHint},
+		{"non-numeric limit", []string{"--logsql", "error", "--limit", "abc"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exit, result, output := queryRun(t, server,
+				append([]string{"query", "--connection", "logs-prod"}, tc.args...)...)
+			require.Equal(t, 2, exit)
+			require.Equal(t, auth.InvalidArgument, result.Error.Code)
+			require.True(t, json.Valid([]byte(output)), "exit 2 forces JSON")
+			if tc.hint != "" {
+				require.Equal(t, tc.hint, result.Error.Hint)
+			}
+			require.NotContains(t, output, "select 1")
+		})
+	}
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	require.Equal(t, before, fixture.queryCalls, "no request may be made")
+}
+
+// A log document that is not the documented shape is refused rather than
+// rendered, and no provider's document may carry another's members.
+func TestQueryLogsTransportStrictResponses(t *testing.T) {
+	valid := `{"provider":"victorialogs","resultType":"logs",` +
+		`"result":[{"_time":"t","_msg":"m"}],"truncated":false,"durationMs":4}`
+	discovery := func(body string) string {
+		return strings.Replace(valid, `"logs","result":[{"_time":"t","_msg":"m"}]`, body, 1)
+	}
+	for name, tc := range map[string]struct {
+		body  string
+		valid bool
+	}{
+		"rows":                    {valid, true},
+		"empty rows":              {strings.Replace(valid, `[{"_time":"t","_msg":"m"}]`, `[]`, 1), true},
+		"any fields":              {strings.Replace(valid, `{"_time":"t","_msg":"m"}`, `{"level":"error","n":12,"ok":true,"o":{"a":1}}`, 1), true},
+		"empty row":               {strings.Replace(valid, `{"_time":"t","_msg":"m"}`, `{}`, 1), true},
+		"truncated rows":          {strings.Replace(valid, `"truncated":false`, `"truncated":true`, 1), true},
+		"field names":             {discovery(`"fieldNames","result":[{"value":"level","hits":12}]`), true},
+		"field values":            {discovery(`"fieldValues","result":[{"value":"","hits":0}]`), true},
+		"streams":                 {discovery(`"streams","result":[{"value":"{job=\"api\"}","hits":3}]`), true},
+		"stream fields":           {discovery(`"streamFieldNames","result":[]`), true},
+		"stream values":           {discovery(`"streamFieldValues","result":[{"value":"api","hits":1}]`), true},
+		"unknown type":            {strings.Replace(valid, `"logs"`, `"hits"`, 1), false},
+		"metrics type":            {strings.Replace(valid, `"logs"`, `"vector"`, 1), false},
+		"missing type":            {strings.Replace(valid, `"resultType":"logs",`, ``, 1), false},
+		"missing result":          {strings.Replace(valid, `"result":[{"_time":"t","_msg":"m"}],`, ``, 1), false},
+		"null result":             {strings.Replace(valid, `[{"_time":"t","_msg":"m"}]`, `null`, 1), false},
+		"rows of strings":         {strings.Replace(valid, `[{"_time":"t","_msg":"m"}]`, `["line"]`, 1), false},
+		"null row":                {strings.Replace(valid, `{"_time":"t","_msg":"m"}`, `null`, 1), false},
+		"row not a list":          {strings.Replace(valid, `[{"_time":"t","_msg":"m"}]`, `{"_time":"t"}`, 1), false},
+		"discovery without hits":  {discovery(`"fieldNames","result":[{"value":"level"}]`), false},
+		"discovery without value": {discovery(`"fieldNames","result":[{"hits":1}]`), false},
+		"quoted hits":             {discovery(`"fieldNames","result":[{"value":"level","hits":"12"}]`), false},
+		"numeric value":           {discovery(`"fieldNames","result":[{"value":1,"hits":1}]`), false},
+		"discovery of strings":    {discovery(`"fieldNames","result":["level"]`), false},
+		"rows on discovery":       {discovery(`"fieldNames","result":[{"_time":"t"}]`), false},
+		"warnings":                {strings.Replace(valid, `"truncated":false`, `"warnings":["long"],"truncated":false`, 1), false},
+		"infos":                   {strings.Replace(valid, `"truncated":false`, `"infos":["note"],"truncated":false`, 1), false},
+		"partial":                 {strings.Replace(valid, `"truncated":false`, `"isPartial":true,"truncated":false`, 1), false},
+		"results list":            {strings.Replace(valid, `"truncated":false`, `"results":[],"truncated":false`, 1), false},
+		"unknown member":          {strings.Replace(valid, `"durationMs":4`, `"durationMs":4,"extra":1`, 1), false},
+		"no provider":             {strings.Replace(valid, `"provider":"victorialogs",`, ``, 1), false},
+		"log members on a SQL answer": {`{"provider":"postgresql","results":[],"resultType":"logs",` +
+			`"result":[],"truncated":false,"durationMs":4}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := hostileQuery(t, http.StatusOK, "application/json", tc.body)
+			var response auth.QueryResponse
+			failed := sendQuery(t, server, &response)
+			if tc.valid {
+				require.Nil(t, failed)
+				require.Equal(t, auth.ProviderVictoriaLogs, response.Provider)
+				return
+			}
+			require.NotNil(t, failed)
+			require.Equal(t, "INVALID_RESPONSE", failed.Error.Code)
+		})
+	}
+}
+
+// A log source classifies nothing itself: the platform names the status, and a
+// block carrying a SQLSTATE or a statement index is not the documented shape.
+func TestQueryLogSourceBlockIsStrict(t *testing.T) {
+	envelope := func(source string) string {
+		_, safe, _ := auth.LookupFailure(auth.SourceError)
+		return `{"error":{"code":"` + safe.Code + `","message":"` + safe.Message + `","source":` + source + `}}`
+	}
+	for name, tc := range map[string]struct {
+		source  string
+		message string
+		valid   bool
+	}{
+		"http status":       {`{"errorType":"http_400","message":"cannot parse"}`, "cannot parse", true},
+		"malformed":         {`{"errorType":"malformed_response","message":"no such field"}`, "no such field", true},
+		"too large":         {`{"errorType":"response_too_large","message":"past the ceiling"}`, "past the ceiling", true},
+		"with sqlstate":     {`{"errorType":"http_400","sqlstate":"42601","message":"cannot parse"}`, "", false},
+		"with statement":    {`{"errorType":"http_400","message":"cannot parse","statement":0}`, "", false},
+		"no classification": {`{"message":"cannot parse"}`, "cannot parse", true},
+		"no message":        {`{"errorType":"http_400"}`, "", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, _, _ := auth.LookupFailure(auth.SourceError)
+			server := hostileQuery(t, status, "application/json", envelope(tc.source))
+			var response auth.QueryResponse
+			failed := sendQuery(t, server, &response)
+			require.NotNil(t, failed)
+			if !tc.valid {
+				require.Equal(t, "INVALID_RESPONSE", failed.Error.Code)
+				return
+			}
+			require.Equal(t, auth.SourceError, failed.Error.Code)
+			require.NotNil(t, failed.Error.Source)
+			require.Equal(t, tc.message, failed.Error.Source.Message)
 		})
 	}
 }

@@ -337,6 +337,7 @@ func TestAuditJournalDropAppliesOnceToInitializedInstallation(t *testing.T) {
 	pool := testPool(t)
 	previous := embeddedMapFS(t)
 	delete(previous, "005_drop_audit_events.sql")
+	delete(previous, "006_victorialogs_provider.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	path, _ := testSecret(t)
 	// The previous release bootstrapped and stored events in its journal.

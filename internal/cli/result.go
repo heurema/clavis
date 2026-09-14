@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/heurema/clavis/internal/auth"
@@ -175,10 +177,11 @@ const emptyStatementLabel = "(empty statement)"
 
 // renderQueryResponse prints the shape the provider named: for a SQL source
 // one aligned table per row-producing result and the command tag and affected
-// count for the others; for a metrics source the source's own samples. The
-// source's warnings come first and the platform's own notices last. The values
-// are printed exactly as the source rendered them; only NULL is marked,
-// because nothing in the value itself could be.
+// count for the others; for a metrics source the source's own samples; for a
+// log source one line per row. The source's warnings come first and the
+// platform's own notices last. The values are printed exactly as the source
+// rendered them; only NULL is marked, because nothing in the value itself
+// could be.
 func renderQueryResponse(w io.Writer, response auth.QueryResponse) error {
 	// The source's warnings come before the data they are about, so a reader
 	// knows what the answer is qualified by before reading it.
@@ -187,8 +190,13 @@ func renderQueryResponse(w io.Writer, response auth.QueryResponse) error {
 			return err
 		}
 	}
-	if response.Provider == auth.ProviderVictoriaMetrics {
+	switch response.Provider {
+	case auth.ProviderVictoriaMetrics:
 		if err := renderMetricsResult(w, response.ResultType, response.Result); err != nil {
+			return err
+		}
+	case auth.ProviderVictoriaLogs:
+		if err := renderLogsResult(w, response.ResultType, response.Result); err != nil {
 			return err
 		}
 	}
@@ -211,6 +219,119 @@ func renderQueryResponse(w io.Writer, response auth.QueryResponse) error {
 	}
 	_, err := fmt.Fprintf(w, "Duration: %d ms\n", response.DurationMS)
 	return err
+}
+
+// The fields a log row leads and trails with. A row is a query result rather
+// than a log line, so none of them is required: an aggregate row has neither
+// time nor message, and the platform prints whatever fields exist.
+const (
+	logTimeField     = "_time"
+	logMessageField  = "_msg"
+	logStreamField   = "_stream"
+	logStreamIDField = "_stream_id"
+)
+
+// renderLogsResult prints the source's own rows, one physical line each, so a
+// multi-line message stays one line and a reader can pipe the output. The time
+// leads, the message follows it, the remaining fields come as key=value in
+// name order because a JSON object's order is not the source's statement about
+// them, and the two stream fields close the line. Discovery is the source's
+// value and its hit count, one pair per line.
+func renderLogsResult(w io.Writer, resultType string, result json.RawMessage) error {
+	if resultType != "logs" {
+		var values []struct {
+			Value string      `json:"value"`
+			Hits  json.Number `json:"hits"`
+		}
+		if err := json.Unmarshal(result, &values); err != nil {
+			return nil
+		}
+		for _, item := range values {
+			if _, err := fmt.Fprintf(w, "%s\t%s\n", logsText(item.Value), item.Hits.String()); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal(result, &rows); err != nil {
+		return nil
+	}
+	for _, row := range rows {
+		if _, err := fmt.Fprintln(w, logRow(row)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// logRow renders one row as the documented line.
+func logRow(row map[string]json.RawMessage) string {
+	parts := make([]string, 0, len(row))
+	for _, field := range []string{logTimeField, logMessageField} {
+		if value, present := row[field]; present {
+			parts = append(parts, logsValueText(value))
+		}
+	}
+	middle := make([]string, 0, len(row))
+	for name := range row {
+		switch name {
+		case logTimeField, logMessageField, logStreamField, logStreamIDField:
+		default:
+			middle = append(middle, name)
+		}
+	}
+	sort.Strings(middle)
+	for _, name := range middle {
+		parts = append(parts, logsText(name)+"="+logsValueText(row[name]))
+	}
+	// The stream fields close the line: they identify the row's origin rather
+	// than say anything about it, so they never separate the fields that do.
+	for _, field := range []string{logStreamField, logStreamIDField} {
+		if value, present := row[field]; present {
+			parts = append(parts, logsText(field)+"="+logsValueText(value))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// logsValueText renders one JSON value: the text a string holds, or the
+// compact JSON the source wrote for anything else, so a number, a boolean, an
+// object or a list survives as what it was. Either way the quoting rule below
+// decides whether it is printed as it is.
+func logsValueText(raw json.RawMessage) string {
+	// The leading quote decides it: JSON null also decodes into a string, and
+	// printing a null as an empty value would say something the source did not.
+	trimmed := bytes.TrimSpace(raw)
+	var text string
+	if len(trimmed) > 0 && trimmed[0] == '"' && json.Unmarshal(trimmed, &text) == nil {
+		return logsText(text)
+	}
+	var compact bytes.Buffer
+	if json.Compact(&compact, raw) != nil {
+		return logsText(string(raw))
+	}
+	return logsText(compact.String())
+}
+
+// logsText quotes a field name or a value when printing it bare would make the
+// line ambiguous or would let the source's own text rewrite the terminal: an
+// empty string, whitespace, a quote, a backslash, a control character or the
+// separator itself. Go's own quoting is used, so the escape is one a reader
+// and a parser both know.
+func logsText(value string) string {
+	if value == "" || strings.ContainsFunc(value, logsQuoted) {
+		return strconv.Quote(value)
+	}
+	return value
+}
+
+func logsQuoted(r rune) bool {
+	switch r {
+	case '"', '\\', '=':
+		return true
+	}
+	return unicode.IsSpace(r) || unicode.IsControl(r)
 }
 
 // renderMetricsResult prints the source's own answer: one line per vector
@@ -391,7 +512,7 @@ func renderSourceFailure(w io.Writer, source *auth.SourceFailure) error {
 		return nil
 	}
 	// The source's own classification leads the line: a SQLSTATE from a SQL
-	// source, an errorType from a metrics one, and neither from a source that
+	// source, an errorType from an HTTP one, and neither from a source that
 	// reported only a message.
 	headline := source.Message
 	switch {
