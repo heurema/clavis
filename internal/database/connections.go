@@ -51,9 +51,11 @@ var noSecret = []byte{0}
 
 func invalidArgument(hint string) error { return &auth.Error{Code: auth.InvalidArgument, Hint: hint} }
 
-// hintConnectionGrants states how many grants still block a delete, so the
-// caller knows exactly how much revoking is left before retrying.
-func hintConnectionGrants(count int64) string {
+// hintRemainingGrants states how many grants still block a delete, so the
+// caller knows exactly how much revoking is left before retrying. Connections
+// and groups are both guarded on the grants that name them, and the sentence
+// names neither, so both delete guards say the same thing.
+func hintRemainingGrants(count int64) string {
 	if count == 1 {
 		return "1 grant remains; revoke it with `clavis grants revoke` first."
 	}
@@ -72,7 +74,7 @@ func hintConnectionGuard(enabled bool, grants int64) string {
 	case enabled:
 		return hintConnectionInUse
 	default:
-		return hintConnectionGrants(grants)
+		return hintRemainingGrants(grants)
 	}
 }
 
@@ -290,9 +292,11 @@ func lockConnection(ctx context.Context, queries *sqlc.Queries, ref string) (sql
 
 // nameGuarded runs one statement that can still lose the unique index race to
 // a row committed outside the advisory lock, inside a savepoint that keeps the
-// transaction usable after the constraint fires.
-func nameGuarded(ctx context.Context, tx pgx.Tx, run func(*sqlc.Queries) (sqlc.Connection, error)) (sqlc.Connection, error) {
-	var row sqlc.Connection
+// transaction usable after the constraint fires. taken is the denial the loser
+// answers with, so the caller's own namespace names the conflict.
+func nameGuarded[T any](ctx context.Context, tx pgx.Tx, taken error,
+	run func(*sqlc.Queries) (T, error)) (T, error) {
+	var row T
 	savepoint, err := tx.Begin(ctx)
 	if err != nil {
 		return row, err
@@ -303,7 +307,7 @@ func nameGuarded(ctx context.Context, tx pgx.Tx, run func(*sqlc.Queries) (sqlc.C
 		if err := savepoint.Rollback(ctx); err != nil {
 			return row, err
 		}
-		return row, connectionExists()
+		return row, taken
 	}
 	if err != nil {
 		return row, err
@@ -457,7 +461,7 @@ func (s *LocalAuth) CreateConnection(ctx context.Context, session auth.Session,
 			if exists {
 				return connectionExists()
 			}
-			row, err := nameGuarded(ctx, tx, func(q *sqlc.Queries) (sqlc.Connection, error) {
+			row, err := nameGuarded(ctx, tx, connectionExists(), func(q *sqlc.Queries) (sqlc.Connection, error) {
 				return q.InsertConnection(ctx, params)
 			})
 			if err != nil {
@@ -520,7 +524,7 @@ func (s *LocalAuth) UpdateConnection(ctx context.Context, session auth.Session, 
 					return err
 				}
 			}
-			updated, err := nameGuarded(ctx, tx, func(q *sqlc.Queries) (sqlc.Connection, error) {
+			updated, err := nameGuarded(ctx, tx, connectionExists(), func(q *sqlc.Queries) (sqlc.Connection, error) {
 				return q.UpdateConnection(ctx, params)
 			})
 			if err != nil {

@@ -33,6 +33,9 @@ type fakeGrants struct {
 	summaryRecord   auth.ConnectionSummary
 	grantedNames    []string
 	namesTruncated  bool
+	groupNames      []string
+	groupsTruncated bool
+	accessList      auth.AccessList
 	memberErr       error
 }
 
@@ -88,6 +91,17 @@ func (f *fakeGrants) GetGrantedConnection(ctx context.Context, session auth.Sess
 func (f *fakeGrants) ListGrantedConnectionNames(ctx context.Context, session auth.Session, limit int) ([]string, bool, error) {
 	f.grantCall(ctx, session, grantCall{operation: "member-names", limit: limit})
 	return f.grantedNames, f.namesTruncated, f.memberErr
+}
+
+func (f *fakeGrants) ListGroupNames(ctx context.Context, session auth.Session, limit int) ([]string, bool, error) {
+	f.grantCall(ctx, session, grantCall{operation: "group-names", limit: limit})
+	return f.groupNames, f.groupsTruncated, f.memberErr
+}
+
+func (f *fakeGrants) ListEffectiveAccess(ctx context.Context, session auth.Session,
+	userRef, connectionRef string, limit int) (auth.AccessList, error) {
+	f.grantCall(ctx, session, grantCall{operation: "effective", target: userRef, limit: limit})
+	return f.accessList, f.grantErr
 }
 
 const (

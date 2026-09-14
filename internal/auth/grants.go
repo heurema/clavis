@@ -147,20 +147,15 @@ type AccessList struct {
 // caller is an administrator or holds effective access, the union of their
 // direct grants and the grants of every group they belong to; it changes no
 // state of its own.
+//
+// ListEffectiveAccess reports where a subject's access comes from: an empty
+// user reference means the caller, and the role rule that resolves the subject
+// is the server's, never the client's.
 type Grants interface {
 	ListGrants(context.Context, Session, GrantFilter) (GrantList, error)
 	CreateGrant(context.Context, Session, GrantRequest, bool) (GrantMutation, error)
 	RevokeGrant(context.Context, Session, GrantRequest, bool) (GrantRevocation, error)
 	AuthorizeConnection(context.Context, Session, string) (Connection, error)
-}
-
-// EffectiveAccess reports where a subject's access comes from: an empty user
-// reference means the caller, and the role rule that resolves the subject is
-// the server's, never the client's. It is declared beside the rest of the
-// grant contract and folded into Grants by the slice that implements it: an
-// unimplemented method on Grants would fail the composition boundary, which
-// takes the service as one value.
-type EffectiveAccess interface {
 	ListEffectiveAccess(ctx context.Context, session Session, userRef, connectionRef string, limit int) (AccessList, error)
 }
 

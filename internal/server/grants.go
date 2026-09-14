@@ -8,14 +8,18 @@ import (
 	"github.com/heurema/clavis/internal/auth"
 )
 
-// MemberConnections is the member half of the connection read routes. It is
-// declared here rather than in auth because it exists only so this adapter can
-// choose a projection from the caller's current role; the same service value
-// satisfies it and auth.Connections.
+// MemberConnections is the member half of the connection read routes plus the
+// two name listings the identity route fills. It is declared here rather than
+// in auth because it exists only so this adapter can choose a projection from
+// the caller's current role; the same service value satisfies it and
+// auth.Connections. ListGroupNames is filled for every caller, unlike the
+// connection names, because an administrator belongs to groups like anybody
+// else even though their access does not depend on them.
 type MemberConnections interface {
 	ListGrantedConnections(ctx context.Context, session auth.Session, terms []auth.SelectorTerm, limit int) (auth.ConnectionSummaryList, error)
 	GetGrantedConnection(ctx context.Context, session auth.Session, ref string) (auth.ConnectionSummary, error)
 	ListGrantedConnectionNames(ctx context.Context, session auth.Session, limit int) (names []string, truncated bool, err error)
+	ListGroupNames(ctx context.Context, session auth.Session, limit int) (names []string, truncated bool, err error)
 }
 
 // The grant service owns readiness and authority rechecks, exactly like user

@@ -283,6 +283,8 @@ func TestGrantMigrationAppliesToInitializedInstallation(t *testing.T) {
 	pool := testPool(t)
 	previous := embeddedMapFS(t)
 	delete(previous, "004_grants.sql")
+	// A later migration must not be applied ahead of the one under test: the
+	// ledger would then be ahead of the manifest and fail closed.
 	delete(previous, "005_drop_audit_events.sql")
 	delete(previous, "006_victorialogs_provider.sql")
 	delete(previous, "007_groups.sql")
@@ -312,6 +314,8 @@ func TestGrantMigrationFailsClosedOnUUIDShapedUsername(t *testing.T) {
 	pool := testPool(t)
 	previous := embeddedMapFS(t)
 	delete(previous, "004_grants.sql")
+	// A later migration must not be applied ahead of the one under test: the
+	// ledger would then be ahead of the manifest and fail closed.
 	delete(previous, "005_drop_audit_events.sql")
 	delete(previous, "006_victorialogs_provider.sql")
 	delete(previous, "007_groups.sql")

@@ -21,10 +21,23 @@ var _ auth.Grants = (*LocalAuth)(nil)
 // connection; the caller cannot enable it themselves.
 const hintConnectionDisabled = "The connection is disabled; ask an administrator to enable it."
 
-// text reads an optional column. Every recipient identifier is joined to its
+// hintAccessSubject names the missing argument: an administrator's own access
+// comes from their role rather than from grants, so there is no subject to
+// default to and the caller has to name one.
+const hintAccessSubject = "Name the user whose access to explain with `--user`; an administrator needs no grant, so there is no default subject."
+
+// denied reports whether err is the service's own failure with this code, the
+// question every caller that forwards a target denial and swallows a driver
+// failure has to ask.
+func denied(err error, code string) bool {
+	var failure *auth.Error
+	return errors.As(err, &failure) && failure.Code == code
+}
+
+// deref reads an optional column. Every recipient identifier is joined to its
 // name, so a set identifier always carries one; the empty string is the safe
 // answer to a row that somehow carries neither.
-func text(value *string) string {
+func deref(value *string) string {
 	if value == nil {
 		return ""
 	}
@@ -36,9 +49,9 @@ func text(value *string) string {
 // row itself says which namespace the name belongs to.
 func grantRecipient(userID, username, groupID, groupName *string) auth.Recipient {
 	if userID != nil {
-		return auth.Recipient{Kind: auth.RecipientUser, ID: *userID, Name: text(username)}
+		return auth.Recipient{Kind: auth.RecipientUser, ID: *userID, Name: deref(username)}
 	}
-	return auth.Recipient{Kind: auth.RecipientGroup, ID: text(groupID), Name: text(groupName)}
+	return auth.Recipient{Kind: auth.RecipientGroup, ID: deref(groupID), Name: deref(groupName)}
 }
 
 // grantRecord is the safe projection of a joined grant row: the recipient and
@@ -199,17 +212,31 @@ func (s *LocalAuth) RevokeGrant(ctx context.Context, session auth.Session,
 	return result, nil
 }
 
+// The three namespaces a listing filter can name; each reference is resolved
+// by the lookup of its own table.
+type filterNamespace int
+
+const (
+	filterUser filterNamespace = iota
+	filterGroup
+	filterConnection
+)
+
 // filterID resolves one listing filter to an identifier. found false means the
 // reference names nothing, which narrows the listing to no rows rather than
 // failing: a filter is a question about grants, not about the named party.
-func filterID(ctx context.Context, queries *sqlc.Queries, ref string, user bool) (id string, found bool, err error) {
+func filterID(ctx context.Context, queries *sqlc.Queries, ref string,
+	namespace filterNamespace) (id string, found bool, err error) {
 	if ref == "" {
 		return "", false, nil
 	}
-	if user {
+	switch namespace {
+	case filterUser:
 		if !auth.ValidUserRef(ref) {
 			return "", false, nil
 		}
+		// A UUID needs no lookup: a listing filtered on one that names nobody
+		// matches no grant anyway.
 		if auth.ValidUserID(ref) {
 			return ref, true, nil
 		}
@@ -218,18 +245,55 @@ func filterID(ctx context.Context, queries *sqlc.Queries, ref string, user bool)
 			return "", false, nil
 		}
 		return id, err == nil, err
+	case filterGroup:
+		group, err := findGroup(ctx, queries, ref, false)
+		if denied(err, auth.GroupNotFound) {
+			return "", false, nil
+		}
+		return group.ID, err == nil, err
 	}
-	row, err := findConnection(ctx, queries, ref, false)
-	var failure *auth.Error
-	if errors.As(err, &failure) && failure.Code == auth.ConnectionNotFound {
+	connection, err := findConnection(ctx, queries, ref, false)
+	if denied(err, auth.ConnectionNotFound) {
 		return "", false, nil
 	}
-	return row.ID, err == nil, err
+	return connection.ID, err == nil, err
+}
+
+// findUser resolves a user reference without locking the row, the read
+// counterpart of lockUser: a listing asks who the subject is, it does not
+// serialize against that account's administration.
+func findUser(ctx context.Context, queries *sqlc.Queries, ref string) (sqlc.FindUserRow, error) {
+	var row sqlc.FindUserRow
+	if !auth.ValidUserRef(ref) {
+		return row, userNotFound()
+	}
+	id := ref
+	if !auth.ValidUserID(ref) {
+		found, err := queries.FindUserIDByUsername(ctx, ref)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return row, userNotFound()
+		}
+		if err != nil {
+			return row, err
+		}
+		id = found
+	}
+	row, err := queries.FindUser(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return row, userNotFound()
+	}
+	return row, err
+}
+
+func userNotFound() error {
+	return &auth.Error{Code: auth.UserNotFound, Hint: hintUserNotFound}
 }
 
 // ListGrants is a read: no advisory key and no mutation. Administrators see
-// every grant and may filter by either party; a member sees only their own and
-// naming another user is refused.
+// every grant and may filter by recipient, user or group, and by connection;
+// naming both recipients matches nothing, because a grant has exactly one. A
+// member sees only their own direct grants, and any other reference is
+// refused.
 func (s *LocalAuth) ListGrants(ctx context.Context, previous auth.Session,
 	filter auth.GrantFilter) (auth.GrantList, error) {
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
@@ -262,21 +326,35 @@ func (s *LocalAuth) ListGrants(ctx context.Context, previous auth.Session,
 	params := sqlc.ListGrantsParams{LimitRows: int32(limit) + 1}
 	scoped := true
 	if current.User.Role == auth.Admin {
-		if id, found, err := filterID(ctx, queries, filter.User, true); err != nil {
+		if id, found, err := filterID(ctx, queries, filter.User, filterUser); err != nil {
 			return list, unavailable()
 		} else if filter.User != "" {
 			params.UserID, scoped = &id, found
 		}
+		if scoped {
+			if id, found, err := filterID(ctx, queries, filter.Group, filterGroup); err != nil {
+				return list, unavailable()
+			} else if filter.Group != "" {
+				params.GroupID, scoped = &id, found
+			}
+		}
 	} else {
-		// A member's listing is their own. Naming somebody else is an attempt
-		// to read another account's access, not a narrower question.
+		// A group filter asks about access configured for a set of people, so
+		// it is refused before any group is looked up: whether the group
+		// exists is not a member's to learn. Naming another user is the same
+		// attempt to read another account's access, not a narrower question.
+		if filter.Group != "" {
+			return list, &auth.Error{Code: auth.Forbidden}
+		}
 		if filter.User != "" && filter.User != current.User.ID && filter.User != current.User.Username {
 			return list, &auth.Error{Code: auth.Forbidden}
 		}
+		// A member's listing is their own direct grants; the group grants they
+		// inherit are not records that name them.
 		params.UserID = &current.User.ID
 	}
 	if scoped {
-		if id, found, err := filterID(ctx, queries, filter.Connection, false); err != nil {
+		if id, found, err := filterID(ctx, queries, filter.Connection, filterConnection); err != nil {
 			return list, unavailable()
 		} else if filter.Connection != "" {
 			params.ConnectionID, scoped = &id, found
@@ -299,6 +377,137 @@ func (s *LocalAuth) ListGrants(ctx context.Context, previous auth.Session,
 		list.Grants = append(list.Grants, grantRecord(sqlc.FindGrantRow(row)))
 	}
 	return list, nil
+}
+
+// accessEntry projects one configured path. The group columns are set only on
+// an inherited grant, which is what separates the two sources; a connection
+// reached twice is two entries, because provenance is the question.
+func accessEntry(row sqlc.ListEffectiveAccessRow) auth.AccessEntry {
+	entry := auth.AccessEntry{
+		Connection: auth.GrantParty{ID: row.ConnectionID, Name: row.ConnectionName},
+		Source:     auth.AccessDirect,
+		CreatedAt:  row.CreatedAt.UTC(),
+	}
+	if row.GroupID != nil {
+		entry.Source = auth.AccessGroup
+		entry.Group = &auth.GrantParty{ID: *row.GroupID, Name: deref(row.GroupName)}
+	}
+	return entry
+}
+
+// accessSubject applies the role rule the server owns rather than the client:
+// a member asks about themselves, by no reference or by either spelling of
+// their own, and any other user is another account's business; an
+// administrator has no subject to default to, because their own access comes
+// from their role rather than from grants.
+func accessSubject(ctx context.Context, queries *sqlc.Queries,
+	current auth.Session, ref string) (auth.UserRecord, error) {
+	if current.User.Role != auth.Admin {
+		if ref != "" && ref != current.User.ID && ref != current.User.Username {
+			return auth.UserRecord{}, &auth.Error{Code: auth.Forbidden}
+		}
+		ref = current.User.ID
+	} else if ref == "" {
+		return auth.UserRecord{}, invalidArgument(hintAccessSubject)
+	}
+	row, err := findUser(ctx, queries, ref)
+	if err != nil {
+		if denied(err, auth.UserNotFound) {
+			return auth.UserRecord{}, err
+		}
+		return auth.UserRecord{}, unavailable()
+	}
+	return userRecord(row), nil
+}
+
+// ListEffectiveAccess reports the grant paths that reach one subject, never
+// whether they can use a connection now: only AuthorizeConnection answers
+// that, which is why the subject's own record travels with the entries. An
+// administrator subject lists whatever grants happen to name them or their
+// groups, and role: admin on the record explains that their access does not
+// depend on those grants.
+func (s *LocalAuth) ListEffectiveAccess(ctx context.Context, previous auth.Session,
+	userRef, connectionRef string, limit int) (auth.AccessList, error) {
+	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
+	defer cancel()
+	list := auth.AccessList{Entries: []auth.AccessEntry{}}
+	if limit <= 0 || limit > auth.MaxAccessListing {
+		limit = auth.MaxAccessListing
+	}
+	tx, current, err := s.memberRead(ctx, previous)
+	if err != nil {
+		return list, err
+	}
+	defer rollback(ctx, tx)
+	queries := sqlc.New(tx)
+	// The subject is resolved after the recheck, so a demotion in flight
+	// decides which rule applies.
+	subject, err := accessSubject(ctx, queries, current, userRef)
+	if err != nil {
+		return list, err
+	}
+	params := sqlc.ListEffectiveAccessParams{UserID: subject.ID, LimitRows: int32(limit) + 1}
+	scoped := true
+	if id, found, err := filterID(ctx, queries, connectionRef, filterConnection); err != nil {
+		return list, unavailable()
+	} else if connectionRef != "" {
+		params.ConnectionID, scoped = &id, found
+	}
+	var rows []sqlc.ListEffectiveAccessRow
+	if scoped {
+		if rows, err = queries.ListEffectiveAccess(ctx, params); err != nil {
+			return list, unavailable()
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return list, unavailable()
+	}
+	list.User = subject
+	for index, row := range rows {
+		if index == limit {
+			list.Truncated = true
+			break
+		}
+		list.Entries = append(list.Entries, accessEntry(row))
+	}
+	return list, nil
+}
+
+// ListGroupNames answers the identity question "which groups am I in",
+// bounded like every listing. Unlike the connection names it is filled for
+// every caller: an administrator belongs to groups like anybody else, and
+// membership is a fact about them even when their access does not depend on
+// it.
+func (s *LocalAuth) ListGroupNames(ctx context.Context, previous auth.Session,
+	limit int) (names []string, truncated bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
+	defer cancel()
+	names = []string{}
+	if limit <= 0 || limit > auth.MaxGroupListing {
+		limit = auth.MaxGroupListing
+	}
+	tx, current, err := s.memberRead(ctx, previous)
+	if err != nil {
+		return names, false, err
+	}
+	defer rollback(ctx, tx)
+	rows, err := sqlc.New(tx).ListGroupNames(ctx, sqlc.ListGroupNamesParams{
+		UserID: current.User.ID, LimitRows: int32(limit) + 1,
+	})
+	if err != nil {
+		return names, false, unavailable()
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return names, false, unavailable()
+	}
+	for index, name := range rows {
+		if index == limit {
+			truncated = true
+			break
+		}
+		names = append(names, name)
+	}
+	return names, truncated, nil
 }
 
 // grantedConnection resolves a reference among the connections one user holds

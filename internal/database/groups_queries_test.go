@@ -3,6 +3,7 @@ package database
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -40,7 +41,11 @@ func TestGeneratedGroupQueriesAndConstraints(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, "finance-managers", finance.Name)
-	require.Equal(t, finance.CreatedAt, finance.UpdatedAt)
+	// Both columns default to clock_timestamp(), which advances inside a
+	// statement, so a fresh row carries the same instant rather than the same
+	// value; what the record promises is that it has never been updated.
+	require.WithinDuration(t, finance.CreatedAt, finance.UpdatedAt, time.Millisecond)
+	require.False(t, finance.UpdatedAt.Before(finance.CreatedAt))
 	platformGroup, err := qtx.InsertGroup(t.Context(), sqlc.InsertGroupParams{ID: randomTestID(t), Name: "platform"})
 	require.NoError(t, err)
 	require.Empty(t, platformGroup.Description, "the description is optional and defaults to empty")
