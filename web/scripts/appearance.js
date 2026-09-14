@@ -22,7 +22,6 @@
   apply()
   system.addEventListener("change", apply)
   document.addEventListener("DOMContentLoaded", apply)
-  document.addEventListener("htmx:after:process", apply)
   // Delegation also covers a templUI switch inserted by a later partial update.
   document.addEventListener("change", (event) => {
     if (!event.target.matches("input[data-appearance]")) return

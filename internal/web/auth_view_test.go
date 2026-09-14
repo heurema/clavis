@@ -143,30 +143,6 @@ func TestAuthErrorDocuments(t *testing.T) {
 	assert.Equal(t, "Try again in 30 seconds.", retryMessage(30))
 }
 
-func TestInitializationFragments(t *testing.T) {
-	for state, title := range map[platform.State]string{
-		platform.Initializing:    "Initialization in progress",
-		platform.SetupRequired:   "Administrator setup required",
-		platform.BootstrapFailed: "Administrator setup failed",
-		platform.SchemaError:     "Platform schema requires attention",
-	} {
-		t.Run(string(state), func(t *testing.T) {
-			response := httptest.NewRecorder()
-			require.NoError(t, Render(response, httptest.NewRequest("GET", "/ui/readiness", nil), 503, Readiness(platform.Readiness{State: state})))
-			body := response.Body.String()
-			assert.Contains(t, body, `data-readiness-state="`+string(state)+`"`)
-			assert.Contains(t, body, title)
-			assert.NotContains(t, body, "<form")
-			assert.NotContains(t, body, "Database unavailable")
-			assert.NotContains(t, body, "CLAVIS_BOOTSTRAP")
-		})
-	}
-	response := httptest.NewRecorder()
-	require.NoError(t, Render(response, httptest.NewRequest("GET", "/", nil), 503, Readiness(platform.Readiness{State: "SENTINEL_SECRET"})))
-	assert.NotContains(t, response.Body.String(), "SENTINEL_SECRET")
-	assert.Contains(t, response.Body.String(), "Database unavailable")
-}
-
 // sentinelTarget holds everything a connection record carries that the page
 // must never display: hosts, ports, roles, databases and URLs.
 var sentinelTarget = map[string]string{

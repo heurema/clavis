@@ -27,7 +27,7 @@ test("mutation targets include handwritten web behavior, not generated/vendor/fi
     .map((path) => relative(root, path))
   for (const path of [
     "internal/web/assets.go",
-    "internal/web/readiness.go",
+    "internal/web/auth_view.go",
     "internal/web/render.go",
     "internal/auth/password.go",
     "internal/platform/readiness.go",

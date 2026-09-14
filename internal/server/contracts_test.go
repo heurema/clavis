@@ -23,12 +23,17 @@ func TestInjectedReadinessIsBoundedAndPublicDocumentsBypassIt(t *testing.T) {
 		return platform.Readiness{State: platform.SetupRequired}
 	})
 	handler := HandlerWithReadiness(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)))
-	for _, path := range []string{"/", "/health/live", "/assets/appearance.js"} {
+	// The root redirect is public too: it never reaches the checker.
+	for path, status := range map[string]int{
+		"/":                     http.StatusSeeOther,
+		"/health/live":          http.StatusOK,
+		"/assets/appearance.js": http.StatusOK,
+	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.Header.Set("Cookie", "clavis.session=malformed")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		require.Equal(t, http.StatusOK, response.Code, path)
+		require.Equal(t, status, response.Code, path)
 	}
 	require.Zero(t, calls)
 	response := httptest.NewRecorder()

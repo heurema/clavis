@@ -20,7 +20,6 @@ func TestComponentComposition(t *testing.T) {
 		`role="alert"`,
 		`id="retry"`,
 		`type="button"`,
-		`hx-get="/ui/readiness"`,
 		`Check again`,
 		`id="appearance"`,
 		`class="peer sr-only"`,
@@ -36,12 +35,9 @@ func TestComponentComposition(t *testing.T) {
 
 func TestIconsEscapeDynamicClasses(t *testing.T) {
 	for name, component := range map[string]func(...icon.Props) templ.Component{
-		"arrow-right":     icon.ArrowRight,
-		"database":        icon.Database,
-		"key-round":       icon.KeyRound,
-		"refresh-cw":      icon.RefreshCw,
-		"server":          icon.Server,
-		"square-terminal": icon.SquareTerminal,
+		"database":   icon.Database,
+		"key-round":  icon.KeyRound,
+		"refresh-cw": icon.RefreshCw,
 	} {
 		t.Run(name, func(t *testing.T) {
 			var output bytes.Buffer

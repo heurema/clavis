@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/a-h/templ"
-	"github.com/heurema/clavis/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,13 +21,11 @@ func TestBufferedRenderingFailure(t *testing.T) {
 		return sentinel
 	})
 	response := httptest.NewRecorder()
-	response.Header().Set("X-Clavis-Fragment", "readiness")
-	err := Render(response, httptest.NewRequest(http.MethodGet, "/ui/readiness", nil), http.StatusOK, component)
+	err := Render(response, httptest.NewRequest(http.MethodGet, "/login", nil), http.StatusOK, component)
 	require.ErrorIs(t, err, sentinel)
 	assert.Equal(t, http.StatusInternalServerError, response.Code)
 	assert.Equal(t, "<p>Unable to display this page. Try again.</p>", response.Body.String())
 	assert.NotContains(t, response.Body.String(), "SECRET")
-	assert.Empty(t, response.Header().Get("X-Clavis-Fragment"))
 	assert.Equal(t, "text/html; charset=utf-8", response.Header().Get("Content-Type"))
 	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 	assert.Equal(t, "nosniff", response.Header().Get("X-Content-Type-Options"))
@@ -46,36 +43,15 @@ func TestRendererUsesRequestContext(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, response.Code)
 }
 
-func TestReadinessRendering(t *testing.T) {
-	for _, ready := range []bool{true, false} {
-		status := http.StatusServiceUnavailable
-		heading := "Database unavailable"
-		state := platform.DependencyUnavailable
-		if ready {
-			status = http.StatusOK
-			heading = "Your environment is ready"
-			state = platform.Ready
-		}
-		response := httptest.NewRecorder()
-		response.Header().Set("X-Clavis-Fragment", "readiness")
-		require.NoError(t, Render(response, httptest.NewRequest(http.MethodGet, "/ui/readiness", nil), status, Readiness(platform.Readiness{State: state})))
-		assert.Equal(t, status, response.Code)
-		assert.Contains(t, response.Body.String(), heading)
-		assert.Contains(t, response.Body.String(), `data-readiness-state=`)
-		assert.Equal(t, "readiness", response.Header().Get("X-Clavis-Fragment"))
-		assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
-	}
-}
-
-func TestPageAssetsAreEmbedded(t *testing.T) {
+func TestDocumentAssetsAreEmbedded(t *testing.T) {
 	response := httptest.NewRecorder()
-	require.NoError(t, Render(response, httptest.NewRequest(http.MethodGet, "/", nil), http.StatusOK, Page()))
+	require.NoError(t, Render(response, httptest.NewRequest(http.MethodGet, "/login", nil), http.StatusOK, Login(LoginModel{})))
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.Contains(t, response.Body.String(), "<!doctype html>")
 	assert.Contains(t, response.Body.String(), `<html lang="en">`)
 	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 	references := regexp.MustCompile(`(?:src|href)="(/assets/[^"]+)"`).FindAllStringSubmatch(response.Body.String(), -1)
-	require.Len(t, references, 5)
+	require.Len(t, references, 3)
 	for _, reference := range references {
 		asset := httptest.NewRecorder()
 		ServeAsset(asset, httptest.NewRequest(http.MethodGet, reference[1], nil))

@@ -35,10 +35,7 @@ templ Composition(message string) {
 			}
 		}
 		@card.Footer() {
-			@button.Button(button.Props{
-				ID:         "retry",
-				Attributes: templ.Attributes{"hx-get": "/ui/readiness"},
-			}) {
+			@button.Button(button.Props{ID: "retry"}) {
 				@icon.RefreshCw()
 				Check again
 			}

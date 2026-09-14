@@ -434,10 +434,16 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 	})
 	f := &backendFixture{}
 	handler := authHandler(t, f, checker, "http://127.0.0.1")
-	for _, path := range []string{"/", "/login", "/assets/appearance.js", "/health/live"} {
+	// The root redirect is local-only as well: it answers without the database.
+	for path, status := range map[string]int{
+		"/": 303, "/login": 200, "/assets/appearance.js": 200, "/health/live": 200,
+	} {
 		for _, cookie := range []string{"", developmentCookie + "=malformed", developmentCookie + "=" + string(fixtureToken)} {
 			response := requestAuth(handler, "GET", path, "", http.Header{"Cookie": {cookie}})
-			require.Equal(t, 200, response.Code)
+			require.Equal(t, status, response.Code, path)
+			if status == 303 {
+				require.Equal(t, "/admin/users", response.Header().Get("Location"))
+			}
 		}
 	}
 	for _, cookie := range []string{"", developmentCookie + "=malformed"} {

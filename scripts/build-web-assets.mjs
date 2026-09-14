@@ -39,27 +39,18 @@ export function buildWebAssets(root = projectRoot) {
   rmSync(destination, { recursive: true, force: true })
   const staging = mkdtempSync(join(web, ".assets-"))
   try {
-    const htmxPackage = JSON.parse(
-      readRequired(join(root, "web/node_modules/htmx.org/package.json")),
-    )
     const tailwindPackage = JSON.parse(
       readRequired(join(root, "web/node_modules/tailwindcss/package.json")),
     )
 
     const stylesheet = join(root, "web/styles/app.css")
     readRequired(stylesheet)
-    const htmx = join(root, "web/node_modules/htmx.org/dist/htmx.min.js")
-    readRequired(htmx)
     const notices = [
       [
         "templUI / tailwind-merge-go",
         inlineNotices(join(web, "ui/utils/templui.go")),
       ],
       ["Lucide", inlineNotices(join(web, "ui/icon/icon.templ"))],
-      [
-        `htmx ${htmxPackage.version}`,
-        readRequired(join(root, "web/node_modules/htmx.org/LICENSE")).trim(),
-      ],
       [
         `Tailwind CSS ${tailwindPackage.version}`,
         readRequired(join(root, "web/node_modules/tailwindcss/LICENSE")).trim(),
@@ -80,12 +71,9 @@ export function buildWebAssets(root = projectRoot) {
     )
     if (!statSync(output).isFile() || statSync(output).size === 0)
       throw new Error("Tailwind did not produce a stylesheet")
-    copyFileSync(htmx, join(staging, "htmx.min.js"))
-    for (const name of ["appearance.js", "readiness.js"]) {
-      const source = join(root, "web/scripts", name)
-      readRequired(source)
-      copyFileSync(source, join(staging, name))
-    }
+    const appearance = join(root, "web/scripts/appearance.js")
+    readRequired(appearance)
+    copyFileSync(appearance, join(staging, "appearance.js"))
     writeFileSync(
       join(staging, "notices.txt"),
       notices.map(([name, text]) => `${name}\n\n${text}`).join("\n\n---\n\n") +

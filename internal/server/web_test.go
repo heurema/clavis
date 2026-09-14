@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heurema/clavis/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +27,7 @@ func TestAssetRoutes(t *testing.T) {
 		status       int
 	}{
 		{"GET", "/assets/app.css", 200},
-		{"GET", "/assets/htmx.min.js", 200},
+		{"GET", "/assets/appearance.js", 200},
 		{"GET", "/assets/notices.txt", 200},
 		{"HEAD", "/assets/app.css", 200},
 		{"POST", "/assets/app.css", 405},
@@ -49,77 +50,38 @@ func TestAssetRoutes(t *testing.T) {
 	}
 }
 
-func TestInitialDocumentDoesNotCheckDatabase(t *testing.T) {
+func TestRootRedirectsWithoutCheckingDatabase(t *testing.T) {
 	db := &fakeDatabase{ping: func(context.Context) error {
-		t.Fatal("the setup document must not wait for a database check")
+		t.Fatal("the root redirect must not wait for a database check")
 		return errors.New("database unavailable")
 	}}
 	handler := Handler(time.Second, db, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
-	assert.Equal(t, http.StatusOK, response.Code)
-	assert.Contains(t, response.Body.String(), "<html")
-	assert.Contains(t, response.Body.String(), "Checking your environment")
-	assert.Equal(t, "text/html; charset=utf-8", response.Header().Get("Content-Type"))
+	assert.Equal(t, http.StatusSeeOther, response.Code)
+	assert.Equal(t, "/admin/users", response.Header().Get("Location"))
 	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
-	assert.Empty(t, response.Header().Get("X-Clavis-Fragment"))
+	assert.Empty(t, response.Header().Get("Set-Cookie"))
 
-	unknown := httptest.NewRecorder()
-	handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodGet, "/not-a-page", nil))
-	assert.Equal(t, http.StatusNotFound, unknown.Code)
-	assert.NotContains(t, unknown.Body.String(), "<html")
-}
-
-func TestHTMLReadiness(t *testing.T) {
-	for _, ready := range []bool{false, true} {
-		var logs bytes.Buffer
-		calls := 0
-		db := &fakeDatabase{ping: func(ctx context.Context) error {
-			calls++
-			deadline, ok := ctx.Deadline()
-			require.True(t, ok)
-			assert.WithinDuration(t, time.Now().Add(50*time.Millisecond), deadline, 20*time.Millisecond)
-			if ready {
-				return nil
-			}
-			return errors.New("postgres://user:SECRET@database")
-		}}
-		handler := Handler(50*time.Millisecond, db, slog.New(slog.NewJSONHandler(&logs, nil)))
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ui/readiness?SECRET", nil))
-		assert.Equal(t, 1, calls)
-		expected := http.StatusServiceUnavailable
-		text := "Database unavailable"
-		if ready {
-			expected = http.StatusOK
-			text = "Your environment is ready"
-		}
-		assert.Equal(t, expected, response.Code)
-		assert.Contains(t, response.Body.String(), text)
-		assert.Contains(t, response.Body.String(), `data-readiness-state=`)
-		assert.Equal(t, "readiness", response.Header().Get("X-Clavis-Fragment"))
-		assert.Equal(t, "text/html; charset=utf-8", response.Header().Get("Content-Type"))
-		assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
-		assert.NotContains(t, response.Body.String(), "SECRET")
-		assert.NotContains(t, logs.String(), "SECRET")
+	for _, path := range []string{"/not-a-page", "/ui/readiness"} {
+		unknown := httptest.NewRecorder()
+		handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodGet, path, nil))
+		assert.Equal(t, http.StatusNotFound, unknown.Code, path)
+		assert.NotContains(t, unknown.Body.String(), "<html")
 	}
 }
 
-func TestBothReadinessRoutesHonorDeadline(t *testing.T) {
-	for _, path := range []string{"/health/ready", "/ui/readiness"} {
-		t.Run(path, func(t *testing.T) {
-			db := &fakeDatabase{ping: func(ctx context.Context) error {
-				<-ctx.Done()
-				return ctx.Err()
-			}}
-			handler := Handler(20*time.Millisecond, db, slog.New(slog.NewJSONHandler(io.Discard, nil)))
-			start := time.Now()
-			response := httptest.NewRecorder()
-			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-			assert.Equal(t, http.StatusServiceUnavailable, response.Code)
-			assert.Less(t, time.Since(start), time.Second)
-		})
-	}
+func TestReadinessRouteHonorsDeadline(t *testing.T) {
+	db := &fakeDatabase{ping: func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}}
+	handler := Handler(20*time.Millisecond, db, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	start := time.Now()
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
+	assert.Less(t, time.Since(start), time.Second)
 }
 
 func TestJSONIgnoresPresentationHeaders(t *testing.T) {
@@ -143,7 +105,7 @@ func TestJSONIgnoresPresentationHeaders(t *testing.T) {
 			handler := Handler(time.Second, db, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 			for _, headers := range []http.Header{
 				{"Accept": {"text/html"}},
-				{"Accept": {"text/html"}, "Hx-Request": {"true"}, "Hx-Target": {"readiness"}, "Hx-Boosted": {"true"}},
+				{"Accept": {"text/html,application/xhtml+xml"}, "Sec-Fetch-Mode": {"navigate"}, "Sec-Fetch-Dest": {"document"}},
 			} {
 				request := httptest.NewRequest(http.MethodGet, tc.path, nil)
 				request.Header = headers
@@ -153,7 +115,6 @@ func TestJSONIgnoresPresentationHeaders(t *testing.T) {
 				assert.JSONEq(t, tc.body, response.Body.String())
 				assert.Equal(t, "application/json", response.Header().Get("Content-Type"))
 				assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
-				assert.Empty(t, response.Header().Get("X-Clavis-Fragment"))
 			}
 		})
 	}
@@ -163,12 +124,17 @@ func TestHTMLRenderFailureDoesNotLogDetails(t *testing.T) {
 	var logs bytes.Buffer
 	ctx, cancel := context.WithCancelCause(t.Context())
 	cancel(errors.New("SECRET"))
-	handler := Handler(time.Second, &fakeDatabase{}, slog.New(slog.NewJSONHandler(&logs, nil)))
+	// The sign-in document is the rendered public HTML route; the fixture
+	// supplies the services, while the views are the production ones.
+	fixture := &backendFixture{}
+	checker := platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
+	handler, err := HandlerWithAuth(time.Second, checker, fixture, fixture, fixture, fixture, fixture, fixture, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(&logs, nil)))
+	require.NoError(t, err)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/login", nil).WithContext(ctx))
 	assert.Equal(t, http.StatusInternalServerError, response.Code)
 	assert.Equal(t, "<p>Unable to display this page. Try again.</p>", response.Body.String())
 	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
-	assert.Contains(t, logs.String(), "WEB_RESPONSE_FAILED")
+	assert.Contains(t, logs.String(), `"status":500`)
 	assert.NotContains(t, logs.String(), "SECRET")
 }

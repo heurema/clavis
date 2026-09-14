@@ -353,14 +353,19 @@ try {
   assert.equal(doctor.schemaVersion, 1)
   assert.equal(doctor.ok, true)
   assert.equal(doctor.data.database, "ready")
+  // The origin redirects into the administration shell without a database read.
+  const rootRedirect = await fetch(apiURL + "/", {
+    redirect: "manual",
+    signal: AbortSignal.timeout(2_000),
+  })
+  assert.equal(rootRedirect.status, 303, "/ does not redirect")
+  assert.equal(rootRedirect.headers.get("location"), "/admin/users")
+  await rootRedirect.text()
   // HTTP availability only: no rendering or client-side interaction is tested.
   for (const [path, contentType] of [
-    ["/", "text/html"],
     ["/login", "text/html"],
     ["/assets/app.css", "text/css"],
     ["/assets/appearance.js", "text/javascript"],
-    ["/assets/readiness.js", "text/javascript"],
-    ["/assets/htmx.min.js", "text/javascript"],
     ["/assets/notices.txt", "text/plain"],
   ]) {
     const response = await fetch(apiURL + path, {

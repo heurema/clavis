@@ -11,11 +11,11 @@ Currently, it provides automated initial administrator setup, local browser/CLI
 sign-in, revocable sessions, administrator-managed local users and registered
 data-source connections with encrypted credentials and connectivity checks, with
 external PostgreSQL. Goose manages embedded migrations and sqlc generates the pgx
-application queries. The embedded templ/htmx interface includes setup/readiness,
-sign-in and a protected admin page with read-only user, connection and grant
-lists. There is no separate frontend server. Queries run against PostgreSQL,
-VictoriaMetrics and VictoriaLogs connections, and the agent skill installs
-through the CLI; groups remain planned; an audit journal, Google/OIDC sign-in, self-service password change and
+application queries. The embedded templ interface includes sign-in and a
+protected admin page with read-only user, connection and grant lists. There is
+no separate frontend server. Queries run against PostgreSQL, VictoriaMetrics
+and VictoriaLogs connections, and the agent skill installs through the CLI;
+groups remain planned; an audit journal, Google/OIDC sign-in, self-service password change and
 account recovery are outside the MVP.
 
 ## Quick start
@@ -58,7 +58,7 @@ values take precedence. Stop the server with Ctrl-C. There is no file watcher:
 after editing Go or browser scripts/styles, stop and rerun `make dev`. After
 editing `.templ` files, run `make generate-web` before restarting; after editing
 application queries, migration schema inputs or `sqlc.yaml`, run `make generate-db`.
-Open `http://127.0.0.1:8080` for the setup page.
+Open `http://127.0.0.1:8080` to sign in.
 The same server exposes JSON health endpoints at `/health/live` and
 `/health/ready`, independently of HTML rendering.
 
@@ -186,20 +186,17 @@ nonzero and leaves any previous binary untouched; do not deploy it as a new buil
 Missing or stale generated templates/queries fail the server build without
 rewriting them. Run the relevant explicit generation command after source edits.
 
-The public setup/login documents and assets remain available when PostgreSQL is
-unavailable; protected requests fail closed. These diagnostics require no sign-in
-but do not change your deployment's network exposure. Readiness requires a
-reachable database, supported schema and completed initialization, distinguishing
+The public sign-in document and the assets remain available when PostgreSQL is
+unavailable; protected requests fail closed. `GET /` redirects into the
+administration interface without reading the database. Readiness is reported by
+`GET /health/ready` and `clavis doctor`, which require no sign-in but do not
+change your deployment's network exposure. Readiness requires a reachable
+database, supported schema and completed initialization, distinguishing
 `INITIALIZING`, `SETUP_REQUIRED`, `BOOTSTRAP_FAILED`, `SCHEMA_ERROR` and
-`DEPENDENCY_UNAVAILABLE` using safe messages.
-Checks run on page entry and explicit retry, not polling or focus/reconnect.
-Each check has a five-second deadline including body reads; a new retry cancels
-the previous check. HTML readiness at `/ui/readiness` returns 200 or a safe 503
-fragment. Only recognized HTML responses can replace the status region.
+`DEPENDENCY_UNAVAILABLE` using safe messages. There is no browser status page.
 
-An already-loaded page can report server loss and recover through retry once the
-server returns. If the Go server is stopped, fresh navigation receives the
-browser's connection error; there is no independent frontend or offline fallback.
+If the Go server is stopped, fresh navigation receives the browser's connection
+error; there is no independent frontend or offline fallback.
 Appearance is the only persisted browser preference (`clavis.appearance`); with
 storage blocked, the switch still works for the lifetime of the loaded page.
 
