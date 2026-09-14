@@ -1552,7 +1552,7 @@ try {
   )
 
   // LogsQL runs against the real single-node VictoriaLogs from compose: an
-  // ordered query under the source's own limit, the capped2 of the unbounded
+  // ordered query under the source's own limit, the cut of the unbounded
   // stream at the platform's cap, an aggregate, every discovery endpoint, the
   // source's own error, the tenant headers, the provider mismatch and the
   // timeout backstop against a stalling source.
@@ -1843,7 +1843,7 @@ try {
     tenantHeaders.some((seen) => seen.url.startsWith("/select/logsql/query?")),
   )
   tenant.close()
-  // A source that stops answering is capped2 at the timeout plus the grace.
+  // A source that stops answering is cut at the timeout plus the grace.
   const logStallPort = await freePort()
   const logStall = createHTTPServer(() => {})
   await new Promise((resolve) =>

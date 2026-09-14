@@ -358,6 +358,9 @@ func TestCreateConnectionValidatesEveryBound(t *testing.T) {
 		"password in url": func(r *auth.CreateConnectionRequest) {
 			r.Target = map[string]string{"url": "postgres://reader:" + sentinelSecret + "@" + sentinelHost + "/ledger"}
 		},
+		"tenant setting on a postgresql connection": func(r *auth.CreateConnectionRequest) {
+			r.Target = map[string]string{"url": "postgres://reader@" + sentinelHost + "/ledger", "accountId": "12"}
+		},
 		"unknown target setting": func(r *auth.CreateConnectionRequest) {
 			r.Target = map[string]string{"url": "postgres://reader@" + sentinelHost + "/ledger", "options": "-c x"}
 		},

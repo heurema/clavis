@@ -450,8 +450,9 @@ The response carries `provider: "victorialogs"` and `resultType: "logs"` with
 is a string, `_stream` and `_stream_id` included); rows of a `| stats` pipe
 carry only the fields the query produced. Text output prints one physical line
 per row: `_time`, `_msg`, the other fields as sorted `key=value` pairs and
-`_stream` last, quoting a value that contains whitespace, quotes or control
-characters, so a multi-line message stays on one line. The log stream is
+`_stream` last, quoting a name or value that is empty or contains whitespace,
+quotes, backslashes, control characters or `=`, so a multi-line message stays
+on one line. The log stream is
 unbounded unless `--limit` bounds it, so the row and byte caps are applied by
 stopping: once a cap is reached the platform closes the connection and returns
 the complete rows kept with `truncated: true`, which means the source's
@@ -465,7 +466,10 @@ text for a query it rejects, `http_503` when it aborts a query at the forwarded
 timeout, and `malformed_response` when a line of the stream is not a JSON row
 (the source can write an error after rows, and one arriving right where the
 cap would have cut the stream counts as such an error, not as truncation; no
-rows are returned then). Only a source that stops answering is
+rows are returned then). The platform reads one line past a full cap to learn
+whether the stream ended there, so a row beyond the ceiling or a source that
+stalls at that point is reported as that failure rather than as a truncated
+answer. Only a source that stops answering is
 `SOURCE_TIMEOUT`. `--sql` or `--promql` on a
 log connection, or `--logsql` elsewhere, is refused with a hint before
 anything is sent.
