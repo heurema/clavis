@@ -29,6 +29,7 @@ None.
 
 - Backend: `internal/auth/query.go` (request fields, `limit` as an optional integer, result types), `internal/auth/connections.go` (provider type), `internal/provider` (`ExecuteRequest` gains the inputs; a new `victorialogs.go` implements `Provider` and `Executor` with a bounded JSON-lines reader that stops at the cap; PostgreSQL and VictoriaMetrics refuse the new inputs), `internal/database/query.go` (input rules and the provider match), `internal/server/query.go` (decoding), `internal/cli` (flags, validation, the third result shape, rendering, connection flags).
 - Tooling/docs: `compose.yaml`, `scripts/smoke.mjs`, `README.md`, `docs/PRD.md`.
+- Database: migration 006 widens the `connections.provider` check to the third provider; nothing else changes in storage.
 - Dependencies: none new; the VictoriaLogs container is a compose service for local verification only.
 
 ## Owner decisions (2026-09-14, settled with a second-model critique in two rounds)
