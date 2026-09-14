@@ -13,7 +13,8 @@ data-source connections with encrypted credentials and connectivity checks, with
 external PostgreSQL. Goose manages embedded migrations and sqlc generates the pgx
 application queries. The embedded templ/htmx interface includes setup/readiness,
 sign-in and a protected admin page with read-only user, connection and grant
-lists. There is no separate frontend server. Query execution and groups remain
+lists. There is no separate frontend server. Queries run against PostgreSQL,
+VictoriaMetrics and VictoriaLogs connections; groups and the agent skill remain
 planned; an audit journal, Google/OIDC sign-in, self-service password change and
 account recovery are outside the MVP.
 
@@ -367,7 +368,11 @@ than the five seconds of the other commands. Failures are distinct codes:
 `SOURCE_TIMEOUT` (504), `SOURCE_UNREACHABLE` and `SOURCE_AUTH_REJECTED` (502),
 `CREDENTIALS_UNAVAILABLE`, `PROVIDER_UNSUPPORTED`, and the authorization codes `CONNECTION_NOT_FOUND`,
 `CONNECTION_DISABLED`, `FORBIDDEN` and `UNAUTHENTICATED`. The source's message
-may contain values from your own SQL; it is returned to you and never logged.
+may contain values from your own SQL; it is returned to you and never logged. To
+learn a database's structure, query its catalog through the same command, for
+example `select table_schema, table_name, column_name, data_type from
+information_schema.columns where table_schema not in ('pg_catalog',
+'information_schema') order by 1, 2, ordinal_position`.
 
 ### VictoriaMetrics
 
@@ -456,9 +461,9 @@ on one line. The log stream is
 unbounded unless `--limit` bounds it, so the row and byte caps are applied by
 stopping: once a cap is reached the platform closes the connection and returns
 the complete rows kept with `truncated: true`, which means the source's
-completion was not observed and more rows may exist, also when the count lands
-exactly on the cap; pass `--limit` with a sort pipe to choose which rows you
-get. A single row beyond four times the byte cap plus 1 MiB fails as
+completion was not observed and more rows may exist (a count landing exactly
+on the cap is truncated too unless the stream ended right there); pass
+`--limit` with a sort pipe to choose which rows you get. A single row beyond four times the byte cap plus 1 MiB fails as
 `SOURCE_ERROR` with `errorType: response_too_large`. Discovery answers are one
 document and are read to the end under the same ceiling. Failures are the
 source's own: `SOURCE_ERROR` carries `errorType: http_400` and the source's
@@ -476,11 +481,7 @@ anything is sent.
 
 Each request opens one connection to the source and closes it afterwards; the
 platform keeps no pool and imposes no concurrency limit, so a runaway agent is
-throttled where it belongs: give the role a `CONNECTION LIMIT` in PostgreSQL. To
-learn a database's structure, query its catalog through the same command, for
-example `select table_schema, table_name, column_name, data_type from
-information_schema.columns where table_schema not in ('pg_catalog',
-'information_schema') order by 1, 2, ordinal_position`.
+throttled where it belongs: give the role a `CONNECTION LIMIT` in PostgreSQL.
 
 For a custom API address, add `--server <url>` or export `CLAVIS_SERVER_URL`; the
 CLI does not load `.env`. Authentication requires a root-origin HTTPS URL except
