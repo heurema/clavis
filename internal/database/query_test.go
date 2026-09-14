@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/heurema/clavis/internal/auth"
+	"github.com/heurema/clavis/internal/provider"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
@@ -678,6 +679,27 @@ func TestExecuteQueryBoundsMetricsSamplesAndReportsSourceFailures(t *testing.T) 
 	require.Empty(t, rejection.SQLState)
 	require.Nil(t, rejection.Statement)
 	require.NotContains(t, failure.Error(), "unparsed data")
+	require.Empty(t, hintOf(t, failure), "the source's own rejection carries no platform hint")
+
+	// The two failures the platform classifies itself carry the next step.
+	// A cap of one KiB puts the ceiling a little over one MiB, so a body of
+	// one MiB plus eight KiB is beyond it.
+	bytesCap := auth.MinMaxBytes
+	_, err = s.UpdateConnection(t.Context(), admin, record.ID,
+		auth.UpdateConnectionRequest{MaxBytes: &bytesCap}, false)
+	require.NoError(t, err)
+	filler := strings.Repeat("x", 1<<20+8<<10)
+	source.reply(jsonAnswer(`{"status":"success","data":{"resultType":"vector","result":[` +
+		`{"metric":{"job":"` + filler + `"},"value":[1,"1"]}]}}`))
+	failure = queryError(s.ExecuteQuery(t.Context(), admin, auth.QueryRequest{Connection: record.Name, PromQL: "up"}))
+	code(t, failure, auth.SourceError)
+	require.Equal(t, provider.ResponseTooLarge, sourceOf(t, failure).ErrorType)
+	require.Equal(t, hintQueryCeiling, hintOf(t, failure))
+	source.reply(jsonAnswer(`{"status":"success","data":{"resultType":"vector","result":[`))
+	failure = queryError(s.ExecuteQuery(t.Context(), admin, auth.QueryRequest{Connection: record.Name, PromQL: "up"}))
+	code(t, failure, auth.SourceError)
+	require.Equal(t, provider.MalformedResponse, sourceOf(t, failure).ErrorType)
+	require.Equal(t, hintQueryMalformed, hintOf(t, failure))
 
 	// A source that stops answering is cut at the connection's own bound plus
 	// the documented grace, and reported as the timeout it looks like.

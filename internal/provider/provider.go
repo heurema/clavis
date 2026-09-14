@@ -100,6 +100,15 @@ var (
 	ErrUnsupportedInput = errors.New("the provider does not take this input")
 )
 
+// The two failures the platform classifies itself, because the answer never
+// became the source's envelope. They travel as the source failure's errorType
+// so the caller branches on them like the source's own, and the service attaches
+// the next step to each; every other errorType is the source's own word.
+const (
+	ResponseTooLarge  = "response_too_large"
+	MalformedResponse = "malformed_response"
+)
+
 // SourceError is the source's own rejection of the submitted input, the one
 // failure whose text the caller sees. Error() is fixed application text: the
 // source's message travels in Failure, which the service puts in the

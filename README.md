@@ -351,8 +351,8 @@ Exactly one of `--sql`, `--sql-stdin` or `--sql-file <absolute path>` supplies
 the SQL, bounded to 256 KiB. The result is always a list, one entry per
 statement, each with `command`, `columns` (name and PostgreSQL type), `rows` as
 arrays of strings exactly as PostgreSQL renders them (`null` for NULL, never a
-JSON number), `rowCount` and `truncated`; the response also carries `truncated`
-and `durationMs`. Text output prints one aligned table per result with `∅` for
+JSON number), `rowCount` and `truncated`; the response also carries `provider`
+(`postgresql`), `truncated` and `durationMs`. Text output prints one aligned table per result with `∅` for
 NULL. The connection's statement timeout is set on the source session and
 aborts the statement (`SOURCE_TIMEOUT`); the row and byte caps limit what comes
 back, never what the database does: past the cap the remaining rows are read and
@@ -398,15 +398,17 @@ in the Prometheus format with values as strings, plus the source's `warnings`,
 `infos` and `isPartial` when present; nothing is reformatted. The connection's
 timeout is sent to the source as the API `timeout` (the source caps it at its
 own maximum) and bounds the request plus a five-second grace. The row cap counts
-samples across all series: past it, remaining series keep the samples read so
-far and are marked `truncated`; the byte cap counts kept label and value text
-and drops later series whole once spent;
-and a body beyond four times the byte cap plus 1 MiB fails as `SOURCE_ERROR`
-with `errorType: response_too_large` rather than returning partial data.
+samples across all series: past it, remaining matrix series keep the samples
+read so far and are marked `truncated`, and vector entries beyond it are
+dropped; the byte cap counts kept label and value text and drops later series
+whole once spent; and a body beyond four times the byte cap plus 1 MiB fails as
+`SOURCE_ERROR` with `errorType: response_too_large` and a hint to narrow the
+range or step or lower `--max-rows`, rather than returning partial data.
 Failures are the source's own: `SOURCE_ERROR` carries its `errorType` (a
 Prometheus server says `bad_data` for an expression that does not parse,
-VictoriaMetrics says `422`) and message; HTTP 401 or 403 is
-`SOURCE_AUTH_REJECTED`. `--sql` on a metrics connection, or
+VictoriaMetrics says `422`, also when it aborts an evaluation at the forwarded
+timeout) and message; HTTP 401 or 403 is `SOURCE_AUTH_REJECTED`; only a source
+that stops answering is `SOURCE_TIMEOUT`, cut at the timeout plus the grace. `--sql` on a metrics connection, or
 `--promql` on a PostgreSQL one, is refused with a hint before anything is sent.
 
 Each request opens one connection to the source and closes it afterwards; the

@@ -247,10 +247,6 @@ const (
 	// The source's own classification of an evaluation it aborted, which is
 	// the platform's timeout rather than a rejection to show the caller.
 	metricsTimeoutType = "timeout"
-	// The two failures the platform classifies itself, because the answer
-	// never became the source's envelope.
-	metricsTooLargeType  = "response_too_large"
-	metricsMalformedType = "malformed_response"
 
 	// How much of a failing answer is read before trying to read it as the
 	// source's error envelope, and how much of it may travel to the caller
@@ -487,12 +483,12 @@ func metricsBodyError(err error) error {
 	switch {
 	case errors.Is(err, errBodyTooLarge):
 		return &SourceError{Failure: auth.SourceFailure{
-			ErrorType: metricsTooLargeType,
+			ErrorType: ResponseTooLarge,
 			Message:   "The source's answer passed the response ceiling and was not read as data.",
 		}}
 	case errors.Is(err, errMalformed):
 		return &SourceError{Failure: auth.SourceFailure{
-			ErrorType: metricsMalformedType,
+			ErrorType: MalformedResponse,
 			Message:   "The source's answer could not be read as a Prometheus API response.",
 		}}
 	default:

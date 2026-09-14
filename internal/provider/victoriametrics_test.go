@@ -816,7 +816,7 @@ func TestVictoriaMetricsExecuteBodyCeiling(t *testing.T) {
 	_, err := metricsExecute(t, address, ExecuteRequest{PromQL: metricsExpression, MaxBytes: 1 << 10})
 	var rejected *SourceError
 	require.ErrorAs(t, err, &rejected)
-	require.Equal(t, metricsTooLargeType, rejected.Failure.ErrorType)
+	require.Equal(t, ResponseTooLarge, rejected.Failure.ErrorType)
 	require.NotEmpty(t, rejected.Failure.Message)
 	require.Nil(t, rejected.Failure.Statement)
 	require.Empty(t, rejected.Failure.SQLState)
@@ -851,7 +851,7 @@ func TestVictoriaMetricsExecuteMalformedBody(t *testing.T) {
 			_, err := metricsExecute(t, address, ExecuteRequest{PromQL: metricsExpression})
 			var rejected *SourceError
 			require.ErrorAs(t, err, &rejected)
-			require.Equal(t, metricsMalformedType, rejected.Failure.ErrorType)
+			require.Equal(t, MalformedResponse, rejected.Failure.ErrorType)
 			require.NotEmpty(t, rejected.Failure.Message)
 			requireNoSentinel(t, rejected.Error(), rejected.Failure.Message)
 		})
@@ -862,7 +862,7 @@ func TestVictoriaMetricsExecuteMalformedBody(t *testing.T) {
 	_, err := metricsExecute(t, address, ExecuteRequest{Labels: true})
 	var rejected *SourceError
 	require.ErrorAs(t, err, &rejected)
-	require.Equal(t, metricsMalformedType, rejected.Failure.ErrorType)
+	require.Equal(t, MalformedResponse, rejected.Failure.ErrorType)
 }
 
 // The source's own rejection reaches the caller with the source's words, and
@@ -1207,7 +1207,7 @@ func TestVictoriaMetricsDecoderCeilingIsStreamed(t *testing.T) {
 		&endlessReader{})
 	_, err := metricsBody(endless, metricsCall{}, ExecuteRequest{MaxRows: 10, MaxBytes: 1 << 10})
 	require.ErrorIs(t, err, errBodyTooLarge)
-	require.Equal(t, metricsTooLargeType, metricsBodyError(err).(*SourceError).Failure.ErrorType)
+	require.Equal(t, ResponseTooLarge, metricsBodyError(err).(*SourceError).Failure.ErrorType)
 }
 
 // endlessReader stands in for a source that keeps writing well-formed samples.

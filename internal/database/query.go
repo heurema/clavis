@@ -35,6 +35,10 @@ const (
 	maxQueryTimeBytes    = 256
 	hintQueryUnsupported = "This connection's provider does not execute queries; postgresql and victoriametrics connections do."
 	hintQueryCheck       = "Run `clavis connections check` to see whether the source is reachable and the stored credentials still work."
+	// The two failures the platform classified itself carry the next step; a
+	// rejection the source wrote speaks for itself.
+	hintQueryCeiling   = "The answer exceeded the platform's reading ceiling of four times the connection's byte cap plus 1 MiB; narrow the range or step, lower maxRows, or ask an administrator to raise the cap."
+	hintQueryMalformed = "The answer was not a Prometheus API envelope; confirm the connection's URL is the source's query API and run `clavis connections check`."
 	// The two halves of the input rule: which inputs exist, and which time
 	// fields each of them takes. Neither names the connection's provider,
 	// because both are decided before any record is read.
@@ -92,7 +96,7 @@ func queryFailure(err error, timeoutMS int) error {
 	switch {
 	case errors.As(err, &rejected):
 		failure := rejected.Failure
-		return &auth.Error{Code: auth.SourceError, Source: &failure}
+		return &auth.Error{Code: auth.SourceError, Source: &failure, Hint: sourceHint(failure.ErrorType)}
 	case errors.Is(err, provider.ErrTimeout):
 		return &auth.Error{Code: auth.SourceTimeout, Hint: hintQueryTimeout(timeoutMS)}
 	case errors.Is(err, provider.ErrUnreachable):
@@ -108,6 +112,18 @@ func queryFailure(err error, timeoutMS int) error {
 		return invalidArgument(hintQueryInput)
 	}
 	return unavailable()
+}
+
+// sourceHint names the next step for the two failures the platform wrote
+// itself; the source's own rejection carries its own words and no hint.
+func sourceHint(errorType string) string {
+	switch errorType {
+	case provider.ResponseTooLarge:
+		return hintQueryCeiling
+	case provider.MalformedResponse:
+		return hintQueryMalformed
+	}
+	return ""
 }
 
 // discoveryInput reports whether the request carries one of the three metadata
