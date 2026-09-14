@@ -44,10 +44,11 @@ type ProviderType string
 const (
 	ProviderPostgreSQL      ProviderType = "postgresql"
 	ProviderVictoriaMetrics ProviderType = "victoriametrics"
+	ProviderVictoriaLogs    ProviderType = "victorialogs"
 )
 
 func ValidProvider(p ProviderType) bool {
-	return p == ProviderPostgreSQL || p == ProviderVictoriaMetrics
+	return p == ProviderPostgreSQL || p == ProviderVictoriaMetrics || p == ProviderVictoriaLogs
 }
 
 type CheckOutcome string

@@ -40,14 +40,16 @@ type Executor interface {
 
 // ExecuteRequest is one pass-through execution under the connection's bounds.
 // Exactly one input is set and it reaches the source unchanged: the SQL for
-// PostgreSQL, or for a metrics source the expression with its optional time
-// bounds, or one of the three discovery inputs. Application is the
+// PostgreSQL, for a metrics source the expression with its optional time
+// bounds or one of the three metrics discovery inputs, and for a log source the
+// LogsQL query or one of the five log discovery inputs. Application is the
 // application_name a SQL source will see; the service composes it, because
-// only the service knows the connection name and the caller, and a metrics
+// only the service knows the connection name and the caller, and an HTTP
 // source has nowhere to put it.
 type ExecuteRequest struct {
 	SQL    string
 	PromQL string
+	LogsQL string
 	At     string
 	Start  string
 	End    string
@@ -58,6 +60,18 @@ type ExecuteRequest struct {
 	Series      string
 	Match       string
 
+	// The log discovery inputs, and the two parameters the log endpoints take
+	// beside them. Limit is a pointer because an explicit zero is the caller's
+	// own "no limit" and reaches the source as a sent zero, while an absent one
+	// sends no parameter at all; the platform never adds a limit of its own.
+	FieldNames        bool
+	FieldValues       string
+	Streams           bool
+	StreamFieldNames  bool
+	StreamFieldValues string
+	Limit             *int64
+	Filter            string
+
 	Timeout     time.Duration
 	MaxRows     int
 	MaxBytes    int
@@ -65,11 +79,12 @@ type ExecuteRequest struct {
 }
 
 // ExecuteResult is the bounded view of what the source produced. For a SQL
-// source Results is one entry per statement in order; for a metrics source
-// ResultType names the shape and Result holds the source's own data, with the
-// source's warnings, infos and partial-answer flag beside it. Statements, Rows
-// and Bytes count what was kept, not what the source sent: the rest was read
-// and dropped, so the counters describe the response rather than the work.
+// source Results is one entry per statement in order; for a metrics or log
+// source ResultType names the shape and Result holds the source's own data,
+// with a metrics source's warnings, infos and partial-answer flag beside it.
+// Statements, Rows and Bytes count what was kept, not what the source sent: the
+// rest was read and dropped, so the counters describe the response rather than
+// the work.
 type ExecuteResult struct {
 	Results []auth.QueryResult
 
@@ -126,6 +141,7 @@ const defaultProbeTimeout = 5 * time.Second
 var registry = map[auth.ProviderType]Provider{
 	auth.ProviderPostgreSQL:      postgreSQL{},
 	auth.ProviderVictoriaMetrics: victoriaMetrics{},
+	auth.ProviderVictoriaLogs:    victoriaLogs{},
 }
 
 func Lookup(provider auth.ProviderType) (Provider, bool) {

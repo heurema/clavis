@@ -6,48 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/heurema/clavis/internal/auth"
-)
-
-// Raw input keys; url, auth and whichever of user or header the method needs
-// are also the canonical stored keys.
-const (
-	keyAuth   = "auth"
-	keyUser   = "user"
-	keyHeader = "header"
-)
-
-const (
-	authNone   = "none"
-	authBasic  = "basic"
-	authBearer = "bearer"
-	authHeader = "header"
-)
-
-const (
-	healthPath      = "/health"
-	maxProbeBody    = 1 << 10
-	authorization   = "authorization"
-	maxUserLength   = 256
-	maxHeaderLength = 64
-)
-
-var (
-	httpSchemes = []string{"http://", "https://"}
-	authMethods = []string{authNone, authBasic, authBearer, authHeader}
-	// Headers the transport owns. Letting a target choose one of these would
-	// turn a stored setting into control over the request itself.
-	reservedHeaders = []string{authorization, "host", "content-length"}
 )
 
 type victoriaMetrics struct{}
@@ -61,165 +26,17 @@ func (victoriaMetrics) ParseTarget(raw map[string]string) (map[string]string, er
 	if err := allowedKeys(raw, keyURL, keyAuth, keyUser, keyHeader); err != nil {
 		return nil, err
 	}
-	base, err := victoriaMetricsURL(raw[keyURL])
-	if err != nil {
-		return nil, err
-	}
-	method := raw[keyAuth]
-	if !slices.Contains(authMethods, method) {
-		return nil, invalid("Setting auth must be one of " + strings.Join(authMethods, ", ") + ".")
-	}
-	target := map[string]string{keyURL: base, keyAuth: method}
-	user, hasUser := raw[keyUser]
-	header, hasHeader := raw[keyHeader]
-	if hasUser != (method == authBasic) {
-		return nil, invalid("Setting user is required with auth basic and not allowed with any other method.")
-	}
-	if hasHeader != (method == authHeader) {
-		return nil, invalid("Setting header is required with auth header and not allowed with any other method.")
-	}
-	if hasUser {
-		if !validBasicUser(user) {
-			return nil, invalid("Setting user must be 1 to 256 printable characters without a colon.")
-		}
-		target[keyUser] = user
-	}
-	if hasHeader {
-		if !validHeaderName(header) {
-			return nil, invalid("Setting header must be an HTTP header name and must not be Authorization, Host or Content-Length.")
-		}
-		target[keyHeader] = header
-	}
-	return target, nil
-}
-
-// victoriaMetricsURL canonicalizes the base URL: scheme and host only, a
-// trimmed path, and nothing that could carry a credential or steer a request.
-func victoriaMetricsURL(value string) (string, error) {
-	if !printableURL(value) {
-		return "", invalid("Setting url is required and must be a URL without spaces or control characters.")
-	}
-	if !hasPrefix(value, httpSchemes) {
-		return "", invalid("Setting url must begin with http:// or https://.")
-	}
-	if strings.Contains(value, "#") {
-		return "", invalid("Setting url must not contain a fragment.")
-	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Opaque != "" {
-		return "", invalid("Setting url must be a valid base URL.")
-	}
-	if parsed.User != nil {
-		return "", invalid("Setting url must not contain credentials; supply the secret separately.")
-	}
-	if parsed.RawQuery != "" || parsed.ForceQuery {
-		return "", invalid("Setting url must not contain a query string.")
-	}
-	if !validHost(parsed.Hostname()) {
-		return "", invalid("Setting url must name exactly one host or IP address.")
-	}
-	if port := parsed.Port(); (port == "" && strings.HasSuffix(parsed.Host, ":")) || (port != "" && !validPort(port)) {
-		return "", invalid("The port in setting url must be between 1 and 65535.")
-	}
-	base := url.URL{Scheme: parsed.Scheme, Host: parsed.Host, Path: strings.TrimRight(parsed.Path, "/")}
-	return base.String(), nil
-}
-
-func validBasicUser(value string) bool {
-	if value == "" || len(value) > maxUserLength {
-		return false
-	}
-	for index := range len(value) {
-		if value[index] <= ' ' || value[index] > '~' || value[index] == ':' {
-			return false
-		}
-	}
-	return true
-}
-
-// validHeaderName accepts an RFC 9110 field-name token and refuses the headers
-// the transport owns, case-insensitively.
-func validHeaderName(value string) bool {
-	if value == "" || len(value) > maxHeaderLength {
-		return false
-	}
-	for index := range len(value) {
-		c := value[index]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
-		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
-		default:
-			return false
-		}
-	}
-	return !slices.Contains(reservedHeaders, strings.ToLower(value))
+	return httpTarget(raw)
 }
 
 func (victoriaMetrics) ValidateSecret(target map[string]string, secret auth.Secret) error {
-	if target[keyAuth] == authNone {
-		if secret != "" {
-			return invalid("Setting auth none takes no secret.")
-		}
-		return nil
-	}
-	if !auth.ValidSecret(secret) {
-		return invalid("The secret is 1 to 4096 bytes without null bytes or line breaks.")
-	}
-	// Bearer tokens and header values travel in an HTTP header, which the
-	// client refuses for control bytes; reject them here rather than at check time.
-	if target[keyAuth] != authBasic {
-		for _, b := range []byte(secret) {
-			if b < 0x20 || b == 0x7f {
-				return invalid("The secret for this authentication method must be printable header text.")
-			}
-		}
-	}
-	return nil
+	return validateHTTPSecret(target, secret)
 }
 
-// Probe sends exactly one GET to the health endpoint. The client is built per
-// probe so no connection, cookie or redirect state is shared between
-// connections, and a redirect is reported rather than followed: following one
-// would send the secret to a host the administrator never configured.
+// Probe sends exactly one GET to the health endpoint under the stored
+// authentication. A metrics target carries no headers of its own.
 func (victoriaMetrics) Probe(ctx context.Context, target map[string]string, secret auth.Secret) auth.CheckOutcome {
-	timeout, ok := probeTimeout(ctx)
-	if !ok {
-		return auth.CheckUnreachable
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target[keyURL]+healthPath, nil)
-	if err != nil {
-		return auth.CheckUnreachable
-	}
-	switch target[keyAuth] {
-	case authBasic:
-		request.SetBasicAuth(target[keyUser], string(secret))
-	case authBearer:
-		request.Header.Set("Authorization", "Bearer "+string(secret))
-	case authHeader:
-		request.Header.Set(target[keyHeader], string(secret))
-	}
-	client := &http.Client{
-		Timeout:       timeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		Transport:     &http.Transport{Proxy: http.ProxyFromEnvironment, DisableKeepAlives: true},
-	}
-	defer client.CloseIdleConnections()
-	response, err := client.Do(request)
-	if err != nil {
-		return auth.CheckUnreachable
-	}
-	defer func() { _ = response.Body.Close() }()
-	// The body is never inspected; draining a bounded prefix keeps the read
-	// side tidy without letting a source stream an unbounded response at us.
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxProbeBody))
-	switch response.StatusCode {
-	case http.StatusOK:
-		return auth.CheckReachable
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return auth.CheckAuthRejected
-	default:
-		return auth.CheckUnreachable
-	}
+	return httpProbe(ctx, target, secret, nil)
 }
 
 // The read-only endpoints of the source's Prometheus API. No other path is
@@ -248,23 +65,7 @@ const (
 	// the platform's timeout rather than a rejection to show the caller.
 	metricsTimeoutType = "timeout"
 
-	// How much of a failing answer is read before trying to read it as the
-	// source's error envelope, and how much of it may travel to the caller
-	// when it is not one.
-	maxMetricsErrorBody = 64 << 10
-	maxMetricsErrorText = 4 << 10
-	// A bound on JSON nesting, so a document cannot drive the decoder's
-	// recursion; nothing the source answers is anywhere near this deep.
-	maxMetricsDepth = 32
-
 	metricsFormType = "application/x-www-form-urlencoded"
-)
-
-// The two body failures. They are internal: Execute turns them into the
-// source failures the caller sees, with the platform's own fixed text.
-var (
-	errBodyTooLarge = errors.New("the response body passed the ceiling")
-	errMalformed    = errors.New("the response is not the source's envelope")
 )
 
 // metricsCall is one request to one endpoint. Exactly one of form and query is
@@ -285,7 +86,7 @@ type metricsCall struct {
 // the source's acceptance rules are the only ones that apply.
 func (victoriaMetrics) Execute(ctx context.Context, target map[string]string, secret auth.Secret, request ExecuteRequest) (ExecuteResult, error) {
 	request = boundedRequest(request)
-	timeout := metricsTimeout(request.Timeout)
+	timeout := sourceTimeout(request.Timeout)
 	call, err := metricsEndpoint(request, timeout)
 	if err != nil {
 		return ExecuteResult{}, err
@@ -294,30 +95,20 @@ func (victoriaMetrics) Execute(ctx context.Context, target map[string]string, se
 	if err != nil {
 		return ExecuteResult{}, err
 	}
-	// The client is built per execution, as the probe's is: no connection,
-	// cookie or redirect state is shared between connections, and a redirect
-	// is refused rather than followed, which would send the secret to a host
-	// no administrator configured. The deadline is the source's own timeout
-	// plus the documented grace for writing and reading the answer.
-	client := &http.Client{
-		Timeout:       timeout + auth.MetricsGrace,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		Transport:     &http.Transport{Proxy: http.ProxyFromEnvironment, DisableKeepAlives: true},
-	}
+	// The client is built per execution, as the probe's is, and its deadline
+	// is the source's own timeout plus the documented grace for writing and
+	// reading the answer.
+	client := httpClient(timeout + auth.MetricsGrace)
 	defer client.CloseIdleConnections()
 	response, err := client.Do(httpRequest)
 	if err != nil {
-		return ExecuteResult{}, metricsTransportError(err)
+		return ExecuteResult{}, httpTransportError(err)
 	}
 	defer func() { _ = response.Body.Close() }()
-	switch {
-	case response.StatusCode == http.StatusUnauthorized, response.StatusCode == http.StatusForbidden:
-		return ExecuteResult{}, ErrAuthRejected
-	case response.StatusCode >= 300 && response.StatusCode < 400:
-		// The redirect was refused, so this is the last response rather than
-		// an answer: the source we were configured to reach said nothing.
-		return ExecuteResult{}, ErrUnreachable
-	case response.StatusCode != http.StatusOK:
+	if failure, mapped := httpStatusFailure(response.StatusCode); mapped {
+		return ExecuteResult{}, failure
+	}
+	if response.StatusCode != http.StatusOK {
 		return ExecuteResult{}, metricsHTTPError(response)
 	}
 	result, err := metricsBody(response.Body, call, request)
@@ -346,14 +137,7 @@ func metricsRequest(ctx context.Context, target map[string]string, secret auth.S
 	if call.form != nil {
 		request.Header.Set("Content-Type", metricsFormType)
 	}
-	switch target[keyAuth] {
-	case authBasic:
-		request.SetBasicAuth(target[keyUser], string(secret))
-	case authBearer:
-		request.Header.Set("Authorization", "Bearer "+string(secret))
-	case authHeader:
-		request.Header.Set(target[keyHeader], string(secret))
-	}
+	applyHTTPAuth(request, target, secret)
 	return request, nil
 }
 
@@ -365,17 +149,17 @@ func metricsEndpoint(request ExecuteRequest, timeout time.Duration) (metricsCall
 	if !metricsInput(request) {
 		return metricsCall{}, ErrUnsupportedInput
 	}
-	seconds := metricsTimeoutValue(timeout)
+	seconds := timeoutValue(timeout)
 	if request.PromQL != "" {
 		form := url.Values{"query": {request.PromQL}}
 		path := metricsQueryPath
 		if request.Start != "" {
 			path = metricsQueryRangePath
 			form.Set("start", request.Start)
-			metricsSet(form, "end", request.End)
-			metricsSet(form, "step", request.Step)
+			setParameter(form, "end", request.End)
+			setParameter(form, "step", request.Step)
 		} else {
-			metricsSet(form, "time", request.At)
+			setParameter(form, "time", request.At)
 		}
 		form.Set("timeout", seconds)
 		return metricsCall{method: http.MethodPost, path: path, form: form}, nil
@@ -388,8 +172,8 @@ func metricsEndpoint(request ExecuteRequest, timeout time.Duration) (metricsCall
 			query.Add("match[]", selector)
 		}
 	}
-	metricsSet(query, "start", request.Start)
-	metricsSet(query, "end", request.End)
+	setParameter(query, "start", request.Start)
+	setParameter(query, "end", request.End)
 	// The source's own cap, asked for one item beyond ours so a full answer is
 	// still recognisable as one the platform cut. The platform's cap is the
 	// authoritative one: a source that ignores limit changes nothing here.
@@ -424,7 +208,7 @@ func metricsInput(request ExecuteRequest) bool {
 			inputs++
 		}
 	}
-	if inputs != 1 || request.SQL != "" {
+	if inputs != 1 || request.SQL != "" || logsFields(request) {
 		return false
 	}
 	if request.PromQL == "" {
@@ -438,42 +222,6 @@ func metricsInput(request ExecuteRequest) bool {
 		return request.Step == "" && request.End == "" && request.Match == ""
 	}
 	return request.At == "" && request.Match == ""
-}
-
-func metricsSet(values url.Values, key, value string) {
-	if value != "" {
-		values.Set(key, value)
-	}
-}
-
-// metricsTimeout gives a missing bound the documented default, as the SQL
-// executor does: a caller that passes none must not get an unbounded query.
-func metricsTimeout(timeout time.Duration) time.Duration {
-	if timeout < time.Millisecond {
-		return auth.DefaultStatementTimeout
-	}
-	return timeout
-}
-
-// metricsTimeoutValue renders the timeout as the source's duration parameter.
-// The source caps it at its own configured maximum, which the platform
-// respects rather than working around.
-func metricsTimeoutValue(timeout time.Duration) string {
-	return strconv.FormatFloat(timeout.Seconds(), 'f', -1, 64) + "s"
-}
-
-// metricsTransportError maps a request that never produced a response. A spent
-// deadline, ours or the client's, is the timeout the caller was promised;
-// everything else is an unreachable source, as the probe treats it.
-func metricsTransportError(err error) error {
-	if errors.Is(err, context.DeadlineExceeded) || os.IsTimeout(err) {
-		return ErrTimeout
-	}
-	var netError net.Error
-	if errors.As(err, &netError) && netError.Timeout() {
-		return ErrTimeout
-	}
-	return ErrUnreachable
 }
 
 // metricsBodyError turns the two body failures into the source failure the
@@ -501,11 +249,11 @@ func metricsBodyError(err error) error {
 // with a bounded prefix of whatever text came with it, which is what a proxy
 // or a gateway in front of the source usually answers.
 func metricsHTTPError(response *http.Response) error {
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxMetricsErrorBody))
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxErrorBody))
 	if err != nil {
 		// A deadline reached while reading an error body is the timeout the
 		// caller was promised, not a source rejection with half its text.
-		return metricsReadError(err)
+		return readError(err)
 	}
 	var envelope struct {
 		Status    string `json:"status"`
@@ -517,7 +265,7 @@ func metricsHTTPError(response *http.Response) error {
 	}
 	return &SourceError{Failure: auth.SourceFailure{
 		ErrorType: "http_" + strconv.Itoa(response.StatusCode),
-		Message:   metricsBoundedText(body),
+		Message:   boundedText(body),
 	}}
 }
 
@@ -531,48 +279,12 @@ func metricsEnvelopeError(errorType, message string) error {
 	return &SourceError{Failure: auth.SourceFailure{ErrorType: errorType, Message: message}}
 }
 
-// metricsBoundedText bounds text the platform did not write. It is cut on a
-// rune boundary and made valid UTF-8, so it can travel through the JSON
-// envelope as the source sent it without becoming something else.
-func metricsBoundedText(body []byte) string {
-	text := strings.TrimSpace(strings.ToValidUTF8(string(body), ""))
-	if len(text) <= maxMetricsErrorText {
-		return text
-	}
-	cut := maxMetricsErrorText
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut]
-}
-
-// ceilingReader stops a body at the documented ceiling with an error of its
-// own, so a source that streams past it fails the request rather than
-// producing a document that merely looks cut short.
-type ceilingReader struct {
-	reader    io.Reader
-	remaining int64
-}
-
-func (c *ceilingReader) Read(p []byte) (int, error) {
-	if c.remaining <= 0 {
-		return 0, errBodyTooLarge
-	}
-	if int64(len(p)) > c.remaining {
-		p = p[:c.remaining]
-	}
-	read, err := c.reader.Read(p)
-	c.remaining -= int64(read)
-	return read, err
-}
-
-// metricsDecoder walks the source's answer as a stream of tokens rather than
-// unmarshalling it: the document may be far larger than the response the
-// caller is allowed, and the samples that fit must be kept in source order
-// while the rest is read and dropped. The order inside a series survives
-// because every member is re-encoded as it is read, never through a map.
+// metricsDecoder walks the source's answer with the shared token walker: the
+// document may be far larger than the response the caller is allowed, and the
+// samples that fit must be kept in source order while the rest is read and
+// dropped.
 type metricsDecoder struct {
-	decoder *json.Decoder
+	*jsonWalker
 	// The same keeper the SQL executor applies to rows: the sample cap is the
 	// row cap, and the byte cap counts the text that was kept.
 	keeper *rowKeeper
@@ -598,9 +310,9 @@ func metricsBody(body io.Reader, call metricsCall, request ExecuteRequest) (Exec
 	// round trip would change what the caller is told the source said.
 	decoder.UseNumber()
 	walk := &metricsDecoder{
-		decoder: decoder,
-		keeper:  &rowKeeper{maxRows: request.MaxRows, maxBytes: int64(request.MaxBytes)},
-		call:    call,
+		jsonWalker: &jsonWalker{decoder: decoder},
+		keeper:     &rowKeeper{maxRows: request.MaxRows, maxBytes: int64(request.MaxBytes)},
+		call:       call,
 	}
 	if err := walk.envelope(); err != nil {
 		return ExecuteResult{}, err
@@ -681,7 +393,7 @@ func (d *metricsDecoder) envelope() error {
 		return errMalformed
 	}
 	if !errors.Is(err, io.EOF) {
-		return metricsReadError(err)
+		return readError(err)
 	}
 	return nil
 }
@@ -886,7 +598,7 @@ func (d *metricsDecoder) series() ([]byte, bool, error) {
 			out.WriteByte(',')
 		}
 		first = false
-		out.Write(metricsString(key))
+		out.Write(jsonString(key))
 		out.WriteByte(':')
 		out.Write(member.Bytes())
 	}
@@ -930,7 +642,7 @@ func (d *metricsDecoder) discovery() error {
 			if !ok {
 				return errMalformed
 			}
-			item.Write(metricsString(text))
+			item.Write(jsonString(text))
 			size = int64(len(text))
 		}
 		if !d.keeper.keep(size) {
@@ -987,9 +699,9 @@ func (d *metricsDecoder) labelSetBody(out *bytes.Buffer) (int64, error) {
 			out.WriteByte(',')
 		}
 		first = false
-		out.Write(metricsString(name))
+		out.Write(jsonString(name))
 		out.WriteByte(':')
-		out.Write(metricsString(value))
+		out.Write(jsonString(value))
 		size += int64(len(name) + len(value))
 	}
 	if err := d.expect('}'); err != nil {
@@ -1104,86 +816,12 @@ func (d *metricsDecoder) scalarResult(out *bytes.Buffer, token json.Token) error
 func (d *metricsDecoder) raw(out *bytes.Buffer) (int64, error) {
 	var message json.RawMessage
 	if err := d.decoder.Decode(&message); err != nil {
-		return 0, metricsReadError(err)
+		return 0, readError(err)
 	}
 	if err := json.Compact(out, message); err != nil {
 		return 0, errMalformed
 	}
 	return int64(out.Len()), nil
-}
-
-// skip reads one value and discards it, bounded against a document whose
-// nesting would otherwise drive this recursion.
-func (d *metricsDecoder) skip(depth int) error {
-	if depth > maxMetricsDepth {
-		return errMalformed
-	}
-	token, err := d.next()
-	if err != nil {
-		return err
-	}
-	delim, ok := token.(json.Delim)
-	if !ok {
-		return nil
-	}
-	if delim == '}' || delim == ']' {
-		return errMalformed
-	}
-	for d.decoder.More() {
-		if delim == '{' {
-			if _, err := d.next(); err != nil {
-				return err
-			}
-		}
-		if err := d.skip(depth + 1); err != nil {
-			return err
-		}
-	}
-	_, err = d.next()
-	return err
-}
-
-func (d *metricsDecoder) next() (json.Token, error) {
-	token, err := d.decoder.Token()
-	if err != nil {
-		return nil, metricsReadError(err)
-	}
-	return token, nil
-}
-
-func (d *metricsDecoder) expect(want json.Delim) error {
-	token, err := d.next()
-	if err != nil {
-		return err
-	}
-	if delim, ok := token.(json.Delim); !ok || delim != want {
-		return errMalformed
-	}
-	return nil
-}
-
-func (d *metricsDecoder) key() (string, error) {
-	token, err := d.next()
-	if err != nil {
-		return "", err
-	}
-	key, ok := token.(string)
-	if !ok {
-		return "", errMalformed
-	}
-	return key, nil
-}
-
-func (d *metricsDecoder) text() (string, error) {
-	token, err := d.next()
-	if err != nil {
-		return "", err
-	}
-	text, ok := token.(string)
-	if !ok {
-		return "", errMalformed
-	}
-	return text, nil
 }
 
 func (d *metricsDecoder) texts() ([]string, error) {
@@ -1232,35 +870,12 @@ func metricsScalar(token json.Token) (string, int64, error) {
 	case json.Number:
 		return value.String(), 0, nil
 	case string:
-		return string(metricsString(value)), int64(len(value)), nil
+		return string(jsonString(value)), int64(len(value)), nil
 	case bool:
 		return strconv.FormatBool(value), 0, nil
 	case nil:
 		return "null", 0, nil
 	default:
 		return "", 0, errMalformed
-	}
-}
-
-// metricsString encodes one JSON string. The escapes may differ from the
-// source's own bytes; the value does not, which is what the platform promises.
-func metricsString(value string) []byte {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return []byte(`""`)
-	}
-	return encoded
-}
-
-// metricsReadError keeps the two body failures and a spent deadline apart from
-// a document that simply is not the source's envelope.
-func metricsReadError(err error) error {
-	switch {
-	case errors.Is(err, errBodyTooLarge):
-		return errBodyTooLarge
-	case errors.Is(err, context.DeadlineExceeded), os.IsTimeout(err):
-		return ErrTimeout
-	default:
-		return errMalformed
 	}
 }
