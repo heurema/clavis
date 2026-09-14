@@ -124,7 +124,12 @@ type Groups interface {
 // and --group keep every reference unambiguous.
 func ValidGroupName(value string) bool { return ValidUsername(value) }
 
+// ValidGroupID accepts the UUID a group row is keyed on. Groups share the
+// identifier shape with users and connections; the name says which namespace a
+// caller is reading, so a group check never has to read like a user check.
+func ValidGroupID(value string) bool { return ValidUserID(value) }
+
 // ValidGroupRef accepts a group UUID or a group name.
 func ValidGroupRef(value string) bool {
-	return ValidUserID(value) || ValidGroupName(value)
+	return ValidGroupID(value) || ValidGroupName(value)
 }

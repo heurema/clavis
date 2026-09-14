@@ -634,6 +634,50 @@ func TestEffectiveListingStaysWithinTheDocumentedBodyLimit(t *testing.T) {
 	require.Contains(t, response.Body.String(), `"entries":[]`)
 }
 
+// The listing budget is spent to the byte, reservation included: the envelope,
+// the subject's record and every separating comma are counted, so the last
+// record kept ends on the documented limit itself. The reservation is what
+// costs the record that follows: one byte more of it drops the last record,
+// and none of it at all keeps a record the reservation paid for.
+func TestBoundedListingCountsTheReservationDownToTheByte(t *testing.T) {
+	const field = "entries"
+	// The sizes come from the encoder the helper itself uses, never from a
+	// guess: one record, the envelope with the longer "false" and the encoder's
+	// trailing newline.
+	encoded, err := json.Marshal(maximalAccessEntry())
+	require.NoError(t, err)
+	record, envelope := len(encoded), len(`{"":[],"truncated":false}`)+len(field)+1
+	// A record past the first costs its own bytes plus a comma, so the kept
+	// records occupy envelope+reserved+count*(record+1)-1. Solving that for the
+	// documented limit picks the reservation that ends the listing exactly on
+	// it; two records short of the largest such count leaves a reservation
+	// worth more than a record, which is what the unreserved comparison needs.
+	count := (auth.MaxListingBody-envelope+1)/(record+1) - 2
+	reserved := auth.MaxListingBody - envelope + 1 - count*(record+1)
+	require.Equal(t, auth.MaxListingBody, envelope+reserved+count*record+count-1)
+	require.Greater(t, reserved, record+1, "the reservation must be worth more than one record")
+	entries := make([]auth.AccessEntry, count+4)
+	for index := range entries {
+		entries[index] = maximalAccessEntry()
+	}
+
+	kept, truncated, err := boundedListing(field, entries, false, reserved)
+	require.NoError(t, err)
+	require.Equal(t, count, len(kept), "the kept records end on the documented limit")
+	require.True(t, truncated)
+	// One byte more of reservation is one record fewer: the limit is exact.
+	kept, truncated, err = boundedListing(field, entries, false, reserved+1)
+	require.NoError(t, err)
+	require.Equal(t, count-1, len(kept))
+	require.True(t, truncated)
+	// Without the reservation the record the subject's own bytes paid for is
+	// kept instead, so a helper that ignored reserved would overrun the limit.
+	kept, truncated, err = boundedListing(field, entries, false, 0)
+	require.NoError(t, err)
+	require.Greater(t, len(kept), count)
+	require.True(t, truncated)
+}
+
 // The two connection GET routes are the only ones a member may call, and the
 // projection follows the role: no target, bound or timestamp reaches a member.
 func TestConnectionReadsUseTheMemberProjectionForMembers(t *testing.T) {
@@ -930,4 +974,82 @@ func TestIdentityGroupsAreReservedAndTheReservationIsReclaimed(t *testing.T) {
 	require.True(t, mixed.GroupsTruncated)
 	require.False(t, mixed.ConnectionsTruncated)
 	require.Equal(t, []string{"payments-prod-reporting"}, mixed.Connections)
+}
+
+// namesFilling builds names whose encoded bytes, as boundedNames counts them,
+// come to exactly size: each name is quoted and one comma separates them, so
+// size is the sum of the lengths plus three per name less one. The lengths are
+// derived from that formula rather than chosen, so a budget test lands on the
+// byte rather than near it, and every name stays inside the 3 to 64 characters
+// the name grammar allows.
+func namesFilling(t *testing.T, prefix string, size int) []string {
+	t.Helper()
+	count := (size + 1 + 66) / 67
+	letters := size + 1 - 3*count
+	names := make([]string, count)
+	for index := range names {
+		length := letters / count
+		if index < letters%count {
+			length++
+		}
+		name := fmt.Sprintf("%s%03d", prefix, index)
+		require.GreaterOrEqual(t, length, len(name))
+		require.LessOrEqual(t, length, 64)
+		names[index] = name + strings.Repeat("x", length-len(name))
+	}
+	_, _, used := boundedNames(names, false, size)
+	require.Equal(t, size, used, "the fixture must occupy the budget exactly")
+	return names
+}
+
+// The two identity budgets are exact figures, not approximations: the groups
+// are held to 8,192 bytes and the connections to everything the groups left,
+// both to the byte. Each half is pinned by making one name one byte longer and
+// watching exactly one name fall off the end.
+func TestIdentityNameBudgetsAreExactToTheByte(t *testing.T) {
+	budget := auth.MaxResponseBody - identityHeadroom
+	// The reservation is spelled out rather than read from the constant, so the
+	// documented 8 KiB is what the fixture is built against and a different
+	// figure cuts or keeps a name the assertions below name exactly.
+	const reservation = 8 * 1024
+	require.Equal(t, reservation, groupReservation)
+	// Groups filling the reservation exactly are all kept; one byte more and
+	// the last one is cut, which is what fixes the reservation at 8 KiB.
+	tight := namesFilling(t, "g", reservation)
+	exact := boundedIdentity(auth.Identity{Groups: tight})
+	require.Equal(t, len(tight), len(exact.Groups), "the groups end on the reservation itself")
+	require.False(t, exact.GroupsTruncated)
+	over := slices.Clone(tight)
+	over[len(over)-1] += "x"
+	require.LessOrEqual(t, len(over[len(over)-1]), 64, "the longer name is still a group name")
+	cut := boundedIdentity(auth.Identity{Groups: over})
+	require.Equal(t, len(tight)-1, len(cut.Groups), "the reservation is 8,192 bytes, to the byte")
+	require.True(t, cut.GroupsTruncated)
+	// Nothing but the reservation cuts here: the whole budget would hold them.
+	kept, truncated, _ := boundedNames(over, false, budget)
+	require.Equal(t, len(over), len(kept))
+	require.False(t, truncated)
+
+	// Two short group names leave almost the whole budget to the connections,
+	// and the last connection name fits on the last byte the groups left.
+	groups := []string{"finance-managers", "warehouse-readers"}
+	_, _, used := boundedNames(groups, false, reservation)
+	connections := namesFilling(t, "c", budget-used)
+	overflowing := append(slices.Clone(connections), "one-more-connection")
+	reclaimed := boundedIdentity(auth.Identity{Groups: groups, Connections: overflowing})
+	require.Equal(t, groups, reclaimed.Groups)
+	require.False(t, reclaimed.GroupsTruncated)
+	require.Equal(t, len(connections), len(reclaimed.Connections),
+		"the connections spend everything the groups did not")
+	require.True(t, reclaimed.ConnectionsTruncated)
+	// One byte more of group names is one connection name fewer, which is what
+	// fixes the reclaimed share at exactly what the groups left unspent.
+	longer := []string{groups[0], groups[1] + "s"}
+	narrowed := boundedIdentity(auth.Identity{Groups: longer, Connections: overflowing})
+	require.Equal(t, len(connections)-1, len(narrowed.Connections))
+	require.True(t, narrowed.ConnectionsTruncated)
+	// Held to the budget less the whole reservation instead, the same list
+	// would lose far more than that one name.
+	starved, _, _ := boundedNames(connections, false, budget-reservation)
+	require.Less(t, len(starved), len(connections)-1)
 }

@@ -340,7 +340,7 @@ func validAccessList(value auth.AccessList) bool {
 // validGroup accepts the safe group projection: identity, bounded description,
 // UTC timestamps and two counts that can never be negative.
 func validGroup(value auth.Group) bool {
-	if !auth.ValidUserID(value.ID) || !auth.ValidGroupName(value.Name) {
+	if !auth.ValidGroupID(value.ID) || !auth.ValidGroupName(value.Name) {
 		return false
 	}
 	if utf8.RuneCountInString(value.Description) > auth.MaxDescriptionLength || !printableText(value.Description) {

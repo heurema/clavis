@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/heurema/clavis/internal/auth"
@@ -123,14 +122,7 @@ func (a *authHTTP) listConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 			return invalidArgument()
 		}
 		terms = parsed
-		if raw, present := values["limit"]; present {
-			value, convErr := strconv.Atoi(raw[0])
-			if convErr != nil || value < 1 || value > auth.MaxConnectionListing {
-				return invalidArgument()
-			}
-			limit = value
-		}
-		return nil
+		return listingLimit(values, auth.MaxConnectionListing, &limit)
 	}, func(session auth.Session, _ string) (any, int, error) {
 		// The two GET routes are the only connection routes members may call.
 		// The projection follows the role of the authenticated session; the

@@ -2,20 +2,15 @@ package server
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/heurema/clavis/internal/auth"
-	store "github.com/heurema/clavis/internal/database"
-	"github.com/heurema/clavis/internal/platform"
 )
 
 // The grant routes and the member views end to end against PostgreSQL: the
@@ -23,38 +18,13 @@ import (
 // same handler the server mounts.
 func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	pool, path, password := serverDatabase(t)
-	checker := store.NewInitializer(pool, "personal-admin", path)
-	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
-	require.NoError(t, err)
-	service := local.WithKeyring(serverTestKeyring(t))
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, service,
-		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
-	require.NoError(t, err)
-	body := func(value any) string {
-		t.Helper()
-		data, err := json.Marshal(value)
-		require.NoError(t, err)
-		return string(data)
-	}
+	handler := realHandler(t, pool, path)
+	body := func(value any) string { return jsonBody(t, value) }
 	login := func(username string, secret auth.Secret) http.Header {
-		t.Helper()
-		response := requestAuth(handler, "POST", auth.LoginPath, body(auth.LoginRequest{Username: username, Password: secret}),
-			http.Header{"Content-Type": {"application/json"}})
-		require.Equal(t, 200, response.Code)
-		var issued auth.LoginResponse
-		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &issued))
-		return http.Header{"Authorization": {"Bearer " + string(issued.Token)}, "Accept": {"application/json"}}
+		return bearerLogin(t, handler, username, secret)
 	}
 	send := func(headers http.Header, method, route, payload string) *httptest.ResponseRecorder {
-		t.Helper()
-		request := headers.Clone()
-		if payload != "" {
-			request.Set("Content-Type", "application/json")
-		}
-		result := requestAuth(handler, method, route, payload, request)
-		require.Equal(t, "no-store", result.Header().Get("Cache-Control"))
-		return result
+		return sendJSON(t, handler, headers, method, route, payload)
 	}
 	admin := login("personal-admin", password)
 

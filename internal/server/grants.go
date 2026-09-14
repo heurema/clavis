@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strconv"
 
 	"github.com/heurema/clavis/internal/auth"
 )
@@ -126,14 +125,7 @@ func (a *authHTTP) listGrantsJSON(w http.ResponseWriter, r *http.Request) {
 			}
 			filter.Connection = raw[0]
 		}
-		if raw, present := values["limit"]; present {
-			value, convErr := strconv.Atoi(raw[0])
-			if convErr != nil || value < 1 || value > auth.MaxGrantListing {
-				return invalidArgument()
-			}
-			filter.Limit = value
-		}
-		return nil
+		return listingLimit(values, auth.MaxGrantListing, &filter.Limit)
 	}, func(session auth.Session) (any, int, error) {
 		list, err := a.grants.ListGrants(r.Context(), session, filter)
 		if err != nil {
