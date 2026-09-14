@@ -58,7 +58,7 @@ Sign-in: a 384-pixel column, heading "Sign in", the alert (message plus the rate
 
 ### 4. Assets and build
 
-`assets.go` embeds `app.css`, `appearance.js` and `notices.txt`. `build-web-assets.mjs` stops copying htmx and its licence; the notices keep lucide (icons) and templUI. `web/package.json` drops `htmx.org`; the lockfile is regenerated with `pnpm install` and the frozen-lockfile check keeps passing. `readiness.js` and `page.templ` are deleted; `readiness.go` and `Readiness()` go with them. The Tailwind source globs already cover `internal/web/*.templ` and `internal/web/ui/**/*.templ`.
+`assets.go` embeds `app.css`, `appearance.js` and `notices.txt`. `build-web-assets.mjs` stops copying htmx and its licence; the notices keep lucide (icons) and templUI. The owner asked on 2026-09-14, after the whole-change review, to remove the visible "Third-party notices" link from every document; the notices file stays embedded and served at `/assets/notices.txt`, which is how the attributions travel with the binary. `web/package.json` drops `htmx.org`; the lockfile is regenerated with `pnpm install` and the frozen-lockfile check keeps passing. `readiness.js` and `page.templ` are deleted; `readiness.go` and `Readiness()` go with them. The Tailwind source globs already cover `internal/web/*.templ` and `internal/web/ui/**/*.templ`.
 
 ### 5. Tests
 

@@ -40,6 +40,7 @@ None.
 - No status page; remove the fragment route, its script and htmx rather than keep an unused route.
 - No CLI command hints on the pages; no explanatory copy under page titles; no "Showing all…" footers.
 - Appearance toggle at the top of the sidebar, as an icon button.
+- No visible third-party notices link on the pages (after the whole-change review); the notices file stays embedded and served.
 
 ## Non-goals
 

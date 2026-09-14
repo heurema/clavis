@@ -51,14 +51,6 @@ templ appearanceButton(size string) {
 	</button>
 }
 
-// The attribution link travels with the binary, so every public document keeps
-// one line pointing at the embedded notices.
-templ publicNotices() {
-	<footer class="pt-1 text-xs text-muted-foreground">
-		<a href="/assets/notices.txt" class="underline underline-offset-4">Third-party notices</a>
-	</footer>
-}
-
 templ Login(model LoginModel) {
 	@publicDocument("Sign in") {
 		<div class="mx-auto w-full max-w-sm space-y-5 px-6 pt-24 pb-16">
@@ -89,7 +81,6 @@ templ Login(model LoginModel) {
 					}
 				</form>
 			}
-			@publicNotices()
 		</div>
 	}
 }
@@ -198,7 +189,6 @@ templ adminShell(model AdminModel) {
 				<main class="flex min-w-0 flex-1 flex-col gap-5 px-6 py-8 sm:px-10">
 					<h1 class="text-xl font-semibold tracking-tight">{ pageHeading(model.Page) }</h1>
 					{ children... }
-					@publicNotices()
 				</main>
 			</div>
 		</body>
@@ -387,7 +377,6 @@ templ AuthError(model AuthErrorModel) {
 					}
 				</form>
 			}
-			@publicNotices()
 		</div>
 	}
 }

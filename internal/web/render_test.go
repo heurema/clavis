@@ -51,7 +51,7 @@ func TestDocumentAssetsAreEmbedded(t *testing.T) {
 	assert.Contains(t, response.Body.String(), `<html lang="en">`)
 	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 	references := regexp.MustCompile(`(?:src|href)="(/assets/[^"]+)"`).FindAllStringSubmatch(response.Body.String(), -1)
-	require.Len(t, references, 3)
+	require.Len(t, references, 2)
 	for _, reference := range references {
 		asset := httptest.NewRecorder()
 		ServeAsset(asset, httptest.NewRequest(http.MethodGet, reference[1], nil))

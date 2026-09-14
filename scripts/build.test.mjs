@@ -348,7 +348,7 @@ test("server builds from clean assets and runs as a copied executable", async (t
       "stale generated source",
       "internal/web/auth.templ",
       readFileSync(join(directory, "internal/web/auth.templ"), "utf8").replace(
-        "Third-party notices",
+        "Dark appearance",
         "Changed without generation.",
       ),
     ],

@@ -30,7 +30,7 @@ func renderAuth(t *testing.T, status int, view templ.Component) string {
 	assert.Contains(t, body, `<button type="button" data-appearance="true"`)
 	assert.Contains(t, body, `aria-pressed=`)
 	assert.Contains(t, body, `aria-label="Dark appearance"`)
-	assert.Equal(t, 1, strings.Count(body, "/assets/notices.txt"), "one attribution link per document")
+	assert.NotContains(t, body, "/assets/notices.txt", "the notices travel as an asset, not as a page link")
 	assert.NotContains(t, body, "hx-post")
 	return body
 }
