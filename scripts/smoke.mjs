@@ -5,6 +5,7 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readFileSync,
   mkdtempSync,
   readdirSync,
   rmSync,
@@ -1880,8 +1881,21 @@ try {
   // directories exist under the home, refuses a directory it did not write,
   // and prints its own document without touching anything.
   const skillHome = clientEnv("skill").HOME
-  const skillInstall = (args, expected = 0) =>
-    cli("skill", ["skill", "install", ...args], expected)
+  // The skill commands are offline and take no --server, so they bypass the
+  // authenticated helper and its flag.
+  const skillInstall = async (args, expected = 0) => {
+    const result = JSON.parse(
+      await execute(
+        join(root, "bin/clavis"),
+        ["skill", "install", ...args],
+        `skill-install-${args.join("-") || "default"}`,
+        { env: clientEnv("skill") },
+        expected,
+      ),
+    )
+    assert.equal(result.ok, expected === 0)
+    return result
+  }
   const firstInstall = await skillInstall([])
   assert.deepEqual(
     firstInstall.data.targets.map((target) => [target.agent, target.outcome]),
