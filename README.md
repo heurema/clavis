@@ -370,9 +370,8 @@ Deleting a group requires zero grants: `GROUP_IN_USE` refuses it and the hint
 counts the grants that remain, on the real run and on the dry run alike.
 Deletion drops the memberships with the group, because membership alone confers
 nothing, and a group recreated under the same name is a new record that
-inherits nothing.
-Listings are bounded to 1,000 groups and 1,000 members with an explicit
-`truncated` flag, and a dry run commits nothing.
+inherits nothing. Listings are bounded to 1,000 groups and 1,000 members with
+an explicit `truncated` flag, and a dry run commits nothing.
 
 The `groups` commands are administrator-only, like `users`: every attempt by a
 member is refused with `FORBIDDEN`. A member learns their own groups from

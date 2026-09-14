@@ -66,10 +66,10 @@ Members see only granted connections; an ungranted one answers
 administrator for a grant; never work around a refusal.
 
 Access reaches you directly or through a group you belong to. `clavis whoami`
-names your groups beside your connections, and
-`clavis grants list --user <ref> --effective` reports one entry per connection
-and configured path, `direct` or the group it came through, so you can say
-where a connection came from and which path an administrator would revoke.
+names your groups beside your connections, and `clavis grants list --effective`
+(an administrator adds `--user <ref>`) reports one entry per connection and
+configured path, `direct` or the group it came through, so you can say where a
+connection came from and which path an administrator would revoke.
 
 ## Run a query
 
