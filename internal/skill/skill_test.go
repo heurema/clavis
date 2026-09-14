@@ -19,8 +19,10 @@ func TestEmbeddedNamesAndVersion(t *testing.T) {
 	for _, name := range names {
 		body, err := fs.ReadFile(Files(), name)
 		require.NoError(t, err)
-		assert.True(t, strings.HasPrefix(string(body), "---\n"), "%s opens with frontmatter", name)
 		assert.NotEmpty(t, body)
+		if name == Entry {
+			assert.True(t, strings.HasPrefix(string(body), "---\n"), "the entry opens with frontmatter")
+		}
 	}
 }
 

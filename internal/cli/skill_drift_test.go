@@ -48,7 +48,13 @@ func skillHints() []string {
 // rather than the CLI. Their constants live in internal/database, which this
 // package does not import, so a quoted one is listed here by hand and checked
 // by eye in review. The skill content slice populates it.
-var skillServiceHints []string
+var skillServiceHints = []string{
+	// hintQueryWantsSQL, hintQueryWantsMetrics and hintQueryWantsLogs in
+	// internal/database/query.go, quoted by the skill's entry.
+	"This connection is postgresql: send sql.",
+	"This connection is victoriametrics: send promql, labels, labelValues or series.",
+	"This connection is victorialogs: send logsql, fieldNames, fieldValues, streams, streamFieldNames or streamFieldValues.",
+}
 
 // shellBreaks end the part of a line that belongs to clavis: everything after
 // one of them is another program's arguments, not ours to check.
@@ -98,6 +104,7 @@ func TestSkillDriftGuardCatchesDrift(t *testing.T) {
 	for name, tc := range map[string]struct{ document, token string }{
 		"unknown flag in a fence":   {"```\nclavis query --connection <ref> --nonexistent\n```\n", "--nonexistent"},
 		"unknown flag inline":       {"Run `clavis skill install --everywhere` first.\n", "--everywhere"},
+		"value after a bool flag":   {"```sh\nclavis query --connection <ref> --labels -1h\n```\n", "--1h"},
 		"unknown command":           {"```\nclavis describe --connection <ref>\n```\n", "describe"},
 		"unknown subcommand":        {"```\nclavis connections describe\n```\n", "describe"},
 		"flag of another command":   {"```\nclavis skill install --promql up\n```\n", "--promql"},
@@ -115,6 +122,7 @@ func TestSkillDriftGuardCatchesDrift(t *testing.T) {
 	// The same documents with the drift repaired report nothing.
 	for _, document := range []string{
 		"```\nclavis query --connection <ref> --sql \"select 1\"\n```\n",
+		"```\nclavis query --connection <ref> --logsql 'error' --start -1h --end -15m --limit 5\n```\n",
 		"Run `clavis skill install --force` first.\n",
 		"```\nclavis connections list --selector team=data | jq --raw-output .\n```\n",
 		"```\n$ clavis query --connection <ref> --logsql '*' \\\n    --limit 10\n```\n",
@@ -260,13 +268,40 @@ func checkInvocation(root *urfave.Command, text string) error {
 		if !strings.HasPrefix(token, "-") || token == "-" || token == "--" {
 			continue
 		}
-		name, _, _ := strings.Cut(strings.TrimLeft(token, "-"), "=")
-		if name == "help" || declaresFlag(command, name) || declaresFlag(root, name) {
+		name, _, attached := strings.Cut(strings.TrimLeft(token, "-"), "=")
+		if name == "help" {
 			continue
 		}
-		return fmt.Errorf("names a flag %s does not take: --%s", commandPath(root, command), name)
+		flag := flagOf(command, name)
+		if flag == nil {
+			flag = flagOf(root, name)
+		}
+		if flag == nil {
+			return fmt.Errorf("names a flag %s does not take: --%s", commandPath(root, command), name)
+		}
+		// A flag that takes a value owns the next token, whatever it looks
+		// like: a relative time such as -1h is a value, not a flag.
+		if !attached && !isBoolFlag(flag) {
+			index++
+		}
 	}
 	return nil
+}
+
+// flagOf finds a declared flag by any of its names.
+func flagOf(command *urfave.Command, name string) urfave.Flag {
+	for _, flag := range command.Flags {
+		if slices.Contains(flag.Names(), name) {
+			return flag
+		}
+	}
+	return nil
+}
+
+// isBoolFlag reports whether a flag stands alone on the command line.
+func isBoolFlag(flag urfave.Flag) bool {
+	_, ok := flag.(*urfave.BoolFlag)
+	return ok
 }
 
 // endsCommand names the tokens after which the line stops being ours: a pipe,
@@ -289,15 +324,6 @@ func subcommand(command *urfave.Command, name string) *urfave.Command {
 		}
 	}
 	return nil
-}
-
-func declaresFlag(command *urfave.Command, name string) bool {
-	for _, flag := range command.Flags {
-		if slices.Contains(flag.Names(), name) {
-			return true
-		}
-	}
-	return false
 }
 
 // commandPath names the command a failure is about the way a reader typed it.
@@ -347,6 +373,11 @@ func tokenize(text string) ([]string, bool) {
 			}
 		case char == '\'' || char == '"':
 			quote, open = char, true
+			continue
+		case char == '#' && !open:
+			// An unquoted comment ends the command line; what follows is
+			// prose and may hold an apostrophe.
+			index = len(chars)
 			continue
 		case char == '\\' && index+1 < len(chars):
 			index++
