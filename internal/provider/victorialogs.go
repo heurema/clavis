@@ -389,8 +389,13 @@ func logsLine(reader *bufio.Reader, ceiling int64) ([]byte, bool, error) {
 	var line []byte
 	for {
 		chunk, err := reader.ReadSlice('\n')
-		// The terminator is allowed on top of the ceiling, which bounds the row.
-		if int64(len(line))+int64(len(chunk)) > ceiling+1 {
+		// The ceiling bounds the row; a terminator is allowed on top of it, but
+		// only when it is there, so a final row without one is bounded the same.
+		limit := ceiling
+		if len(chunk) > 0 && chunk[len(chunk)-1] == '\n' {
+			limit++
+		}
+		if int64(len(line))+int64(len(chunk)) > limit {
 			return nil, false, errBodyTooLarge
 		}
 		// ReadSlice returns a view of the reader's own buffer, valid only until

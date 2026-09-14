@@ -476,6 +476,7 @@ func TestVictoriaLogsExecuteRowsPassThrough(t *testing.T) {
 		body   string
 		result string
 		rows   int64
+		bytes  int64
 	}{
 		{
 			name:   "two ordinary rows in arrival order",
@@ -498,6 +499,10 @@ func TestVictoriaLogsExecuteRowsPassThrough(t *testing.T) {
 			result: `[{"s":"text","n":123456789012345678901234567890.5,"neg":-0.0,` +
 				`"o":{"b":[1,{"c":null}]},"a":[true,false,null],"t":true,"f":false,"z":null}]`,
 			rows: 1,
+			// Names cost their length and a value that is not a string costs
+			// its raw text: 10 bytes of names, 4 for the string, 32, 4, 20,
+			// 17, 4, 5 and 4 for the rest.
+			bytes: 100,
 		},
 		{
 			name: "a message holding JSON text and control characters",
@@ -564,6 +569,9 @@ func TestVictoriaLogsExecuteRowsPassThrough(t *testing.T) {
 			require.Equal(t, resultTypeLogs, result.ResultType)
 			require.Equal(t, testCase.result, string(result.Result))
 			require.Equal(t, testCase.rows, result.Rows)
+			if testCase.bytes != 0 {
+				require.Equal(t, testCase.bytes, result.Bytes)
+			}
 			require.False(t, result.Truncated)
 			require.Equal(t, int64(1), result.Statements)
 			// A log answer carries none of the metrics envelope's members.
@@ -640,7 +648,7 @@ func TestVictoriaLogsExecuteStopsAtTheRowCap(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Truncated)
 	require.Equal(t, int64(25), result.Rows)
-	require.Equal(t, strings.Count(string(result.Result), logsRowOne), 25)
+	require.Equal(t, 25, strings.Count(string(result.Result), logsRowOne))
 	// The source saw the connection close: keep-alive is off, so closing the
 	// body stops the work rather than leaving it running.
 	require.Eventually(t, cut.Load, 10*time.Second, 10*time.Millisecond,
@@ -669,9 +677,14 @@ func TestVictoriaLogsExecuteRowBeyondTheCeiling(t *testing.T) {
 	request := ExecuteRequest{LogsQL: logsExpression, MaxRows: 10, MaxBytes: auth.MinMaxBytes}
 	ceiling := auth.MetricsBodyCeiling(request.MaxBytes)
 	oversized := `{"_msg":"` + strings.Repeat("x", ceiling) + `"}`
+	// One byte over the ceiling is refused whether or not a terminator follows.
+	justOver := `{"_msg":"` + strings.Repeat("x", ceiling-len(`{"_msg":""}`)+1) + `"}`
+	require.Len(t, justOver, ceiling+1)
 	for _, testCase := range []struct{ name, body string }{
 		{"the first row", oversized},
 		{"a later row", logsBody(logsRowOne) + oversized},
+		{"one byte over with a newline", justOver + "\n"},
+		{"one byte over without a newline", justOver},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			address, _ := logsStreamSource(t, testCase.body)
@@ -765,6 +778,9 @@ func TestVictoriaLogsExecuteDiscoveryPassThrough(t *testing.T) {
 			require.Equal(t, `[{"value":"error","hits":1234567890123456789},`+
 				`{"value":"","hits":0},{"value":"in\"fo","hits":3.5}]`, string(result.Result))
 			require.Equal(t, int64(3), result.Rows)
+			// Each item costs its decoded value text plus the digits of its
+			// count: 5+19, 0+1 and 5+3.
+			require.Equal(t, int64(33), result.Bytes)
 			require.False(t, result.Truncated)
 			require.Equal(t, int64(1), result.Statements)
 		})
@@ -946,6 +962,26 @@ func TestVictoriaLogsExecuteClientDeadline(t *testing.T) {
 	require.Less(t, elapsed, auth.MetricsGrace+3*time.Second)
 }
 
+// A source that writes rows and then stops is cut the same way: the deadline
+// reached inside the stream is the timeout, never a malformed or partial answer.
+func TestVictoriaLogsExecuteClientDeadlineWhileReadingRows(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/stream+json")
+		_, _ = io.WriteString(w, logsBody(logsRowOne, logsRowTwo))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		stall(auth.MetricsGrace+2*time.Second)(w, r)
+	}))
+	t.Cleanup(server.Close)
+	started := time.Now()
+	result, err := victoriaLogs{}.Execute(t.Context(), logsTarget(t, server.URL), "",
+		ExecuteRequest{LogsQL: logsExpression, Timeout: 10 * time.Millisecond, MaxRows: 10})
+	require.ErrorIs(t, err, ErrTimeout)
+	require.Nil(t, result.Result)
+	require.Less(t, time.Since(started), auth.MetricsGrace+3*time.Second)
+}
+
 // The caller's deadline is the service's backstop and produces the same code.
 func TestVictoriaLogsExecuteRequestDeadline(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(stall(2 * time.Second)))
@@ -1017,7 +1053,7 @@ func TestVictoriaLogsExecuteFailuresCarryNoInput(t *testing.T) {
 		{"gateway text", http.StatusBadGateway, "upstream unavailable"},
 		{"refused credentials", http.StatusUnauthorized, "no"},
 		{"a malformed line", http.StatusOK, "not json\n"},
-		{"a malformed discovery envelope", http.StatusOK, "{"},
+		{"an unterminated malformed line", http.StatusOK, "{"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			address, _ := logsSource(t, testCase.status, "text/plain", testCase.body)
