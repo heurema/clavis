@@ -22,6 +22,8 @@ Access is granted one user at a time: onboarding a manager means repeating every
 
 - `connection-grants`: a grant has one recipient, user or group; member visibility and per-request authorization use effective access; the grant routes gain the group filter and the effective-access listing; the Grants page shows the recipient; `whoami` connection names are the effective set.
 - `cli-authentication`: `whoami` reports group names; the grant commands accept `--group` and `--effective`; the new `groups` command group.
+- `local-authentication`: the administration shell has four pages and loads four bounded lists, with `/admin/groups` among them.
+- `query-execution`: the authorization sentence names effective access through a direct grant or a group, not a grant alone.
 
 ## Impact
 
@@ -33,7 +35,7 @@ Access is granted one user at a time: onboarding a manager means repeating every
 
 ## Decisions recorded for owner review (2026-09-14)
 
-Made while planning, not yet confirmed by the owner; each is cheap to reverse before implementation starts. An independent planning review on 2026-09-14 (Codex, read-only) accepted all five, with two conditions folded into the design and specs: members must keep a way to see their own grant paths, and `whoami` must reserve room for group names so connections cannot crowd them out.
+Made while planning, not yet confirmed by the owner; each is cheap to reverse before implementation starts. An independent read-only planning review on 2026-09-14 accepted all five, with two conditions folded into the design and specs: members must keep a way to see their own grant paths, and `whoami` must reserve room for group names so connections cannot crowd them out.
 
 - One `grants` table with exactly one recipient per row, rather than a separate group-grants table: one listing, one page, one delete-guard count, one `ON CONFLICT` insert.
 - The `groups` commands and routes are administrator-only, like `users`; a member learns their groups from `whoami` and never sees another member's username through a group.

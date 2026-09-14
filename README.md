@@ -419,7 +419,7 @@ each listed once however many paths supply it, in a reduced projection
 `lastCheck`) that never carries a target, bounds or credentials; a connection
 they have no access to is `CONNECTION_NOT_FOUND`, and a disabled one stays
 listed with `enabled: false`, and the authorization check that later query operations run refuses it with `CONNECTION_DISABLED`. Members
-may run `grants list` and see only their own grants; every administrative
+may run `grants list` and see only their own direct grants; every administrative
 attempt by a member is refused with `FORBIDDEN`. Revocation takes
 effect on the member's next request, and grants survive blocking and renames.
 Listing is bounded to 1,000 grants with an explicit `truncated` flag, and the

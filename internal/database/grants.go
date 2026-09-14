@@ -84,7 +84,7 @@ func findGroup(ctx context.Context, queries *sqlc.Queries, ref string, lock bool
 		return row, groupNotFound()
 	}
 	id := ref
-	if !auth.ValidUserID(ref) {
+	if !auth.ValidGroupID(ref) {
 		named, err := queries.FindGroupByName(ctx, ref)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return row, groupNotFound()
