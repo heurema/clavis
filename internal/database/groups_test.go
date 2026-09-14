@@ -303,12 +303,19 @@ func TestDeleteGroupIsGuardedByItsGrantsAndTakesMembershipsWithIt(t *testing.T) 
 func TestMembershipIsIdempotentAndSurvivesBlocking(t *testing.T) {
 	pool, s, admin, _ := connectionFixture(t)
 	finance := createGroup(t, s, admin, "finance-managers", "")
-	alice, _ := createMember(t, s, admin, "alice")
-	bob, _ := createMember(t, s, admin, "bob")
+	alice, aliceInput := createMember(t, s, admin, "alice")
+	bob, bobInput := createMember(t, s, admin, "bob")
+	// The group's grant is what makes membership observable as access.
+	createConnection(t, s, admin, connectionRequest("payments-prod"))
+	_, err := s.CreateGrant(t.Context(), admin, auth.GrantRequest{Group: "finance-managers", Connection: "payments-prod"}, false)
+	require.NoError(t, err)
 
 	added, err := s.AddMember(t.Context(), admin, "finance-managers", "alice", false)
 	require.NoError(t, err)
 	require.True(t, added.Added)
+	aliceSession := session(t, s, login(t, s, aliceInput), auth.CLI)
+	_, err = s.AuthorizeConnection(t.Context(), aliceSession, "payments-prod")
+	require.NoError(t, err, "membership confers the group's grant")
 	require.False(t, added.DryRun)
 	require.Equal(t, auth.GrantParty{ID: finance.ID, Name: "finance-managers"}, added.Membership.Group)
 	require.Equal(t, auth.GrantParty{ID: alice.ID, Name: "alice"}, added.Membership.User)
@@ -349,14 +356,25 @@ func TestMembershipIsIdempotentAndSurvivesBlocking(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, group.Members)
 
-	// Blocking and unblocking a member never touches the membership.
+	// Blocking and unblocking a member never touches the membership. While
+	// blocked, the sessions are gone and nothing is authorized; once
+	// unblocked, a fresh sign-in inherits the group's grant again without
+	// re-adding, and bob, added while blocked, inherits it for the first time.
 	_, err = s.SetUserDisabled(t.Context(), admin, "alice", true)
 	require.NoError(t, err)
 	require.Equal(t, 2, countRows(t, pool, "group_members"))
+	_, err = s.AuthorizeConnection(t.Context(), aliceSession, "payments-prod")
+	code(t, err, auth.Unauthenticated, "blocking revoked the session")
 	_, err = s.SetUserDisabled(t.Context(), admin, "alice", false)
 	require.NoError(t, err)
 	_, err = s.SetUserDisabled(t.Context(), admin, "bob", false)
 	require.NoError(t, err)
+	for name, input := range map[string]auth.LoginInput{"alice": aliceInput, "bob": bobInput} {
+		resumed := session(t, s, login(t, s, input), auth.CLI)
+		record, err := s.AuthorizeConnection(t.Context(), resumed, "payments-prod")
+		require.NoError(t, err, name)
+		require.Equal(t, "payments-prod", record.Name, name)
+	}
 	still, err := s.ListMembers(t.Context(), admin, finance.ID, 0)
 	require.NoError(t, err)
 	require.Equal(t, memberUsernames(members), memberUsernames(still))

@@ -95,10 +95,12 @@ func membershipRecord(row sqlc.FindGroupMemberRow) auth.Membership {
 	}
 }
 
-// administerRead opens the administrator read transaction the group reads
-// share: readiness, a recheck that refuses a revoked session, and the role
-// check, with no advisory key and no mutation. The caller owns the deadline
-// and rolls the transaction back.
+// administerRead opens the administrator read transaction the administrator
+// reads share (users, connections, groups): readiness, a recheck that refuses
+// a revoked session, and the role check, with no advisory key and no
+// mutation. The caller owns the deadline and rolls the transaction back.
+// ListConnections keeps its own copy because its selector check sits between
+// the session check and readiness.
 func (s *LocalAuth) administerRead(ctx context.Context, previous auth.Session) (pgx.Tx, error) {
 	if !validSession(previous) {
 		return nil, &auth.Error{Code: auth.Unauthenticated}

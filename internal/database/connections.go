@@ -33,6 +33,7 @@ const (
 	hintUserNotFound       = "Use `clavis users list` to find the user's username or id."
 	hintGroupNotFound      = "Use `clavis groups list` to find the group's name or id."
 	hintGroupExists        = "A group named like that exists; use `clavis groups update` to change it or choose another name."
+	hintGroupInUse         = "Revoke the group's remaining grants first."
 	hintCredentials        = "Replace the connection's credentials with `clavis connections set-credentials`; the stored secret cannot be decrypted with the configured key."
 	hintName               = "A connection name is 3 to 64 characters of lowercase letters, digits, dot, dash or underscore, starts with a letter and is never shaped like a UUID."
 	hintTitle              = "A title is 1 to 128 characters without control characters."
@@ -113,6 +114,10 @@ func hinted(err error) error {
 		failure.Hint = hintGroupNotFound
 	case auth.GroupExists:
 		failure.Hint = hintGroupExists
+	case auth.GroupInUse:
+		// DeleteGroup attaches the counted hint itself; this is the fallback
+		// for any later call site that returns the code bare.
+		failure.Hint = hintGroupInUse
 	}
 	return err
 }
@@ -821,20 +826,11 @@ func (s *LocalAuth) GetConnection(ctx context.Context, previous auth.Session, re
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
 	defer cancel()
 	var record auth.Connection
-	if !validSession(previous) {
-		return record, &auth.Error{Code: auth.Unauthenticated}
-	}
-	if err := s.ready(ctx); err != nil {
-		return record, err
-	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.administerRead(ctx, previous)
 	if err != nil {
-		return record, unavailable()
+		return record, err
 	}
 	defer rollback(ctx, tx)
-	if _, err := authorize(ctx, tx, previous); err != nil {
-		return record, err
-	}
 	row, err := findConnection(ctx, sqlc.New(tx), ref, false)
 	if err != nil {
 		var failure *auth.Error

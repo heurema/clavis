@@ -225,20 +225,11 @@ func (s *LocalAuth) ListUsers(ctx context.Context, previous auth.Session) (auth.
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
 	defer cancel()
 	var list auth.UserList
-	if !validSession(previous) {
-		return list, &auth.Error{Code: auth.Unauthenticated}
-	}
-	if err := s.ready(ctx); err != nil {
-		return list, err
-	}
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.administerRead(ctx, previous)
 	if err != nil {
-		return list, unavailable()
+		return list, err
 	}
 	defer rollback(ctx, tx)
-	if _, err := authorize(ctx, tx, previous); err != nil {
-		return list, err
-	}
 	rows, err := sqlc.New(tx).ListUsers(ctx, auth.MaxUserListing+1)
 	if err != nil {
 		return list, unavailable()
