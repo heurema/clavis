@@ -128,7 +128,7 @@ func TestHTMLRenderFailureDoesNotLogDetails(t *testing.T) {
 	// supplies the services, while the views are the production ones.
 	fixture := &backendFixture{}
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
-	handler, err := HandlerWithAuth(time.Second, checker, fixture, fixture, fixture, fixture, fixture, fixture, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(&logs, nil)))
+	handler, err := HandlerWithAuth(time.Second, checker, fixture, fixture, fixture, fixture, fixture, fixture, fixture, "http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(&logs, nil)))
 	require.NoError(t, err)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/login", nil).WithContext(ctx))

@@ -11,9 +11,10 @@ import (
 	"github.com/heurema/clavis/internal/auth"
 )
 
-// hintEmptyUpdate is the one hint this adapter owns. Every other hint belongs
-// to the service, which knows which field or range a request violated; an
-// empty update never reaches it, so the guidance has to be given here.
+// hintEmptyUpdate is a hint this adapter owns, shared by the connection and
+// group updates. Every other hint belongs to the service, which knows which
+// field or range a request violated; an empty update never reaches it, so the
+// guidance has to be given here.
 const hintEmptyUpdate = "Provide at least one field to update"
 
 // The connection service owns readiness and authority rechecks, exactly like
@@ -144,7 +145,7 @@ func (a *authHTTP) listConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return nil, 0, err
 			}
-			records, truncated, err := boundedListing("connections", list.Connections, list.Truncated)
+			records, truncated, err := boundedListing("connections", list.Connections, list.Truncated, 0)
 			if err != nil {
 				return nil, 0, err
 			}
@@ -154,7 +155,7 @@ func (a *authHTTP) listConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, 0, err
 		}
-		records, truncated, err := boundedListing("connections", list.Connections, list.Truncated)
+		records, truncated, err := boundedListing("connections", list.Connections, list.Truncated, 0)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -166,11 +167,12 @@ func (a *authHTTP) listConnectionsJSON(w http.ResponseWriter, r *http.Request) {
 // The row bound alone cannot guarantee it: a thousand records with long text
 // and sixteen labels each are far larger than the budget, so trailing records
 // are dropped in listing order and the response says so, exactly as it does
-// when the row bound truncates. field names the array member of the envelope,
-// which is all that differs between the connection and grant listings.
-func boundedListing[T any](field string, records []T, truncated bool) ([]T, bool, error) {
+// when the row bound truncates. field names the array member of the envelope
+// and reserved is what the same envelope carries besides the array: nothing
+// for the plain listings, the subject's record for the effective one.
+func boundedListing[T any](field string, records []T, truncated bool, reserved int) ([]T, bool, error) {
 	// The envelope with the longer "false" and the encoder's trailing newline.
-	size := len(`{"":[],"truncated":false}`) + len(field) + 1
+	size := len(`{"":[],"truncated":false}`) + len(field) + 1 + reserved
 	kept := 0
 	for index, record := range records {
 		encoded, err := json.Marshal(record)

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -76,12 +77,25 @@ type cliAuthFixture struct {
 	// grants is the grant store. A member's reads are scoped through it, and
 	// the raw query and request bodies are recorded so tests can pin the wire
 	// shape exactly as they do for connections.
-	grants         []auth.Grant
-	grantTruncated bool
-	grantBody      []byte
-	grantQuery     string
-	grantCalls     int
-	grantMutations int
+	grants          []auth.Grant
+	grantTruncated  bool
+	accessTruncated bool
+	grantBody       []byte
+	grantQuery      string
+	grantCalls      int
+	grantMutations  int
+	// groups and memberships are the group store. The two counts a group
+	// record carries are computed on read, as the service computes them, and
+	// the raw query and request bodies are recorded so tests can pin the wire
+	// shape exactly as they do for grants.
+	groups          []auth.Group
+	memberships     []auth.Membership
+	groupTruncated  bool
+	memberTruncated bool
+	groupBody       []byte
+	groupQuery      string
+	groupCalls      int
+	groupMutations  int
 	// queryResponse is what an authorized execution answers, and queryFailure
 	// short-circuits one, so every documented code can be exercised end to end.
 	queryResponse auth.QueryResponse
@@ -131,9 +145,10 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	// Only the connection and grant routes document query parameters.
 	connections := r.URL.Path == auth.ConnectionsPath || strings.HasPrefix(r.URL.Path, auth.ConnectionsPath+"/")
-	grants := r.URL.Path == auth.GrantsPath || r.URL.Path == auth.GrantRevokePath
+	grants := r.URL.Path == auth.GrantsPath || r.URL.Path == auth.GrantRevokePath || r.URL.Path == auth.GrantsEffectivePath
+	groups := r.URL.Path == auth.GroupsPath || strings.HasPrefix(r.URL.Path, auth.GroupsPath+"/")
 	if err != nil || len(body) > limit || r.Header.Get("Cookie") != "" ||
-		(r.URL.RawQuery != "" && !connections && !grants) || r.Header.Get("Accept") != "application/json" {
+		(r.URL.RawQuery != "" && !connections && !grants && !groups) || r.Header.Get("Accept") != "application/json" {
 		fail(auth.InvalidArgument)
 		return
 	}
@@ -172,6 +187,10 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 		f.serveGrants(w, r, identity, body, fail)
 		return
 	}
+	if groups {
+		f.serveGroups(w, r, identity, body, fail)
+		return
+	}
 	if execution {
 		f.serveQuery(w, r, identity, body, fail)
 		return
@@ -191,6 +210,15 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			identity.ConnectionsTruncated = f.connTruncated
 		}
+		// The groups are named for every caller, whatever their role, because
+		// membership is a fact about the account rather than a grant.
+		for _, group := range f.groups {
+			if f.isMember(group.ID, identity.User.ID) {
+				identity.Groups = append(identity.Groups, group.Name)
+			}
+		}
+		sort.Strings(identity.Groups)
+		identity.GroupsTruncated = f.groupTruncated
 		_ = json.NewEncoder(w).Encode(identity)
 	case r.URL.Path == auth.LogoutPath && r.Method == http.MethodPost:
 		f.logout++

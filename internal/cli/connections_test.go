@@ -304,13 +304,21 @@ func (f *cliAuthFixture) serveConnections(w http.ResponseWriter, r *http.Request
 	}
 }
 
-// grantedConnections is the set a member may see, in name order.
+// grantedConnections is the set a member may see, in name order: the union of
+// their direct grants and the grants of every group they belong to, each
+// connection once however many paths reach it.
 func (f *cliAuthFixture) grantedConnections(userID string) []auth.Connection {
 	granted := []auth.Connection{}
 	for _, connection := range f.connections {
 		for _, grant := range f.grants {
-			if grant.Recipient.ID == userID && grant.Connection.ID == connection.ID {
+			if grant.Connection.ID != connection.ID {
+				continue
+			}
+			direct := grant.Recipient.Kind == auth.RecipientUser && grant.Recipient.ID == userID
+			inherited := grant.Recipient.Kind == auth.RecipientGroup && f.isMember(grant.Recipient.ID, userID)
+			if direct || inherited {
 				granted = append(granted, connection)
+				break
 			}
 		}
 	}

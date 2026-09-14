@@ -143,6 +143,54 @@ func TestCLIProcesses(t *testing.T) {
 		exit, output, _ = processCLI(t, binary, "", "grants", "revoke", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, "Revoked: false\n", output)
+
+		// Groups are addressed by name in the isolated process too: create,
+		// populate, inherit a grant, read the paths back, and the guarded
+		// delete that only a revocation lets through.
+		exit, output, _ = processCLI(t, binary, "", "groups", "create", "--name", "finance-managers",
+			"--description", "Finance managers", "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Contains(t, output, "Description: Finance managers\nMembers: 0\nGrants: 0\n")
+		exit, output, _ = processCLI(t, binary, "", "groups", "add-member", "--group", "finance-managers",
+			"--user", "alice", "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Equal(t, "Member: alice → finance-managers\nAdded: true\n", output)
+		exit, output, _ = processCLI(t, binary, "", "groups", "add-member", "--group", "finance-managers",
+			"--user", alice, "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Equal(t, "Member: alice → finance-managers\nAdded: false\n", output)
+		exit, output, _ = processCLI(t, binary, "", "groups", "members", "--group", "finance-managers", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Regexp(t, `^`+alice+` alice blocked \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$`, output)
+		exit, output, _ = processCLI(t, binary, "", "grants", "create", "--group", "finance-managers",
+			"--connection", "payments-prod-reporting", "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Contains(t, output, "Grant: group finance-managers → payments-prod-reporting\n")
+		exit, output, _ = processCLI(t, binary, "", "grants", "list", "--group", "finance-managers", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Regexp(t, `^group finance-managers payments-prod-reporting \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$`, output)
+		exit, output, _ = processCLI(t, binary, "", "grants", "list", "--user", "alice", "--effective", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Contains(t, output, "User: alice ("+alice+")\nRole: member\nStatus: blocked\n")
+		require.Regexp(t, `payments-prod-reporting via finance-managers \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n`, output)
+		exit, output, _ = processCLI(t, binary, "", "groups", "list", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Regexp(t, `^[0-9a-f-]{36} finance-managers 1 1\n$`, output)
+		exit, output, _ = processCLI(t, binary, "", "groups", "delete", "--group", "finance-managers",
+			"--dry-run", "--output=text")
+		require.Equal(t, 1, exit)
+		require.Contains(t, output, "GROUP_IN_USE")
+		exit, output, _ = processCLI(t, binary, "", "grants", "revoke", "--group", "finance-managers",
+			"--connection", "payments-prod-reporting", "--output=text")
+		require.Equal(t, 0, exit)
+		require.Equal(t, "Revoked: true\n", output)
+		exit, output, _ = processCLI(t, binary, "", "groups", "remove-member", "--group", "finance-managers",
+			"--user", "alice", "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Equal(t, "Member: alice → finance-managers\nRemoved: true\n", output)
+		exit, output, _ = processCLI(t, binary, "", "groups", "delete", "--group", "finance-managers", "--output=text")
+		require.Equal(t, 0, exit, output)
+		require.Regexp(t, `^Deleted: finance-managers \([0-9a-f-]{36}\)\n$`, output)
 		// Execution is driven the way an agent drives it: inline, and from a
 		// heredoc on stdin, with the results rendered as a table.
 		fixture.mu.Lock()
@@ -222,6 +270,9 @@ func TestCLIProcesses(t *testing.T) {
 			{"connections", "check", "--help"},
 			{"grants", "--help"}, {"grants"}, {"grants", "list", "--help"},
 			{"grants", "create", "--help"}, {"grants", "revoke", "--help"},
+			{"groups", "--help"}, {"groups"}, {"groups", "list", "--help"}, {"groups", "get", "--help"},
+			{"groups", "create", "--help"}, {"groups", "update", "--help"}, {"groups", "delete", "--help"},
+			{"groups", "members", "--help"}, {"groups", "add-member", "--help"}, {"groups", "remove-member", "--help"},
 			{"query", "--help"},
 		} {
 			exit, output, prompt = processCLI(t, binary, "", args...)
@@ -240,6 +291,16 @@ func TestCLIProcesses(t *testing.T) {
 				"--url", "https://metrics.example:8428", "--password-file", "relative", "--output=text"},
 			{"grants", "create", "--user", "ALICE", "--connection", "payments-prod-reporting", "--output=text"},
 			{"grants", "revoke", "--user", "alice", "--output=text"},
+			// Both recipients, neither of them, and a group with --effective:
+			// each is refused locally, so the closed server is never contacted.
+			{"grants", "create", "--user", "alice", "--group", "finance-managers",
+				"--connection", "payments-prod-reporting", "--output=text"},
+			{"grants", "create", "--connection", "payments-prod-reporting", "--output=text"},
+			{"grants", "list", "--effective", "--group", "finance-managers", "--output=text"},
+			{"groups", "get", "--group", "FINANCE", "--output=text"},
+			{"groups", "create", "--name", "Finance", "--output=text"},
+			{"groups", "update", "--group", "finance-managers", "--output=text"},
+			{"groups", "add-member", "--group", "finance-managers", "--user", "ALICE", "--output=text"},
 			// No SQL input, two of them, and a relative script path: each is
 			// refused locally, so the closed server is never contacted.
 			{"query", "--connection", "payments-prod-reporting", "--output=text"},

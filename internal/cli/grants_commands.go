@@ -26,6 +26,9 @@ func grantsCommands(makeCommand func(operation, usage string, extra ...urfave.Fl
 	user := func() urfave.Flag {
 		return &urfave.StringFlag{Name: "user", Usage: "Target user UUID or username"}
 	}
+	group := func() urfave.Flag {
+		return &urfave.StringFlag{Name: "group", Usage: "Target group UUID or name"}
+	}
 	connection := func() urfave.Flag {
 		return &urfave.StringFlag{Name: "connection", Usage: "Target connection UUID or name"}
 	}
@@ -34,21 +37,45 @@ func grantsCommands(makeCommand func(operation, usage string, extra ...urfave.Fl
 	}
 	return []*urfave.Command{
 		makeCommand("grants.list", "List grants (bounded; a truncated flag reports overflow; members see their own)",
-			user(), connection(), &urfave.IntFlag{Name: "limit", Usage: "Maximum grants to return"}),
-		makeCommand("grants.create", "Allow a user to use a connection", user(), connection(), dryRun()),
-		makeCommand("grants.revoke", "Withdraw a user's access to a connection", user(), connection(), dryRun()),
+			user(), group(), connection(), &urfave.IntFlag{Name: "limit", Usage: "Maximum grants to return"},
+			&urfave.BoolFlag{Name: "effective", Usage: "Report where one user's access comes from: direct grants and group memberships"}),
+		makeCommand("grants.create", "Allow a user or a group to use a connection", user(), group(), connection(), dryRun()),
+		makeCommand("grants.revoke", "Withdraw a user's or a group's access to a connection", user(), group(), connection(), dryRun()),
 	}
 }
 
 func grantCommand(operation string) bool { return strings.HasPrefix(operation, "grants.") }
 
-// validateGrantArguments refuses malformed references and bounds before any
-// cache access or network I/O, so an invalid invocation never becomes a request.
+// effectiveGroupHint states why the two flags cannot be combined: the
+// effective listing answers for one user, and a group has no access of its own
+// to report.
+const effectiveGroupHint = "--effective reports one user's access; pass --user or omit it, never --group"
+
+// validateGrantArguments refuses malformed references, recipient combinations
+// and bounds before any cache access or network I/O, so an invalid invocation
+// never becomes a request.
 func validateGrantArguments(operation string, command *urfave.Command) *Result {
 	optional := operation == "grants.list"
-	if command.IsSet("user") || !optional {
+	effective := optional && command.Bool("effective")
+	user, group := command.IsSet("user"), command.IsSet("group")
+	// A mutation is keyed on exactly one recipient; a listing filters on at
+	// most one. The effective listing takes a user or nothing at all.
+	switch {
+	case effective && group:
+		return argumentFailure("Provide --user or no recipient with --effective", effectiveGroupHint)
+	case user && group:
+		return argumentFailure("Name exactly one recipient, a user or a group", auth.RecipientHint)
+	case !optional && !user && !group:
+		return argumentFailure("Name exactly one recipient, a user or a group", auth.RecipientHint)
+	}
+	if user || !optional && !group {
 		if !auth.ValidUserRef(command.String("user")) {
 			return argumentFailure("Provide a valid user UUID or username", userRefHint)
+		}
+	}
+	if group {
+		if !auth.ValidGroupRef(command.String("group")) {
+			return argumentFailure("Provide a group UUID or name", groupRefHint)
 		}
 	}
 	if command.IsSet("connection") || !optional {
@@ -56,9 +83,13 @@ func validateGrantArguments(operation string, command *urfave.Command) *Result {
 			return argumentFailure("Provide a connection UUID or name", connectionRefHint)
 		}
 	}
-	if limit := command.Int("limit"); optional && command.IsSet("limit") && (limit < 1 || limit > auth.MaxGrantListing) {
+	bound := auth.MaxGrantListing
+	if effective {
+		bound = auth.MaxAccessListing
+	}
+	if limit := command.Int("limit"); optional && command.IsSet("limit") && (limit < 1 || limit > bound) {
 		return argumentFailure("Provide a positive limit within the listing bound",
-			"--limit accepts 1 to "+strconv.Itoa(auth.MaxGrantListing))
+			"--limit accepts 1 to "+strconv.Itoa(bound))
 	}
 	return nil
 }
@@ -69,13 +100,30 @@ func validateGrantArguments(operation string, command *urfave.Command) *Result {
 func runGrants(ctx context.Context, operation string, command *urfave.Command, api authTransport, token auth.Secret) Result {
 	if operation == "grants.list" {
 		values := url.Values{}
-		for _, flag := range []string{"user", "connection"} {
+		filters := []string{"user", "group", "connection"}
+		if command.Bool("effective") {
+			// The subject is sent as given or omitted: the role-dependent
+			// default and refusal are the server's, never the client's.
+			filters = []string{"user", "connection"}
+		}
+		for _, flag := range filters {
 			if command.IsSet(flag) {
 				values.Set(flag, command.String(flag))
 			}
 		}
 		if command.IsSet("limit") {
 			values.Set("limit", strconv.Itoa(command.Int("limit")))
+		}
+		if command.Bool("effective") {
+			var access auth.AccessList
+			route := apiCall{http.MethodGet, auth.GrantsEffectivePath, values.Encode(), http.StatusOK}
+			if failed := api.send(ctx, route, token, nil, &access); failed != nil {
+				return *failed
+			}
+			if access.Entries == nil {
+				access.Entries = []auth.AccessEntry{}
+			}
+			return success(access)
 		}
 		var list auth.GrantList
 		route := apiCall{http.MethodGet, auth.GrantsPath, values.Encode(), http.StatusOK}
@@ -87,7 +135,8 @@ func runGrants(ctx context.Context, operation string, command *urfave.Command, a
 		}
 		return success(list)
 	}
-	input := auth.GrantRequest{User: command.String("user"), Connection: command.String("connection")}
+	input := auth.GrantRequest{User: command.String("user"), Group: command.String("group"),
+		Connection: command.String("connection")}
 	query := dryRunQuery(command)
 	if operation == "grants.revoke" {
 		var revocation auth.GrantRevocation

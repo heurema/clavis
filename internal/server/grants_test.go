@@ -26,6 +26,7 @@ type fakeGrants struct {
 	grantList       auth.GrantList
 	grantMutation   auth.GrantMutation
 	grantRevocation auth.GrantRevocation
+	accessList      auth.AccessList
 	grantErr        error
 	grantCalls      []grantCall
 	grantBlock      func(context.Context)
@@ -35,7 +36,7 @@ type fakeGrants struct {
 	namesTruncated  bool
 	groupNames      []string
 	groupsTruncated bool
-	accessList      auth.AccessList
+	groupNamesErr   error
 	memberErr       error
 }
 
@@ -45,6 +46,7 @@ type grantCall struct {
 	request   auth.GrantRequest
 	dryRun    bool
 	target    string
+	subject   string
 	terms     []auth.SelectorTerm
 	limit     int
 	role      auth.Role
@@ -95,12 +97,12 @@ func (f *fakeGrants) ListGrantedConnectionNames(ctx context.Context, session aut
 
 func (f *fakeGrants) ListGroupNames(ctx context.Context, session auth.Session, limit int) ([]string, bool, error) {
 	f.grantCall(ctx, session, grantCall{operation: "group-names", limit: limit})
-	return f.groupNames, f.groupsTruncated, f.memberErr
+	return f.groupNames, f.groupsTruncated, f.groupNamesErr
 }
 
 func (f *fakeGrants) ListEffectiveAccess(ctx context.Context, session auth.Session,
 	userRef, connectionRef string, limit int) (auth.AccessList, error) {
-	f.grantCall(ctx, session, grantCall{operation: "effective", target: userRef, limit: limit})
+	f.grantCall(ctx, session, grantCall{operation: "effective", subject: userRef, target: connectionRef, limit: limit})
 	return f.accessList, f.grantErr
 }
 
@@ -207,6 +209,8 @@ func TestGrantRoutesHandTheServiceExactlyWhatWasAsked(t *testing.T) {
 		{"GET", auth.GrantsPath + "?user=alice&connection=" + grantConnection + "&limit=7", ""},
 		{"GET", auth.GrantsPath, ""},
 		{"GET", auth.GrantsPath + "?user=" + grantUserID, ""},
+		{"GET", auth.GrantsPath + "?group=" + groupName, ""},
+		{"GET", auth.GrantsPath + "?group=" + groupID + "&connection=" + grantConnection, ""},
 		{"POST", auth.GrantsPath, validGrantBody},
 		{"POST", auth.GrantRevokePath, `{"user":"` + grantUserID + `","connection":"` + connectionTargetID + `"}`},
 		{"POST", auth.GrantsPath, `{"group":"finance-managers","connection":"` + grantConnection + `"}`},
@@ -222,6 +226,8 @@ func TestGrantRoutesHandTheServiceExactlyWhatWasAsked(t *testing.T) {
 		// A missing limit asks for the documented bound, not for nothing.
 		{operation: "list", role: auth.Admin, filter: auth.GrantFilter{Limit: auth.MaxGrantListing}},
 		{operation: "list", role: auth.Admin, filter: auth.GrantFilter{User: grantUserID, Limit: auth.MaxGrantListing}},
+		{operation: "list", role: auth.Admin, filter: auth.GrantFilter{Group: groupName, Limit: auth.MaxGrantListing}},
+		{operation: "list", role: auth.Admin, filter: auth.GrantFilter{Group: groupID, Connection: grantConnection, Limit: auth.MaxGrantListing}},
 		{operation: "create", role: auth.Admin, request: auth.GrantRequest{User: grantUsername, Connection: grantConnection}},
 		{operation: "revoke", role: auth.Admin, request: auth.GrantRequest{User: grantUserID, Connection: connectionTargetID}},
 		{operation: "create", role: auth.Admin, request: auth.GrantRequest{Group: "finance-managers", Connection: grantConnection}},
@@ -314,6 +320,8 @@ func TestGrantBodiesAndQueriesAreStrict(t *testing.T) {
 		{"revoke bad user", "POST", auth.GrantRevokePath, `{"user":"1alice","connection":"c-name"}`, "application/json"},
 		{"listing body", "GET", auth.GrantsPath, `{"grants":[]}`, "application/json"},
 		{"listing user", "GET", auth.GrantsPath + "?user=ALICE", "", ""},
+		{"listing group", "GET", auth.GrantsPath + "?group=FINANCE", "", ""},
+		{"listing group empty", "GET", auth.GrantsPath + "?group=", "", ""},
 		{"listing connection", "GET", auth.GrantsPath + "?connection=C%20NAME", "", ""},
 		{"listing limit zero", "GET", auth.GrantsPath + "?limit=0", "", ""},
 		{"listing limit above bound", "GET", auth.GrantsPath + "?limit=1001", "", ""},
@@ -466,6 +474,166 @@ func TestGrantListingResponseStaysWithinTheDocumentedBodyLimit(t *testing.T) {
 	require.Equal(t, auth.MaxGrantListing, f.grantCalls[0].filter.Limit)
 }
 
+var (
+	accessSubject = auth.UserRecord{ID: grantUserID, Username: grantUsername, Role: auth.Member, CreatedAt: grantTime}
+	accessListing = auth.AccessList{
+		User: accessSubject,
+		Entries: []auth.AccessEntry{
+			{Connection: auth.GrantParty{ID: connectionTargetID, Name: grantConnection},
+				Source: auth.AccessDirect, CreatedAt: grantTime},
+			{Connection: auth.GrantParty{ID: connectionTargetID, Name: grantConnection},
+				Source: auth.AccessGroup, Group: &auth.GrantParty{ID: groupID, Name: groupName}, CreatedAt: grantTime},
+		},
+		Truncated: true,
+	}
+)
+
+// The effective listing is the provenance route: the adapter checks the shape
+// of the two optional references and hands the rest to the service, which owns
+// the role rule that resolves the subject.
+func TestEffectiveListingReturnsTheDocumentedBody(t *testing.T) {
+	f, handler := grantFixture(t)
+	f.accessList = accessListing
+	response := requestAuth(handler, "GET", auth.GrantsEffectivePath+"?user=alice", "", bearerHeaders())
+	require.Equal(t, 200, response.Code)
+	require.Equal(t, "application/json", response.Header().Get("Content-Type"))
+	require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+	expected, err := json.Marshal(accessListing)
+	require.NoError(t, err)
+	require.JSONEq(t, string(expected), response.Body.String())
+	require.Equal(t, []grantCall{{operation: "effective", role: auth.Admin,
+		subject: grantUsername, limit: auth.MaxAccessListing}}, f.grantCalls)
+}
+
+func TestEffectiveListingHandsTheServiceExactlyWhatWasAsked(t *testing.T) {
+	f, handler := grantFixture(t)
+	f.accessList = accessListing
+	for _, path := range []string{
+		auth.GrantsEffectivePath,
+		auth.GrantsEffectivePath + "?user=" + grantUserID,
+		auth.GrantsEffectivePath + "?user=alice&connection=" + grantConnection + "&limit=4",
+	} {
+		require.Equal(t, 200, requestAuth(handler, "GET", path, "", bearerHeaders()).Code, path)
+	}
+	require.Equal(t, []grantCall{
+		// An omitted user means the caller; the server, not the client, owns
+		// the role rule that resolves it.
+		{operation: "effective", role: auth.Admin, limit: auth.MaxAccessListing},
+		{operation: "effective", role: auth.Admin, subject: grantUserID, limit: auth.MaxAccessListing},
+		{operation: "effective", role: auth.Admin, subject: grantUsername, target: grantConnection, limit: 4},
+	}, f.grantCalls)
+}
+
+// A member's own request is passed through unchanged: the refusal of another
+// user is the service's answer, not the adapter's.
+func TestEffectiveListingPassesMemberSessionsToTheService(t *testing.T) {
+	f, handler := grantFixture(t)
+	f.role, f.accessList = auth.Member, accessListing
+	require.Equal(t, 200, requestAuth(handler, "GET", auth.GrantsEffectivePath, "", bearerHeaders()).Code)
+	require.Equal(t, auth.Member, f.grantCalls[0].role)
+
+	f, handler = grantFixture(t)
+	f.role, f.grantErr = auth.Member, &auth.Error{Code: auth.Forbidden, Hint: "Members may inspect only their own access"}
+	response := requestAuth(handler, "GET", auth.GrantsEffectivePath+"?user=bob", "", bearerHeaders())
+	require.Equal(t, 403, response.Code)
+	var failure auth.ErrorResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failure))
+	require.Equal(t, "Members may inspect only their own access", failure.Error.Hint)
+
+	// An administrator who names no subject is the service's INVALID_ARGUMENT,
+	// with its hint, not an adapter rejection.
+	f, handler = grantFixture(t)
+	f.grantErr = &auth.Error{Code: auth.InvalidArgument, Hint: "Name the user with --user"}
+	response = requestAuth(handler, "GET", auth.GrantsEffectivePath, "", bearerHeaders())
+	require.Equal(t, 400, response.Code)
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failure))
+	require.Equal(t, "Name the user with --user", failure.Error.Hint)
+	require.Len(t, f.grantCalls, 1, "the rule is the service's, so the request reaches it")
+}
+
+func TestEffectiveListingQueriesAreStrict(t *testing.T) {
+	for _, path := range []string{
+		auth.GrantsEffectivePath + "?user=ALICE",
+		auth.GrantsEffectivePath + "?user=",
+		auth.GrantsEffectivePath + "?group=finance-managers",
+		auth.GrantsEffectivePath + "?connection=C%20NAME",
+		auth.GrantsEffectivePath + "?limit=0",
+		auth.GrantsEffectivePath + "?limit=1001",
+		auth.GrantsEffectivePath + "?limit=abc",
+		auth.GrantsEffectivePath + "?limit=1&limit=2",
+		auth.GrantsEffectivePath + "?dryRun=true",
+		auth.GrantsEffectivePath + "?limit=%zz",
+	} {
+		f, handler := grantFixture(t)
+		response := requestAuth(handler, "GET", path, "", bearerHeaders())
+		require.Equal(t, 400, response.Code, path)
+		require.Contains(t, response.Body.String(), auth.InvalidArgument)
+		require.Empty(t, f.grantCalls, path)
+	}
+	// A body on the listing is a malformed request like any other.
+	f, handler := grantFixture(t)
+	response := requestAuth(handler, "GET", auth.GrantsEffectivePath, `{"entries":[]}`,
+		bearerHeaders("Content-Type", "application/json"))
+	require.Equal(t, 400, response.Code)
+	require.Empty(t, f.grantCalls)
+}
+
+func TestEffectiveListingIsBearerOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers http.Header
+		status  int
+	}{
+		{"cookie only", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 401},
+		{"no credential", http.Header{}, 401},
+		{"cross origin", bearerHeaders("Origin", "http://evil.invalid"), 403},
+	} {
+		f, handler := grantFixture(t)
+		response := requestAuth(handler, "GET", auth.GrantsEffectivePath, "", tc.headers)
+		require.Equal(t, tc.status, response.Code, tc.name)
+		require.Empty(t, f.grantCalls)
+	}
+}
+
+// maximalAccessEntry is the largest entry the contract allows: a full-length
+// connection name and a full-length group name. A thousand of them exceed the
+// listing body, so the byte budget, not the row bound, truncates, and the
+// subject's own record is measured with them.
+func maximalAccessEntry() auth.AccessEntry {
+	return auth.AccessEntry{
+		Connection: auth.GrantParty{ID: connectionTargetID, Name: "c" + strings.Repeat("n", 63)},
+		Source:     auth.AccessGroup,
+		Group:      &auth.GrantParty{ID: groupID, Name: "g" + strings.Repeat("z", 63)},
+		CreatedAt:  grantTime,
+	}
+}
+
+func TestEffectiveListingStaysWithinTheDocumentedBodyLimit(t *testing.T) {
+	f, handler := grantFixture(t)
+	entries := make([]auth.AccessEntry, 0, auth.MaxAccessListing)
+	for index := 0; index < auth.MaxAccessListing; index++ {
+		entries = append(entries, maximalAccessEntry())
+	}
+	f.accessList = auth.AccessList{User: accessSubject, Entries: entries}
+	response := requestAuth(handler, "GET", auth.GrantsEffectivePath+"?user=alice", "", bearerHeaders())
+	require.Equal(t, 200, response.Code)
+	require.Greater(t, response.Body.Len(), auth.MaxResponseBody, "a legitimate listing exceeds the general limit")
+	require.LessOrEqual(t, response.Body.Len(), auth.MaxListingBody)
+	var decoded auth.AccessList
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &decoded))
+	require.True(t, decoded.Truncated)
+	require.Equal(t, accessSubject, decoded.User, "the subject survives the truncation")
+	require.Greater(t, len(decoded.Entries), 0)
+	require.Less(t, len(decoded.Entries), auth.MaxAccessListing)
+
+	// An empty listing is a documented answer: the array is present and empty.
+	f, handler = grantFixture(t)
+	f.accessList = auth.AccessList{User: accessSubject, Entries: []auth.AccessEntry{}}
+	response = requestAuth(handler, "GET", auth.GrantsEffectivePath+"?user=alice", "", bearerHeaders())
+	require.Equal(t, 200, response.Code)
+	require.Contains(t, response.Body.String(), `"entries":[]`)
+}
+
 // The two connection GET routes are the only ones a member may call, and the
 // projection follows the role: no target, bound or timestamp reaches a member.
 func TestConnectionReadsUseTheMemberProjectionForMembers(t *testing.T) {
@@ -537,34 +705,64 @@ func TestIdentityReportsGrantedConnectionNamesForMembersOnly(t *testing.T) {
 	f, handler := grantFixture(t)
 	f.role = auth.Member
 	f.grantedNames, f.namesTruncated = []string{"payments-prod-reporting", "warehouse-primary"}, true
+	f.groupNames, f.groupsTruncated = []string{"finance-managers", "warehouse-readers"}, true
 	response := requestAuth(handler, "GET", auth.WhoAmIPath, "", bearerHeaders())
 	require.Equal(t, 200, response.Code)
 	var identity auth.Identity
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &identity))
 	require.Equal(t, []string{"payments-prod-reporting", "warehouse-primary"}, identity.Connections)
 	require.True(t, identity.ConnectionsTruncated)
-	require.Len(t, f.grantCalls, 1)
-	require.Equal(t, "member-names", f.grantCalls[0].operation)
-	require.Equal(t, auth.MaxConnectionListing, f.grantCalls[0].limit)
+	require.Equal(t, []string{"finance-managers", "warehouse-readers"}, identity.Groups)
+	require.True(t, identity.GroupsTruncated)
+	require.Equal(t, []string{"group-names", "member-names"},
+		[]string{f.grantCalls[0].operation, f.grantCalls[1].operation})
+	require.Equal(t, auth.MaxGroupListing, f.grantCalls[0].limit)
+	require.Equal(t, auth.MaxConnectionListing, f.grantCalls[1].limit)
 
+	// An administrator needs no grant, so the connection list stays empty; a
+	// group is a fact about the account, so it is still reported.
 	f, handler = grantFixture(t)
 	f.grantedNames, f.namesTruncated = []string{"payments-prod-reporting"}, true
+	f.groupNames = []string{"finance-managers"}
 	response = requestAuth(handler, "GET", auth.WhoAmIPath, "", bearerHeaders())
 	require.Equal(t, 200, response.Code)
 	var administrator auth.Identity
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &administrator))
 	require.Empty(t, administrator.Connections)
 	require.False(t, administrator.ConnectionsTruncated)
-	require.Empty(t, f.grantCalls, "an administrator needs no grant lookup")
+	require.Equal(t, []string{"finance-managers"}, administrator.Groups)
+	require.False(t, administrator.GroupsTruncated)
+	require.Len(t, f.grantCalls, 1, "an administrator needs no grant lookup")
+	require.Equal(t, "group-names", f.grantCalls[0].operation)
 	require.NotContains(t, response.Body.String(), "connections")
 
-	// A member whose names cannot be loaded gets no identity at all rather than
-	// one that understates what they may use.
-	f, handler = grantFixture(t)
-	f.role, f.memberErr = auth.Member, errors.New("SENTINEL_PRIVATE_DRIVER")
+	// A caller with no groups at all carries neither member.
+	_, handler = grantFixture(t)
 	response = requestAuth(handler, "GET", auth.WhoAmIPath, "", bearerHeaders())
-	require.Equal(t, 503, response.Code)
-	require.NotContains(t, response.Body.String(), "SENTINEL")
+	require.Equal(t, 200, response.Code)
+	require.NotContains(t, response.Body.String(), "groups")
+
+	// A member whose names cannot be loaded gets no identity at all rather than
+	// one that understates what they may use, and the same holds for the groups
+	// whatever the caller's role.
+	for _, tc := range []struct {
+		name string
+		role auth.Role
+		set  func(*backendFixture)
+	}{
+		{"member connections", auth.Member, func(f *backendFixture) { f.memberErr = errors.New("SENTINEL_PRIVATE_DRIVER") }},
+		{"member groups", auth.Member, func(f *backendFixture) { f.groupNamesErr = errors.New("SENTINEL_PRIVATE_DRIVER") }},
+		{"administrator groups", auth.Admin, func(f *backendFixture) { f.groupNamesErr = errors.New("SENTINEL_PRIVATE_DRIVER") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, handler := grantFixture(t)
+			f.role = tc.role
+			tc.set(f)
+			response := requestAuth(handler, "GET", auth.WhoAmIPath, "", bearerHeaders())
+			require.Equal(t, 503, response.Code)
+			require.NotContains(t, response.Body.String(), "SENTINEL")
+		})
+	}
 }
 
 // Every user route takes a reference: a UUID or a username, sent unchanged for
@@ -655,10 +853,81 @@ func TestIdentityNamesStayWithinTheResponseLimit(t *testing.T) {
 	require.Less(t, len(identity.Connections), len(names))
 	require.Equal(t, names[:len(identity.Connections)], identity.Connections, "names are dropped from the end only")
 
-	kept, truncated := boundedNames([]string{"a", "b"}, false)
+	kept, truncated, used := boundedNames([]string{"a", "b"}, false, groupReservation)
 	require.Equal(t, []string{"a", "b"}, kept)
 	require.False(t, truncated)
-	kept, truncated = boundedNames(nil, true)
+	require.Equal(t, len(`"a","b"`), used)
+	kept, truncated, used = boundedNames(nil, true, groupReservation)
 	require.Empty(t, kept)
 	require.True(t, truncated)
+	require.Zero(t, used)
+}
+
+// maximalNames is the largest list of names the contract allows: the row bound
+// of full-length names, which alone is far past the identity's byte budget.
+func maximalNames(prefix string, count int) []string {
+	names := make([]string, count)
+	for index := range names {
+		names[index] = fmt.Sprintf("%s%03d-%s", prefix, index, strings.Repeat("x", 58))
+	}
+	return names
+}
+
+// The identity's two name lists share one byte budget and neither may starve
+// the other: the groups are measured first against their own reservation, the
+// connections take everything the groups left, and the two truncation flags
+// are independent.
+func TestIdentityGroupsAreReservedAndTheReservationIsReclaimed(t *testing.T) {
+	// Both lists overflow: the groups still get their reservation, so a member
+	// with a thousand long connection names still learns which groups they are
+	// in, and the connections are truncated too.
+	f, handler := grantFixture(t)
+	f.role = auth.Member
+	connections, groups := maximalNames("c", auth.MaxConnectionListing), maximalNames("g", auth.MaxGroupListing)
+	f.grantedNames, f.groupNames = connections, groups
+	response := requestAuth(handler, "GET", auth.WhoAmIPath, "", bearerHeaders())
+	require.Equal(t, 200, response.Code)
+	require.LessOrEqual(t, response.Body.Len(), auth.MaxResponseBody)
+	var crowded auth.Identity
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &crowded))
+	require.True(t, crowded.GroupsTruncated)
+	require.True(t, crowded.ConnectionsTruncated)
+	require.NotEmpty(t, crowded.Groups, "the groups keep their reservation")
+	require.NotEmpty(t, crowded.Connections)
+	require.Equal(t, groups[:len(crowded.Groups)], crowded.Groups, "names are dropped from the end only")
+	// The groups are held to their reservation rather than to the whole budget.
+	kept, _, used := boundedNames(groups, false, groupReservation)
+	require.Equal(t, kept, crowded.Groups)
+	require.LessOrEqual(t, used, groupReservation)
+
+	// The reservation is a floor, not a ceiling on the connections: two short
+	// group names leave the connections almost the whole budget, so more of
+	// them survive than when the groups fill the reservation.
+	f, handler = grantFixture(t)
+	f.role = auth.Member
+	f.grantedNames, f.groupNames = connections, []string{"finance-managers", "warehouse-readers"}
+	response = requestAuth(handler, "GET", auth.WhoAmIPath, "", bearerHeaders())
+	require.Equal(t, 200, response.Code)
+	require.LessOrEqual(t, response.Body.Len(), auth.MaxResponseBody)
+	var reclaimed auth.Identity
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &reclaimed))
+	require.False(t, reclaimed.GroupsTruncated)
+	require.Equal(t, []string{"finance-managers", "warehouse-readers"}, reclaimed.Groups)
+	require.True(t, reclaimed.ConnectionsTruncated)
+	require.Greater(t, len(reclaimed.Connections), len(crowded.Connections),
+		"the unused reservation goes back to the connections")
+
+	// The flags are independent: groups that overflow do not mark the
+	// connections truncated, and the service's own flag is reported unchanged.
+	f, handler = grantFixture(t)
+	f.role = auth.Member
+	f.grantedNames, f.namesTruncated = []string{"payments-prod-reporting"}, false
+	f.groupNames = groups
+	response = requestAuth(handler, "GET", auth.WhoAmIPath, "", bearerHeaders())
+	require.Equal(t, 200, response.Code)
+	var mixed auth.Identity
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &mixed))
+	require.True(t, mixed.GroupsTruncated)
+	require.False(t, mixed.ConnectionsTruncated)
+	require.Equal(t, []string{"payments-prod-reporting"}, mixed.Connections)
 }

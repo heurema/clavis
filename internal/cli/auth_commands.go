@@ -63,7 +63,8 @@ func authCommands(streams IO, check func(*urfave.Command) error, set func(Result
 				&urfave.StringFlag{Name: "user", Usage: "Target user UUID or username"})),
 		group("users", "Manage local users (administrator only)", usersCommands(makeCommand)...),
 		group("connections", "Manage data-source connections (members see the ones granted to them)", connectionsCommands(makeCommand)...),
-		group("grants", "Manage which users may use which connections", grantsCommands(makeCommand)...),
+		group("groups", "Manage groups of users that connections can be granted to (administrator only)", groupsCommands(makeCommand)...),
+		group("grants", "Manage which users and groups may use which connections", grantsCommands(makeCommand)...),
 	}
 }
 
@@ -79,6 +80,9 @@ func validateAuthArguments(operation string, command *urfave.Command) *Result {
 	}
 	if grantCommand(operation) {
 		return validateGrantArguments(operation, command)
+	}
+	if groupCommand(operation) {
+		return validateGroupArguments(operation, command)
 	}
 	if operation == "query" {
 		return validateQueryArguments(command)
@@ -241,6 +245,9 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 		}
 		if grantCommand(operation) {
 			return runGrants(ctx, operation, command, api, previous.Token)
+		}
+		if groupCommand(operation) {
+			return runGroups(ctx, operation, command, api, previous.Token)
 		}
 		return runUsers(ctx, operation, command, api, previous.Token, password)
 	}

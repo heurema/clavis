@@ -552,7 +552,7 @@ func TestQueryRouteFailsClosedWithoutAnExecutor(t *testing.T) {
 func TestHandlerWithAuthRequiresTheExecutor(t *testing.T) {
 	fixture := &backendFixture{}
 	ready := platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
-	composed, err := HandlerWithAuth(time.Second, ready, fixture, fixture, fixture, fixture, fixture, nil,
+	composed, err := HandlerWithAuth(time.Second, ready, fixture, fixture, fixture, fixture, fixture, fixture, nil,
 		"http://127.0.0.1", AuthViews{}, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.Nil(t, composed)
 	require.Error(t, err)

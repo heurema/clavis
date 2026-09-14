@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strconv"
 
@@ -19,6 +20,9 @@ type MemberConnections interface {
 	ListGrantedConnections(ctx context.Context, session auth.Session, terms []auth.SelectorTerm, limit int) (auth.ConnectionSummaryList, error)
 	GetGrantedConnection(ctx context.Context, session auth.Session, ref string) (auth.ConnectionSummary, error)
 	ListGrantedConnectionNames(ctx context.Context, session auth.Session, limit int) (names []string, truncated bool, err error)
+	// ListGroupNames fills the identity's groups for every caller, member and
+	// administrator alike: a group is a fact about the account rather than a
+	// grant, so it is reported whatever the role.
 	ListGroupNames(ctx context.Context, session auth.Session, limit int) (names []string, truncated bool, err error)
 }
 
@@ -94,7 +98,7 @@ func grantRequest(r *http.Request, request *auth.GrantRequest) error {
 func (a *authHTTP) listGrantsJSON(w http.ResponseWriter, r *http.Request) {
 	filter := auth.GrantFilter{Limit: auth.MaxGrantListing}
 	a.grant(w, r, func() error {
-		values, err := query(r, "user", "connection", "limit")
+		values, err := query(r, "user", "group", "connection", "limit")
 		if err != nil {
 			return err
 		}
@@ -106,6 +110,15 @@ func (a *authHTTP) listGrantsJSON(w http.ResponseWriter, r *http.Request) {
 				return invalidArgument()
 			}
 			filter.User = raw[0]
+		}
+		// Both recipient filters are accepted here and the service decides what
+		// naming two of them means: the adapter refuses only a reference whose
+		// shape belongs to no namespace at all.
+		if raw, present := values["group"]; present {
+			if !auth.ValidGroupRef(raw[0]) {
+				return invalidArgument()
+			}
+			filter.Group = raw[0]
 		}
 		if raw, present := values["connection"]; present {
 			if !auth.ValidConnectionRef(raw[0]) {
@@ -126,7 +139,7 @@ func (a *authHTTP) listGrantsJSON(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return nil, 0, err
 		}
-		grants, truncated, err := boundedListing("grants", list.Grants, list.Truncated)
+		grants, truncated, err := boundedListing("grants", list.Grants, list.Truncated, 0)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -169,5 +182,61 @@ func (a *authHTTP) revokeGrantJSON(w http.ResponseWriter, r *http.Request) {
 	}, func(session auth.Session) (any, int, error) {
 		revocation, err := a.grants.RevokeGrant(r.Context(), session, request, dry)
 		return revocation, http.StatusOK, err
+	})
+}
+
+// subjectBytes is what the effective envelope carries besides the entries: the
+// `"user":<record>,` member. It is measured rather than estimated so the whole
+// document, not only the entries, stays inside the listing limit.
+func subjectBytes(record auth.UserRecord) (int, error) {
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		return 0, &auth.Error{Code: auth.ServiceUnavailable}
+	}
+	return len(`"user":,`) + len(encoded), nil
+}
+
+// listEffectiveAccessJSON reports where one subject's access comes from. The
+// subject is a reference the server resolves after rechecking the session: an
+// omitted user means the caller and the role rule is the service's, so the
+// adapter refuses only a reference no namespace could hold.
+func (a *authHTTP) listEffectiveAccessJSON(w http.ResponseWriter, r *http.Request) {
+	var userRef, connectionRef string
+	limit := auth.MaxAccessListing
+	a.grant(w, r, func() error {
+		values, err := query(r, "user", "connection", "limit")
+		if err != nil {
+			return err
+		}
+		if err := emptyBody(r); err != nil {
+			return err
+		}
+		if raw, present := values["user"]; present {
+			if !auth.ValidUserRef(raw[0]) {
+				return invalidArgument()
+			}
+			userRef = raw[0]
+		}
+		if raw, present := values["connection"]; present {
+			if !auth.ValidConnectionRef(raw[0]) {
+				return invalidArgument()
+			}
+			connectionRef = raw[0]
+		}
+		return listingLimit(values, auth.MaxAccessListing, &limit)
+	}, func(session auth.Session) (any, int, error) {
+		list, err := a.grants.ListEffectiveAccess(r.Context(), session, userRef, connectionRef, limit)
+		if err != nil {
+			return nil, 0, err
+		}
+		reserved, err := subjectBytes(list.User)
+		if err != nil {
+			return nil, 0, err
+		}
+		entries, truncated, err := boundedListing("entries", list.Entries, list.Truncated, reserved)
+		if err != nil {
+			return nil, 0, err
+		}
+		return auth.AccessList{User: list.User, Entries: entries, Truncated: truncated}, http.StatusOK, nil
 	})
 }

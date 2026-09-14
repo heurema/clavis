@@ -40,6 +40,7 @@ type authHTTP struct {
 	admin       auth.Administration
 	connections auth.Connections
 	grants      auth.Grants
+	groups      auth.Groups
 	members     MemberConnections
 	executor    auth.QueryExecutor
 	origin      string
@@ -92,6 +93,15 @@ func (a *authHTTP) mount(router chi.Router) {
 	router.With(a.operation).Get(auth.GrantsPath, a.listGrantsJSON)
 	router.With(a.operation).Post(auth.GrantsPath, a.createGrantJSON)
 	router.With(a.operation).Post(auth.GrantRevokePath, a.revokeGrantJSON)
+	router.With(a.operation).Get(auth.GrantsEffectivePath, a.listEffectiveAccessJSON)
+	router.With(a.operation).Get(auth.GroupsPath, a.listGroupsJSON)
+	router.With(a.operation).Post(auth.GroupsPath, a.createGroupJSON)
+	router.With(a.operation).Get(auth.GroupPath, a.getGroupJSON)
+	router.With(a.operation).Post(auth.GroupUpdatePath, a.updateGroupJSON)
+	router.With(a.operation).Post(auth.GroupDeletePath, a.deleteGroupJSON)
+	router.With(a.operation).Get(auth.GroupMembersPath, a.listMembersJSON)
+	router.With(a.operation).Post(auth.GroupMemberAddPath, a.addMemberJSON)
+	router.With(a.operation).Post(auth.GroupMemberRemovePath, a.removeMemberJSON)
 	// Execution is not administration: a member with a grant uses it, so it
 	// sits outside /api/admin and alongside the member connection reads.
 	router.With(a.queryOperation).Post(auth.QueryPath, a.executeQueryJSON)
@@ -534,38 +544,63 @@ func (a *authHTTP) cliSession(r *http.Request) (auth.Session, error) {
 	return a.authenticate(r, token, auth.CLI)
 }
 
-// identityJSON answers the caller's own identity and, for a member, the names
-// of the connections they may use, so an agent's first call already says what
-// is available. Administrators need no grant, so their list stays empty rather
-// than enumerating every connection. Login responses are untouched: only this
-// route fills the names.
+// identityJSON answers the caller's own identity: the groups they belong to,
+// whatever their role, and for a member the names of the connections they may
+// use, so an agent's first call already says what is available. Administrators
+// need no grant, so their connection list stays empty rather than enumerating
+// every connection; their groups are still reported, because membership is a
+// fact about the account rather than the source of their access. Login
+// responses are untouched: only this route fills the names.
 func (a *authHTTP) identityJSON(w http.ResponseWriter, r *http.Request) {
 	session, err := a.cliSession(r)
-	if err == nil && session.User.Role != auth.Admin {
-		if err = a.requireMembers(); err == nil {
-			session.Connections, session.ConnectionsTruncated, err =
-				a.members.ListGrantedConnectionNames(r.Context(), session, auth.MaxConnectionListing)
-		}
+	if err == nil {
+		err = a.requireMembers()
 	}
 	if err == nil {
-		session.Connections, session.ConnectionsTruncated = boundedNames(session.Connections, session.ConnectionsTruncated)
+		session.Groups, session.GroupsTruncated, err =
+			a.members.ListGroupNames(r.Context(), session, auth.MaxGroupListing)
+	}
+	if err == nil && session.User.Role != auth.Admin {
+		session.Connections, session.ConnectionsTruncated, err =
+			a.members.ListGrantedConnectionNames(r.Context(), session, auth.MaxConnectionListing)
 	}
 	if err != nil {
 		jsonFailure(w, err)
 		return
 	}
-	writeJSON(w, 200, session.Identity)
+	writeJSON(w, 200, boundedIdentity(session.Identity))
 }
 
 // identityHeadroom is what the identity carries besides the names: the user
 // record, the expiry and the envelope, all far below this reservation.
-const identityHeadroom = 4096
+// groupReservation is the share of what is left that the group names are
+// measured against first, so a member with many long connection names still
+// learns which groups they belong to.
+const (
+	identityHeadroom = 4096
+	groupReservation = 8192
+)
 
-// boundedNames keeps whoami inside the general response limit, which is the
-// limit the CLI reads it under: 1,000 names of 64 bytes would exceed it. Names
-// beyond the byte budget are dropped in order and reported as truncation.
-func boundedNames(names []string, truncated bool) ([]string, bool) {
+// boundedIdentity keeps whoami inside the general response limit, which is the
+// limit the CLI reads it under: 1,000 names of 64 bytes would exceed it on
+// their own. The groups are measured first against their reservation and the
+// connections against everything the groups did not use, so an unused
+// reservation goes back to the connections and neither list can starve the
+// other. The two truncation flags stay independent.
+func boundedIdentity(identity auth.Identity) auth.Identity {
 	budget := auth.MaxResponseBody - identityHeadroom
+	var used int
+	identity.Groups, identity.GroupsTruncated, used =
+		boundedNames(identity.Groups, identity.GroupsTruncated, min(groupReservation, budget))
+	identity.Connections, identity.ConnectionsTruncated, _ =
+		boundedNames(identity.Connections, identity.ConnectionsTruncated, budget-used)
+	return identity
+}
+
+// boundedNames drops the names past the budget in order, reports that as
+// truncation and returns the bytes the kept names occupy inside the encoded
+// array, so the caller can hand the remainder to the next list.
+func boundedNames(names []string, truncated bool, budget int) ([]string, bool, int) {
 	size := 0
 	for index, name := range names {
 		next := size + len(name) + 2 // quotes
@@ -573,11 +608,11 @@ func boundedNames(names []string, truncated bool) ([]string, bool) {
 			next++ // the separating comma
 		}
 		if next > budget {
-			return names[:index], true
+			return names[:index], true, size
 		}
 		size = next
 	}
-	return names, truncated
+	return names, truncated, size
 }
 
 func emptyBody(r *http.Request) error {

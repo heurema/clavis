@@ -595,7 +595,7 @@ func TestBoundedListingDropsTrailingRecordsToFitTheBudget(t *testing.T) {
 	for index := 0; index < auth.MaxConnectionListing; index++ {
 		records = append(records, maximalConnection())
 	}
-	kept, truncated, err := boundedListing("connections", records, false)
+	kept, truncated, err := boundedListing("connections", records, false, 0)
 	require.NoError(t, err)
 	require.True(t, truncated)
 	require.Greater(t, len(kept), 0)
@@ -609,11 +609,11 @@ func TestBoundedListingDropsTrailingRecordsToFitTheBudget(t *testing.T) {
 	require.Greater(t, len(over)+1, auth.MaxListingBody)
 	// A listing that already fits is passed through untouched, flag included.
 	small := []auth.Connection{connectionRecord}
-	kept, truncated, err = boundedListing("connections", small, true)
+	kept, truncated, err = boundedListing("connections", small, true, 0)
 	require.NoError(t, err)
 	require.Equal(t, small, kept)
 	require.True(t, truncated)
-	empty, truncated, err := boundedListing("connections", []auth.Connection{}, false)
+	empty, truncated, err := boundedListing("connections", []auth.Connection{}, false, 0)
 	require.NoError(t, err)
 	require.Equal(t, []auth.Connection{}, empty)
 	require.False(t, truncated)
@@ -622,7 +622,7 @@ func TestBoundedListingDropsTrailingRecordsToFitTheBudget(t *testing.T) {
 	for index := 0; index < auth.MaxGrantListing; index++ {
 		grants = append(grants, maximalGrant())
 	}
-	keptGrants, truncated, err := boundedListing("grants", grants, false)
+	keptGrants, truncated, err := boundedListing("grants", grants, false, 0)
 	require.NoError(t, err)
 	require.True(t, truncated)
 	require.Less(t, len(keptGrants), auth.MaxGrantListing)
@@ -691,7 +691,7 @@ func TestRealHTTPConnectionRoutesRoundTrip(t *testing.T) {
 	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
 	require.NoError(t, err)
 	service := local.WithKeyring(serverTestKeyring(t))
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service,
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, service,
 		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})

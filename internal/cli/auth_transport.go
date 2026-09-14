@@ -99,11 +99,18 @@ func uniqueJSONKeys(d *json.Decoder) bool {
 // other identity response, which stays valid with an empty list.
 func validIdentity(value auth.Identity) bool {
 	_, offset := value.ExpiresAt.Zone()
-	if len(value.Connections) > auth.MaxConnectionListing {
+	if len(value.Connections) > auth.MaxConnectionListing || len(value.Groups) > auth.MaxGroupListing {
 		return false
 	}
 	for _, name := range value.Connections {
 		if !auth.ValidConnectionName(name) {
+			return false
+		}
+	}
+	// The group names whoami adds for every caller: bounded, each a valid
+	// group name, and absent from every other identity response.
+	for _, name := range value.Groups {
+		if !auth.ValidGroupName(name) {
 			return false
 		}
 	}
@@ -296,6 +303,91 @@ func validGrantList(value auth.GrantList) bool {
 func validGrantRevocation(value auth.GrantRevocation) bool {
 	return validRecipient(value.Recipient) &&
 		validGrantParty(value.Connection, auth.ValidConnectionName)
+}
+
+// validAccessEntry accepts one configured path to a connection. The source and
+// the group member are checked together: a group path without a group, or a
+// direct path carrying one, describes no path this contract defines and is an
+// undocumented response rather than a line to render.
+func validAccessEntry(value auth.AccessEntry) bool {
+	if !validGrantParty(value.Connection, auth.ValidConnectionName) || !validTimestamp(value.CreatedAt) {
+		return false
+	}
+	switch value.Source {
+	case auth.AccessDirect:
+		return value.Group == nil
+	case auth.AccessGroup:
+		return value.Group != nil && validGrantParty(*value.Group, auth.ValidGroupName)
+	}
+	return false
+}
+
+// validAccessList accepts the effective listing: the subject's safe record and
+// one entry per configured path. A subject with no paths at all is a
+// documented answer, so an empty list is valid.
+func validAccessList(value auth.AccessList) bool {
+	if !validRecord(value.User) || len(value.Entries) > auth.MaxAccessListing {
+		return false
+	}
+	for _, entry := range value.Entries {
+		if !validAccessEntry(entry) {
+			return false
+		}
+	}
+	return true
+}
+
+// validGroup accepts the safe group projection: identity, bounded description,
+// UTC timestamps and two counts that can never be negative.
+func validGroup(value auth.Group) bool {
+	if !auth.ValidUserID(value.ID) || !auth.ValidGroupName(value.Name) {
+		return false
+	}
+	if utf8.RuneCountInString(value.Description) > auth.MaxDescriptionLength || !printableText(value.Description) {
+		return false
+	}
+	if value.Members < 0 || value.Grants < 0 {
+		return false
+	}
+	return validTimestamp(value.CreatedAt) && validTimestamp(value.UpdatedAt)
+}
+
+func validGroupList(value auth.GroupList) bool {
+	if len(value.Groups) > auth.MaxGroupListing {
+		return false
+	}
+	for _, group := range value.Groups {
+		if !validGroup(group) {
+			return false
+		}
+	}
+	return true
+}
+
+func validMemberList(value auth.MemberList) bool {
+	if len(value.Members) > auth.MaxMemberListing {
+		return false
+	}
+	for _, member := range value.Members {
+		if !validRecord(member.UserRecord) || !validTimestamp(member.AddedAt) ||
+			!validGrantParty(member.AddedBy, auth.ValidUsername) {
+			return false
+		}
+	}
+	return true
+}
+
+// A membership that was already in place is a documented success, so Added is
+// not required to be true; every party must still be named.
+func validMembership(value auth.Membership) bool {
+	return validGrantParty(value.Group, auth.ValidGroupName) &&
+		validGrantParty(value.User, auth.ValidUsername) &&
+		validGrantParty(value.CreatedBy, auth.ValidUsername) && validTimestamp(value.CreatedAt)
+}
+
+func validMembershipRemoval(value auth.MembershipRemoval) bool {
+	return validGrantParty(value.Group, auth.ValidGroupName) &&
+		validGrantParty(value.User, auth.ValidUsername)
 }
 
 // maxQueryColumns is PostgreSQL's own hard column limit, which no result can
@@ -674,7 +766,8 @@ func documentedFailure(code, method, path string) bool {
 		return path != auth.LoginPath
 	case auth.UserNotFound, auth.UsernameTaken, auth.LastAdministrator, auth.SelfTarget, auth.RateLimited,
 		auth.ConnectionExists, auth.ConnectionNotFound, auth.ConnectionInUse, auth.CredentialsUnavailable,
-		auth.ConnectionDisabled, auth.SourceError, auth.SourceTimeout, auth.SourceUnreachable,
+		auth.ConnectionDisabled, auth.GroupExists, auth.GroupNotFound, auth.GroupInUse,
+		auth.SourceError, auth.SourceTimeout, auth.SourceUnreachable,
 		auth.SourceAuthRejected, auth.ProviderUnsupported:
 		return slices.Contains(routeFailures(method, path), code)
 	}
@@ -702,14 +795,32 @@ func safeHint(hint string) string {
 func routeFailures(method, path string) []string {
 	target := strings.HasPrefix(path, auth.UsersPath+"/")
 	connection := strings.HasPrefix(path, auth.ConnectionsPath+"/")
+	group := strings.HasPrefix(path, auth.GroupsPath+"/")
 	switch {
+	// The effective listing resolves one subject, so the user is the only
+	// reference it can fail to find; the role rule it applies is an argument
+	// failure, which every bearer route may already return.
+	case path == auth.GrantsEffectivePath:
+		return []string{auth.UserNotFound}
+	case path == auth.GroupsPath && method == http.MethodPost:
+		return []string{auth.GroupExists}
+	case path == auth.GroupsPath: // the bounded listing
+		return nil
+	case group && strings.HasSuffix(path, "/update"):
+		return []string{auth.GroupNotFound, auth.GroupExists}
+	case group && strings.HasSuffix(path, "/delete"):
+		return []string{auth.GroupNotFound, auth.GroupInUse}
+	case group && (strings.HasSuffix(path, "/members/add") || strings.HasSuffix(path, "/members/remove")):
+		return []string{auth.GroupNotFound, auth.UserNotFound}
+	case group: // the record and the bounded member listing
+		return []string{auth.GroupNotFound}
 	// Execution is the one route where the source itself can be the reason a
 	// request failed, so the four source codes join the authorization ones.
 	case path == auth.QueryPath:
 		return []string{auth.SourceError, auth.SourceTimeout, auth.SourceUnreachable, auth.SourceAuthRejected,
 			auth.CredentialsUnavailable, auth.ProviderUnsupported, auth.ConnectionNotFound, auth.ConnectionDisabled}
 	case path == auth.GrantRevokePath || (path == auth.GrantsPath && method == http.MethodPost):
-		return []string{auth.UserNotFound, auth.ConnectionNotFound}
+		return []string{auth.UserNotFound, auth.GroupNotFound, auth.ConnectionNotFound}
 	case path == auth.GrantsPath: // the bounded listing
 		return nil
 	case path == auth.ConnectionsPath && method == http.MethodPost:
@@ -765,7 +876,11 @@ func responseLimit(method, path string) int {
 	switch {
 	case path == auth.QueryPath:
 		return 2*auth.MaxMaxBytes + auth.QueryEnvelopeAllowance
-	case method == http.MethodGet && (path == auth.UsersPath || path == auth.ConnectionsPath || path == auth.GrantsPath):
+	// Every bounded listing is read under the listing limit, the group record
+	// and member listing included: their paths carry the group reference, so
+	// the whole group prefix is covered rather than one literal path.
+	case method == http.MethodGet && (path == auth.UsersPath || path == auth.ConnectionsPath ||
+		path == auth.GrantsPath || path == auth.GrantsEffectivePath || strings.HasPrefix(path, auth.GroupsPath)):
 		return auth.MaxListingBody
 	default:
 		return auth.MaxResponseBody
@@ -800,14 +915,16 @@ type apiCall struct {
 }
 
 // accepts reports whether a response status is a documented success for this
-// route. Grant creation is the one idempotent mutation: it answers 201 when it
-// committed and 200 with the same body when the grant was already in place, so
-// a retrying agent needs exactly one request either way.
+// route. Grant creation and membership addition are the two idempotent
+// mutations: each answers 201 when it committed and 200 with the same body
+// when the row was already in place, so a retrying agent needs exactly one
+// request either way.
 func (route apiCall) accepts(status int) bool {
 	if status == route.status {
 		return true
 	}
-	return route.method == http.MethodPost && route.path == auth.GrantsPath &&
+	idempotent := route.path == auth.GrantsPath || strings.HasSuffix(route.path, "/members/add")
+	return route.method == http.MethodPost && idempotent &&
 		route.status == http.StatusCreated && status == http.StatusOK
 }
 
@@ -933,6 +1050,22 @@ func (a authTransport) send(ctx context.Context, route apiCall, token auth.Secre
 		valid = validGrant(value.Grant)
 	case *auth.GrantRevocation:
 		valid = validGrantRevocation(*value)
+	case *auth.AccessList:
+		valid = validAccessList(*value)
+	case *auth.Group:
+		valid = validGroup(*value)
+	case *auth.GroupList:
+		valid = validGroupList(*value)
+	case *auth.GroupMutation:
+		valid = validGroup(value.Group)
+	case *auth.GroupDeletion:
+		valid = validGrantParty(value.Group, auth.ValidGroupName)
+	case *auth.MemberList:
+		valid = validMemberList(*value)
+	case *auth.MembershipMutation:
+		valid = validMembership(value.Membership)
+	case *auth.MembershipRemoval:
+		valid = validMembershipRemoval(*value)
 	case *auth.QueryResponse:
 		valid = validQueryResponse(*value)
 	}

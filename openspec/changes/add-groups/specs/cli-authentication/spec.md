@@ -56,7 +56,7 @@ The CLI SHALL provide `grants list [--user <ref> | --group <ref>] [--connection 
 
 #### Scenario: Administrator omits the subject
 - **WHEN** an administrator runs `grants list --effective` without `--user`
-- **THEN** the server answers `INVALID_ARGUMENT` with a hint naming `--user`, which the CLI renders and exits 1
+- **THEN** the server answers `INVALID_ARGUMENT` with a hint naming `--user`, which the CLI renders and exits 2, as it does for every invalid-argument answer
 
 #### Scenario: Member lists own grants as text
 - **WHEN** a member runs `grants list --output text`
