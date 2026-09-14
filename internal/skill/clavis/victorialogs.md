@@ -25,7 +25,8 @@ stats pipe to learn the values the application actually writes (`warn` or
 `warning`, `error` or `ERROR`).
 
 Each answer is a list of `{value, hits}` pairs. `--filter <substring>` narrows
-the values on the field endpoints; `--limit N` asks the source for at most N
+the values of `--field-names`, `--field-values`, `--stream-field-names` and
+`--stream-field-values`; `--limit N` asks the source for at most N
 values on the value and stream endpoints, and under a limit the `hits` counts
 are not observed (the source returns a subset with zero hits). An empty list
 means the field was not stored under that query and window, not that the
@@ -60,7 +61,8 @@ clavis query --connection <ref> --logsql 'service_name:checkout | unpack_json fi
 
 `unpack_json` keeps the original `_msg`; add `| fields ...` to return only
 what you need. Filter on an unpacked key with the `filter` pipe, and use `:=`
-for an exact value (`level:warn` matches `warning` too):
+for an exact value (`level:warn` is a word filter: case-insensitive, not an
+exact comparison):
 
 ```sh
 clavis query --connection <ref> --logsql 'service_name:checkout | unpack_json fields (level, msg) | filter level:=warn | stats by (msg) count() as n | sort by (n) desc' --start -15m --limit 50

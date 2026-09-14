@@ -77,7 +77,7 @@ separate from `truncated` and worth repeating to the user.
 Prometheus server says `bad_data` for an expression that does not parse;
 VictoriaMetrics writes the HTTP status, `422`, for a rejected or aborted
 query, including one that hit the forwarded timeout. Only a source that stops
-answering is `SOURCE_TIMEOUT`. A refusal about points per series or a
+answering, or one whose error envelope says `timeout`, is `SOURCE_TIMEOUT`. A refusal about points per series or a
 too-fine step is the source's own limit: coarsen `--step` or narrow the range.
 
 ## Pitfalls
