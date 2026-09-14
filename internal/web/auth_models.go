@@ -68,10 +68,10 @@ func createdLabel(value time.Time) string {
 // initial is the decorative letter in the sidebar's identity row. It is hidden
 // from assistive technology, which reads the username beside it instead.
 func initial(username string) string {
-	if username == "" {
-		return ""
+	for _, first := range username {
+		return strings.ToUpper(string(first))
 	}
-	return strings.ToUpper(username[:1])
+	return ""
 }
 
 // listCount is what a sidebar entry shows. A truncated list is never presented
