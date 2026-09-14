@@ -1876,6 +1876,69 @@ try {
     "[smoke] Real CLI LogsQL queries, discovery, bounds and refusals passed",
   )
 
+  // The embedded skill installs through the CLI into whichever agent
+  // directories exist under the home, refuses a directory it did not write,
+  // and prints its own document without touching anything.
+  const skillHome = clientEnv("skill").HOME
+  const skillInstall = (args, expected = 0) =>
+    cli("skill", ["skill", "install", ...args], expected)
+  const firstInstall = await skillInstall([])
+  assert.deepEqual(
+    firstInstall.data.targets.map((target) => [target.agent, target.outcome]),
+    [["claude", "written"]],
+    "with no agent directory present, Claude Code's is created",
+  )
+  const installedEntry = readFileSync(
+    join(skillHome, ".claude", "skills", "clavis", "SKILL.md"),
+    "utf8",
+  )
+  assert(installedEntry.startsWith("---\n"))
+  assert(installedEntry.includes("\nx-clavis-skill: "))
+  assert(
+    existsSync(
+      join(skillHome, ".claude", "skills", "clavis", "victorialogs.md"),
+    ),
+  )
+  mkdirSync(join(skillHome, ".codex", "skills"), { recursive: true })
+  const secondInstall = await skillInstall([])
+  assert.deepEqual(
+    secondInstall.data.targets
+      .map((target) => [target.agent, target.outcome])
+      .sort(),
+    [
+      ["claude", "unchanged"],
+      ["codex", "written"],
+    ],
+  )
+  const dryRun = await skillInstall(["--dry-run"])
+  assert.equal(dryRun.data.dryRun, true)
+  assert(dryRun.data.targets.every((target) => target.outcome === "unchanged"))
+  // A skill somebody else wrote is never overwritten without --force.
+  const foreign = join(skillHome, ".codex", "skills", "clavis", "SKILL.md")
+  writeFileSync(foreign, "---\nname: clavis\ndescription: mine\n---\nkeep me\n")
+  const refused = await skillInstall([], 2)
+  assert.equal(refused.error.code, "INVALID_ARGUMENT")
+  assert(refused.error.hint.includes("--force"))
+  assert.equal(
+    readFileSync(foreign, "utf8"),
+    "---\nname: clavis\ndescription: mine\n---\nkeep me\n",
+  )
+  const forced = await skillInstall(["--force", "--agent", "codex"])
+  assert.deepEqual(
+    forced.data.targets.map((target) => [target.agent, target.outcome]),
+    [["codex", "written"]],
+  )
+  assert(readFileSync(foreign, "utf8").includes("\nx-clavis-skill: "))
+  const shown = await execute(
+    join(root, "bin/clavis"),
+    ["skill", "show", "--file", "victorialogs.md"],
+    "skill-show",
+    { env: clientEnv("skill") },
+  )
+  assert(shown.includes("unpack_json"), "show prints the embedded reference")
+  summary.skill = "passed"
+  console.log("[smoke] Embedded skill install, refusal, force and show passed")
+
   await sql(
     "UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE user_id IN (SELECT id FROM users WHERE username='smoke-admin')",
     "fixture-expire",
