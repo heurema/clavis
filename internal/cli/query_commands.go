@@ -28,7 +28,7 @@ const queryInputHint = "Supply exactly one input: --sql <text>, --sql-stdin, --s
 // queryTimeHint states which input each time flag belongs to. The source
 // parses the strings themselves; only their applicability is decided here.
 const queryTimeHint = "--at applies to --promql without --start, --step requires --start, neither applies " +
-	"to a log input, --match applies to --labels, --label-values and --series, and --start and --end apply to " +
+	"to a log input, --match applies to the metrics and log discovery inputs, and --start and --end apply to " +
 	"the PromQL, discovery and LogsQL inputs only"
 
 // queryMatchHint states the rule the log discovery inputs add: each of them

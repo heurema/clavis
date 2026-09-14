@@ -301,15 +301,15 @@ func TestQueryTextRendering(t *testing.T) {
 			"id  label\n1   alpha\n(1 rows)\nUPDATE 2\nTruncated: true\nDuration: 17 ms\n"},
 		"empty-statement": {success(empty), "(empty statement) 0\nDuration: 1 ms\n"},
 		"no-rows":         {success(noRows), "id\n(0 rows)\nDuration: 2 ms\n"},
-		"source-error": {failureWithSource(auth.SourceError, "The source rejected the SQL", querySourceHint,
+		"source-error": {failureWithSource(auth.SourceError, "The source rejected the query", querySourceHint,
 			&auth.SourceFailure{SQLState: "42601", Message: `syntax error at or near "selec"`,
 				Detail: "the parser stopped here", Hint: "check the spelling", Position: 1, Statement: auth.StatementIndex(0)}),
-			"SOURCE_ERROR: The source rejected the SQL\nHint: " + querySourceHint + "\n" +
+			"SOURCE_ERROR: The source rejected the query\nHint: " + querySourceHint + "\n" +
 				"ERROR: 42601 syntax error at or near \"selec\"\n" +
 				"DETAIL: the parser stopped here\nHINT: check the spelling\nPosition: 1\nStatement: 0\n"},
-		"source-minimal": {failureWithSource(auth.SourceError, "The source rejected the SQL", "",
+		"source-minimal": {failureWithSource(auth.SourceError, "The source rejected the query", "",
 			&auth.SourceFailure{SQLState: "42703", Message: "column x does not exist", Statement: auth.StatementIndex(1)}),
-			"SOURCE_ERROR: The source rejected the SQL\nERROR: 42703 column x does not exist\nStatement: 1\n"},
+			"SOURCE_ERROR: The source rejected the query\nERROR: 42703 column x does not exist\nStatement: 1\n"},
 		"timeout": {failureWithHint(auth.SourceTimeout, "The statement timeout was exceeded", "The bound is 1000 ms"),
 			"SOURCE_TIMEOUT: The statement timeout was exceeded\nHint: The bound is 1000 ms\n"},
 	} {
@@ -485,7 +485,7 @@ func TestQuerySourceErrorAsText(t *testing.T) {
 	fixture.mu.Unlock()
 	exit, output := queryText(t, server, "", "query", "--connection", "payments-prod-reporting", "--sql", "select x from notes")
 	require.Equal(t, 1, exit)
-	require.Equal(t, "SOURCE_ERROR: The source rejected the SQL\nHint: "+querySourceHint+"\n"+
+	require.Equal(t, "SOURCE_ERROR: The source rejected the query\nHint: "+querySourceHint+"\n"+
 		"ERROR: 42703 column x does not exist\nStatement: 1\n", output)
 	require.NotContains(t, output, "from notes")
 }
@@ -873,9 +873,9 @@ func TestQueryMetricsTextRendering(t *testing.T) {
 		"metrics": {success(metricsAnswer("labelValues", `["up","go_info"]`)), "up\ngo_info\nDuration: 9 ms\n"},
 		"series": {success(metricsAnswer("series", `[{"__name__":"up","job":"api"},{"job":"db"}]`)),
 			"up{job=\"api\"}\n{job=\"db\"}\nDuration: 9 ms\n"},
-		"promql-error": {failureWithSource(auth.SourceError, "The source rejected the SQL", querySourceHint,
+		"promql-error": {failureWithSource(auth.SourceError, "The source rejected the query", querySourceHint,
 			&auth.SourceFailure{ErrorType: "bad_data", Message: `unsupported expression`}),
-			"SOURCE_ERROR: The source rejected the SQL\nHint: " + querySourceHint + "\n" +
+			"SOURCE_ERROR: The source rejected the query\nHint: " + querySourceHint + "\n" +
 				"ERROR: bad_data unsupported expression\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -917,7 +917,7 @@ func TestQueryPromQLSourceErrorAsText(t *testing.T) {
 	fixture.mu.Unlock()
 	exit, output := queryText(t, server, "", "query", "--connection", "metrics-prod", "--promql", "up ~~ sentinel")
 	require.Equal(t, 1, exit)
-	require.Equal(t, "SOURCE_ERROR: The source rejected the SQL\nHint: "+querySourceHint+"\n"+
+	require.Equal(t, "SOURCE_ERROR: The source rejected the query\nHint: "+querySourceHint+"\n"+
 		"ERROR: bad_data cannot parse the expression\n", output)
 	require.NotContains(t, output, "sentinel")
 }
@@ -1248,9 +1248,9 @@ func TestQueryLogTextRendering(t *testing.T) {
 		"field values": {success(logsAnswer("fieldValues",
 			`[{"value":"","hits":0},{"value":"a b","hits":9007199254740993}]`)),
 			"\"\"\t0\n\"a b\"\t9007199254740993\nDuration: 12 ms\n"},
-		"logsql-error": {failureWithSource(auth.SourceError, "The source rejected the SQL", querySourceHint,
+		"logsql-error": {failureWithSource(auth.SourceError, "The source rejected the query", querySourceHint,
 			&auth.SourceFailure{ErrorType: "http_400", Message: "cannot parse the query"}),
-			"SOURCE_ERROR: The source rejected the SQL\nHint: " + querySourceHint + "\n" +
+			"SOURCE_ERROR: The source rejected the query\nHint: " + querySourceHint + "\n" +
 				"ERROR: http_400 cannot parse the query\n"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1306,7 +1306,7 @@ func TestQueryLogsQLSourceErrorAsText(t *testing.T) {
 	fixture.mu.Unlock()
 	exit, output := queryText(t, server, "", "query", "--connection", "logs-prod", "--logsql", "error ~~ sentinel")
 	require.Equal(t, 1, exit)
-	require.Equal(t, "SOURCE_ERROR: The source rejected the SQL\nHint: "+querySourceHint+"\n"+
+	require.Equal(t, "SOURCE_ERROR: The source rejected the query\nHint: "+querySourceHint+"\n"+
 		"ERROR: http_400 cannot parse the query\n", output)
 	require.NotContains(t, output, "sentinel")
 }

@@ -1041,3 +1041,29 @@ func TestConnectionsCreateSendsTheTenantSettings(t *testing.T) {
 	require.Equal(t, "4294967295", sent.Target["accountId"])
 	require.NotContains(t, sent.Target, "projectId")
 }
+
+// A target setting's name follows the provider's own camelCase grammar rather
+// than the label grammar, so a record carrying accountId is a valid record and
+// a name the registry could never have produced is refused.
+func TestValidSettingKey(t *testing.T) {
+	for key, valid := range map[string]bool{
+		"url":                   true,
+		"accountId":             true,
+		"projectId":             true,
+		"a1":                    true,
+		strings.Repeat("a", 63): true,
+		"":                      false,
+		"Url":                   false,
+		"a-b":                   false,
+		"a.b":                   false,
+		"a_b":                   false,
+		"a b":                   false,
+		strings.Repeat("a", 64): false,
+		"1a":                    false,
+		"\x00":                  false,
+	} {
+		require.Equal(t, valid, validSettingKey(key), "%q", key)
+	}
+	require.True(t, validTarget(map[string]string{"url": "http://logs:9428", "auth": "none", "accountId": "12"}))
+	require.False(t, validTarget(map[string]string{"url": "http://logs:9428", "Account-Id": "12"}))
+}

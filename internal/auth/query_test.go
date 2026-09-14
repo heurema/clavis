@@ -193,7 +193,7 @@ func TestQuerySourceFailureEnvelope(t *testing.T) {
 	require.Equal(t, http.StatusUnprocessableEntity, status)
 	encoded, err := json.Marshal(response)
 	require.NoError(t, err)
-	require.JSONEq(t, `{"error":{"code":"SOURCE_ERROR","message":"The source rejected the SQL",
+	require.JSONEq(t, `{"error":{"code":"SOURCE_ERROR","message":"The source rejected the query",
 		"hint":"check the statement","source":{"sqlstate":"42601",
 		"message":"syntax error at or near \"slect\"","detail":"detail text","hint":"source hint",
 		"position":1,"statement":1}}}`, string(encoded))
@@ -212,7 +212,7 @@ func TestQuerySourceFailureEnvelope(t *testing.T) {
 	}})
 	encoded, err = json.Marshal(minimal)
 	require.NoError(t, err)
-	require.JSONEq(t, `{"error":{"code":"SOURCE_ERROR","message":"The source rejected the SQL",
+	require.JSONEq(t, `{"error":{"code":"SOURCE_ERROR","message":"The source rejected the query",
 		"source":{"sqlstate":"57014","statement":0}}}`, string(encoded))
 }
 
@@ -229,7 +229,7 @@ func TestQuerySourceFailureWithoutStatement(t *testing.T) {
 	})
 	encoded, err := json.Marshal(response)
 	require.NoError(t, err)
-	require.JSONEq(t, `{"error":{"code":"SOURCE_ERROR","message":"The source rejected the SQL",
+	require.JSONEq(t, `{"error":{"code":"SOURCE_ERROR","message":"The source rejected the query",
 		"hint":"check the expression","source":{"errorType":"bad_data",
 		"message":"unsupported operation \"%\" for ranges"}}}`, string(encoded))
 	require.NotContains(t, string(encoded), `"statement"`)
@@ -264,7 +264,7 @@ func TestQueryErrorTextCarriesNoStatement(t *testing.T) {
 	// The error's own text is the allowlisted message: the source's words, and
 	// with them any fragment of the caller's statement, travel only in the
 	// source block that the service puts in the envelope.
-	require.Equal(t, "The source rejected the SQL", failure.Error())
+	require.Equal(t, "The source rejected the query", failure.Error())
 	require.NotContains(t, failure.Error(), "SENTINEL_STATEMENT_TEXT")
 	require.NotContains(t, fmt.Sprintf("%v", failure), "SENTINEL_STATEMENT_TEXT")
 
