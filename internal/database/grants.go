@@ -21,27 +21,112 @@ var _ auth.Grants = (*LocalAuth)(nil)
 // connection; the caller cannot enable it themselves.
 const hintConnectionDisabled = "The connection is disabled; ask an administrator to enable it."
 
-// grantRecord is the safe projection of a joined grant row: both parties by
-// UUID and name, and the administrator who granted it.
+// text reads an optional column. Every recipient identifier is joined to its
+// name, so a set identifier always carries one; the empty string is the safe
+// answer to a row that somehow carries neither.
+func text(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// grantRecipient projects the recipient columns of a joined grant row. The
+// table's check guarantees exactly one of the two identifiers is set, so the
+// row itself says which namespace the name belongs to.
+func grantRecipient(userID, username, groupID, groupName *string) auth.Recipient {
+	if userID != nil {
+		return auth.Recipient{Kind: auth.RecipientUser, ID: *userID, Name: text(username)}
+	}
+	return auth.Recipient{Kind: auth.RecipientGroup, ID: text(groupID), Name: text(groupName)}
+}
+
+// grantRecord is the safe projection of a joined grant row: the recipient and
+// the connection by UUID and name, and the administrator who granted it.
 func grantRecord(row sqlc.FindGrantRow) auth.Grant {
 	return auth.Grant{
-		User:       auth.GrantParty{ID: row.UserID, Name: row.Username},
+		Recipient:  grantRecipient(row.UserID, row.Username, row.GroupID, row.GroupName),
 		Connection: auth.GrantParty{ID: row.ConnectionID, Name: row.ConnectionName},
 		CreatedAt:  row.CreatedAt.UTC(),
 		CreatedBy:  auth.GrantParty{ID: row.CreatedBy, Name: row.CreatedByUsername},
 	}
 }
 
+// recipientParams turns a resolved recipient into the nullable pair every
+// recipient-keyed query takes: exactly one side is set, which is what the
+// table's check and its two partial unique indexes expect.
+func recipientParams(recipient auth.Recipient) (userID, groupID *string) {
+	if recipient.Kind == auth.RecipientUser {
+		return &recipient.ID, nil
+	}
+	return nil, &recipient.ID
+}
+
+// findGroup resolves a UUID or a name, exactly as findConnection does: a valid
+// group name can never parse as a UUID, so UUID syntax decides which lookup
+// runs. Mutations lock the row; reads do not.
+func findGroup(ctx context.Context, queries *sqlc.Queries, ref string, lock bool) (sqlc.Group, error) {
+	var row sqlc.Group
+	if !auth.ValidGroupRef(ref) {
+		return row, groupNotFound()
+	}
+	id := ref
+	if !auth.ValidUserID(ref) {
+		named, err := queries.FindGroupByName(ctx, ref)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return row, groupNotFound()
+		}
+		if err != nil {
+			return row, err
+		}
+		if !lock {
+			return named, nil
+		}
+		id = named.ID
+	}
+	var err error
+	if lock {
+		row, err = queries.LockGroup(ctx, id)
+	} else {
+		row, err = queries.FindGroupByID(ctx, id)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return row, groupNotFound()
+	}
+	return row, err
+}
+
+func lockGroup(ctx context.Context, queries *sqlc.Queries, ref string) (sqlc.Group, error) {
+	return findGroup(ctx, queries, ref, true)
+}
+
 // grantParties resolves and locks both sides of a grant inside the mutation's
 // transaction, so a concurrent block, rename or delete serializes behind it.
+// The recipient decides which row is locked, and the recorded lock order puts
+// it before the connection: the user rows administer already took, then the
+// group row, then the connection.
 func grantParties(ctx context.Context, queries *sqlc.Queries,
-	request auth.GrantRequest) (sqlc.FindUserRow, sqlc.Connection, error) {
-	user, err := lockUser(ctx, queries, request.User)
-	if err != nil {
-		return user, sqlc.Connection{}, err
+	request auth.GrantRequest) (auth.Recipient, sqlc.Connection, error) {
+	var recipient auth.Recipient
+	kind, ref, ok := request.RecipientRef()
+	if !ok {
+		return recipient, sqlc.Connection{}, invalidArgument(auth.RecipientHint)
+	}
+	if kind == auth.RecipientUser {
+		user, err := lockUser(ctx, queries, ref)
+		if err != nil {
+			return recipient, sqlc.Connection{}, err
+		}
+		recipient = auth.Recipient{Kind: auth.RecipientUser, ID: user.ID, Name: user.Username}
+	} else {
+		group, err := lockGroup(ctx, queries, ref)
+		if err != nil {
+			return recipient, sqlc.Connection{}, err
+		}
+		recipient = auth.Recipient{Kind: auth.RecipientGroup, ID: group.ID, Name: group.Name}
 	}
 	connection, err := lockConnection(ctx, queries, request.Connection)
-	return user, connection, err
+	return recipient, connection, err
 }
 
 // CreateGrant is idempotent: a grant that already exists is returned with
@@ -53,12 +138,13 @@ func (s *LocalAuth) CreateGrant(ctx context.Context, session auth.Session,
 	err := s.administer(ctx, session, grantMutationLock, request.User, dryRun, nil,
 		func(ctx context.Context, tx pgx.Tx, actor auth.Session) error {
 			queries := sqlc.New(tx)
-			user, connection, err := grantParties(ctx, queries, request)
+			recipient, connection, err := grantParties(ctx, queries, request)
 			if err != nil {
 				return err
 			}
+			userID, groupID := recipientParams(recipient)
 			_, err = queries.InsertGrant(ctx, sqlc.InsertGrantParams{
-				UserID: user.ID, ConnectionID: connection.ID, CreatedBy: actor.User.ID,
+				UserID: userID, GroupID: groupID, ConnectionID: connection.ID, CreatedBy: actor.User.ID,
 			})
 			// The insert declines a conflict rather than failing, so no row
 			// means the pair was already granted.
@@ -67,7 +153,7 @@ func (s *LocalAuth) CreateGrant(ctx context.Context, session auth.Session,
 				return err
 			}
 			row, err := queries.FindGrant(ctx, sqlc.FindGrantParams{
-				UserID: user.ID, ConnectionID: connection.ID,
+				UserID: userID, GroupID: groupID, ConnectionID: connection.ID,
 			})
 			if err != nil {
 				return err
@@ -89,18 +175,19 @@ func (s *LocalAuth) RevokeGrant(ctx context.Context, session auth.Session,
 	err := s.administer(ctx, session, grantMutationLock, request.User, dryRun, nil,
 		func(ctx context.Context, tx pgx.Tx, _ auth.Session) error {
 			queries := sqlc.New(tx)
-			user, connection, err := grantParties(ctx, queries, request)
+			recipient, connection, err := grantParties(ctx, queries, request)
 			if err != nil {
 				return err
 			}
+			userID, groupID := recipientParams(recipient)
 			removed, err := queries.DeleteGrant(ctx, sqlc.DeleteGrantParams{
-				UserID: user.ID, ConnectionID: connection.ID,
+				UserID: userID, GroupID: groupID, ConnectionID: connection.ID,
 			})
 			if err != nil {
 				return err
 			}
 			result = auth.GrantRevocation{
-				User:       auth.GrantParty{ID: user.ID, Name: user.Username},
+				Recipient:  recipient,
 				Connection: auth.GrantParty{ID: connection.ID, Name: connection.Name},
 				Revoked:    removed > 0, DryRun: dryRun,
 			}

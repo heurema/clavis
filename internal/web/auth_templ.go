@@ -1197,9 +1197,9 @@ func connectionsTable(model AdminModel) templ.Component {
 	})
 }
 
-// Grants are the third read-only table: who may use which connection, when it
-// was granted and by whom. Every cell is a username, a connection name or a
-// time; identifiers never render.
+// Grants are the third read-only table: which recipient may use which
+// connection, when it was granted and by whom. Every cell is a recipient name,
+// a connection name or a time; identifiers never render.
 func grantsTable(model AdminModel) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
@@ -1239,7 +1239,7 @@ func grantsTable(model AdminModel) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "<div class=\"overflow-x-auto\"><table class=\"w-full border-collapse text-left text-[13px]\"><thead><tr><th scope=\"col\" class=\"border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground\">User</th><th scope=\"col\" class=\"border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground\">Connection</th><th scope=\"col\" class=\"border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground\">Granted</th><th scope=\"col\" class=\"border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground\">Granted by</th></tr></thead> <tbody>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 77, "<div class=\"overflow-x-auto\"><table class=\"w-full border-collapse text-left text-[13px]\"><thead><tr><th scope=\"col\" class=\"border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground\">Recipient</th><th scope=\"col\" class=\"border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground\">Connection</th><th scope=\"col\" class=\"border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground\">Granted</th><th scope=\"col\" class=\"border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground\">Granted by</th></tr></thead> <tbody>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -1249,9 +1249,9 @@ func grantsTable(model AdminModel) templ.Component {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var53 string
-					templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(grant.User.Name)
+					templ_7745c5c3_Var53, templ_7745c5c3_Err = templ.JoinStringErrs(grant.Recipient.Name)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `auth.templ`, Line: 339, Col: 110}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `auth.templ`, Line: 339, Col: 115}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var53))
 					if templ_7745c5c3_Err != nil {

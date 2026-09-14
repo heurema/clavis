@@ -82,11 +82,13 @@ func TestGeneratedAdvisoryLockRespectsTransactionAndContext(t *testing.T) {
 
 func TestGeneratedReadinessChecksEveryApplicationColumn(t *testing.T) {
 	for table, columns := range map[string][]string{
-		"users":        {"id", "username", "password_hash", "role", "disabled", "created_at", "updated_at"},
-		"sessions":     {"id", "token_digest", "user_id", "kind", "created_at", "expires_at", "revoked_at"},
-		"grants":       {"user_id", "connection_id", "created_at", "created_by"},
-		"login_limits": {"key", "failures", "expires_at"},
-		"installation": {"singleton", "initialized_at"},
+		"users":         {"id", "username", "password_hash", "role", "disabled", "created_at", "updated_at"},
+		"sessions":      {"id", "token_digest", "user_id", "kind", "created_at", "expires_at", "revoked_at"},
+		"grants":        {"user_id", "group_id", "connection_id", "created_at", "created_by"},
+		"groups":        {"id", "name", "description", "created_at", "updated_at"},
+		"group_members": {"group_id", "user_id", "created_at", "created_by"},
+		"login_limits":  {"key", "failures", "expires_at"},
+		"installation":  {"singleton", "initialized_at"},
 	} {
 		for _, column := range columns {
 			t.Run(table+"/"+column, func(t *testing.T) {
@@ -346,6 +348,7 @@ func TestConnectionMigrationAppliesToInitializedInstallation(t *testing.T) {
 	delete(previous, "004_grants.sql")
 	delete(previous, "005_drop_audit_events.sql")
 	delete(previous, "006_victorialogs_provider.sql")
+	delete(previous, "007_groups.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	// The previous release still had the journal and stored rows in it.
 	execSQL(t, pool, `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'user.create', 'success')`, randomTestID(t))

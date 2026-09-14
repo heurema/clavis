@@ -905,7 +905,8 @@ try {
     "smoke-postgres",
   ])
   assert.equal(granted.data.created, true)
-  assert.deepEqual(granted.data.grant.user, {
+  assert.deepEqual(granted.data.grant.recipient, {
+    kind: "user",
     id: member.id,
     name: "smoke-member",
   })
@@ -1015,7 +1016,7 @@ try {
     "smoke-grants",
   ])
   assert.equal(filtered.data.grants.length, 1)
-  assert.equal(filtered.data.grants[0].user.name, "smoke-member")
+  assert.equal(filtered.data.grants[0].recipient.name, "smoke-member")
   // The delete guard names both conditions and counts the grants.
   const stillGranted = await cli(
     "admin-one",

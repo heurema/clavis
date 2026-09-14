@@ -123,14 +123,15 @@ func render(w io.Writer, result Result, format string) error {
 		return renderTruncation(w, data.Truncated, auth.MaxConnectionListing, "connections")
 	case auth.GrantList:
 		for _, grant := range data.Grants {
-			if _, err := fmt.Fprintf(w, "%s %s %s\n", grant.User.Name, grant.Connection.Name, timestamp(grant.CreatedAt)); err != nil {
+			if _, err := fmt.Fprintf(w, "%s %s %s\n", recipientLabel(grant.Recipient),
+				grant.Connection.Name, timestamp(grant.CreatedAt)); err != nil {
 				return err
 			}
 		}
 		return renderTruncation(w, data.Truncated, auth.MaxGrantListing, "grants")
 	case auth.GrantMutation:
 		if _, err := fmt.Fprintf(w, "Grant: %s → %s\nGranted: %s by %s\nCreated: %t\n",
-			data.Grant.User.Name, data.Grant.Connection.Name, timestamp(data.Grant.CreatedAt),
+			recipientLabel(data.Grant.Recipient), data.Grant.Connection.Name, timestamp(data.Grant.CreatedAt),
 			data.Grant.CreatedBy.Name, data.Created); err != nil {
 			return err
 		}
@@ -553,6 +554,16 @@ func userStatus(user auth.UserRecord) string {
 		return "blocked"
 	}
 	return "enabled"
+}
+
+// recipientLabel renders the one recipient a grant names. A group is prefixed
+// so a group and a user of the same name stay distinguishable in text output,
+// where the kind has no field of its own.
+func recipientLabel(recipient auth.Recipient) string {
+	if recipient.Kind == auth.RecipientGroup {
+		return "group " + recipient.Name
+	}
+	return recipient.Name
 }
 
 func timestamp(value time.Time) string { return value.UTC().Format("2006-01-02T15:04:05Z") }

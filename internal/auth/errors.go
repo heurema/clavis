@@ -22,6 +22,9 @@ const (
 	ConnectionExists       = "CONNECTION_EXISTS"
 	ConnectionNotFound     = "CONNECTION_NOT_FOUND"
 	ConnectionInUse        = "CONNECTION_IN_USE"
+	GroupExists            = "GROUP_EXISTS"
+	GroupNotFound          = "GROUP_NOT_FOUND"
+	GroupInUse             = "GROUP_IN_USE"
 	CredentialsUnavailable = "CREDENTIALS_UNAVAILABLE"
 	ConnectionDisabled     = "CONNECTION_DISABLED"
 	SourceError            = "SOURCE_ERROR"
@@ -123,6 +126,12 @@ func LookupFailure(code string) (int, platform.Failure, bool) {
 		status, message = http.StatusNotFound, "Connection not found"
 	case ConnectionInUse:
 		status, message = http.StatusConflict, "The connection must be disabled and have no grants before deletion"
+	case GroupExists:
+		status, message = http.StatusConflict, "A group with that name already exists"
+	case GroupNotFound:
+		status, message = http.StatusNotFound, "Group not found"
+	case GroupInUse:
+		status, message = http.StatusConflict, "The group must have no grants before deletion"
 	case CredentialsUnavailable:
 		status, message = http.StatusConflict, "The stored credentials cannot be decrypted with the configured key"
 	case ConnectionDisabled:

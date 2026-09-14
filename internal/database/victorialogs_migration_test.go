@@ -15,6 +15,9 @@ func TestVictoriaLogsProviderMigrationKeepsExistingConnections(t *testing.T) {
 	pool := testPool(t)
 	previous := embeddedMapFS(t)
 	delete(previous, "006_victorialogs_provider.sql")
+	// A later migration must not be applied ahead of the one under test: the
+	// ledger would then be ahead of the manifest and fail closed.
+	delete(previous, "007_groups.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	insert := `INSERT INTO connections (id, name, title, provider, target, secret_envelope)
 		VALUES ($1::uuid, $2, $2, $3, '{"url":"http://source:9428","auth":"none"}'::jsonb, 'sealed')`

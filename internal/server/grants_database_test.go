@@ -102,7 +102,7 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	var mutation auth.GrantMutation
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &mutation))
 	require.True(t, mutation.Created)
-	require.Equal(t, auth.GrantParty{ID: created.ID, Name: "alice"}, mutation.Grant.User)
+	require.Equal(t, auth.Recipient{Kind: auth.RecipientUser, ID: created.ID, Name: "alice"}, mutation.Grant.Recipient)
 	require.Equal(t, auth.GrantParty{ID: connection.ID, Name: "ledger-primary"}, mutation.Grant.Connection)
 	require.Equal(t, "personal-admin", mutation.Grant.CreatedBy.Name)
 	response = send(admin, "POST", auth.GrantsPath, grant)
@@ -144,7 +144,7 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	require.Equal(t, 200, response.Code)
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &list))
 	require.Len(t, list.Grants, 1)
-	require.Equal(t, "alice", list.Grants[0].User.Name)
+	require.Equal(t, "alice", list.Grants[0].Recipient.Name)
 
 	// The delete guard counts grants; disable first so the guard is the only
 	// remaining reason.
@@ -180,7 +180,7 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	var revocation auth.GrantRevocation
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &revocation))
 	require.True(t, revocation.Revoked)
-	require.Equal(t, "alice", revocation.User.Name)
+	require.Equal(t, "alice", revocation.Recipient.Name)
 	response = send(admin, "POST", auth.GrantRevokePath, revoke)
 	require.Equal(t, 200, response.Code)
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &revocation))

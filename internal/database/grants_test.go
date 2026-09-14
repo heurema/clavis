@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/heurema/clavis/internal/auth"
+	"github.com/heurema/clavis/internal/database/sqlc"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
@@ -26,14 +27,14 @@ func everyGrantRow(t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	var rows string
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT coalesce(string_agg(
-		user_id::text||' '||connection_id::text||' '||created_by::text, ' '), '') FROM grants`).Scan(&rows))
+		coalesce(user_id::text, group_id::text)||' '||connection_id::text||' '||created_by::text, ' '), '') FROM grants`).Scan(&rows))
 	return rows
 }
 
 func grantUsernames(list auth.GrantList) []string {
 	names := make([]string, 0, len(list.Grants))
 	for _, grant := range list.Grants {
-		names = append(names, grant.User.Name)
+		names = append(names, grant.Recipient.Name)
 	}
 	return names
 }
@@ -54,6 +55,91 @@ func summaryNames(list auth.ConnectionSummaryList) []string {
 	return names
 }
 
+// The recipient is what a grant is keyed on, so the resolver owns it: a user
+// or a group, addressed by UUID or name, and nothing else. Group management
+// itself is not implemented yet, so the group row is seeded directly.
+func TestGrantRecipientResolvesUsersAndGroups(t *testing.T) {
+	pool, s, admin, _ := connectionFixture(t)
+	payments := createConnection(t, s, admin, connectionRequest("payments-prod"))
+	metrics := createConnection(t, s, admin, connectionRequest("metrics-prod"))
+	alice, aliceSession := signedInMember(t, s, admin, "alice")
+	finance, err := sqlc.New(pool).InsertGroup(t.Context(), sqlc.InsertGroupParams{
+		ID: randomTestID(t), Name: "finance-managers", Description: "Finance managers",
+	})
+	require.NoError(t, err)
+
+	granted, err := s.CreateGrant(t.Context(), admin, auth.GrantRequest{Group: "finance-managers", Connection: "payments-prod"}, false)
+	require.NoError(t, err)
+	require.True(t, granted.Created)
+	require.Equal(t, auth.Recipient{Kind: auth.RecipientGroup, ID: finance.ID, Name: "finance-managers"}, granted.Grant.Recipient)
+	require.Equal(t, auth.GrantParty{ID: payments.ID, Name: "payments-prod"}, granted.Grant.Connection)
+	byID, err := s.CreateGrant(t.Context(), admin, auth.GrantRequest{Group: finance.ID, Connection: metrics.ID}, false)
+	require.NoError(t, err)
+	require.Equal(t, granted.Grant.Recipient, byID.Grant.Recipient)
+	require.Equal(t, 2, countRows(t, pool, "grants"))
+	// A direct grant on the same connection is a distinct row, not a conflict.
+	direct, err := s.CreateGrant(t.Context(), admin, auth.GrantRequest{User: "alice", Connection: "payments-prod"}, false)
+	require.NoError(t, err)
+	require.True(t, direct.Created)
+	require.Equal(t, 3, countRows(t, pool, "grants"))
+
+	// The recipient rule and unknown references are refused before any write.
+	rows := countRows(t, pool, "grants")
+	for name, request := range map[string]auth.GrantRequest{
+		"no recipient":  {Connection: "payments-prod"},
+		"two":           {User: "alice", Group: "finance-managers", Connection: "payments-prod"},
+		"empty strings": {User: "", Group: "", Connection: "payments-prod"},
+	} {
+		_, err := s.CreateGrant(t.Context(), admin, request, false)
+		code(t, err, auth.InvalidArgument, name)
+		require.Equal(t, auth.RecipientHint, hintOf(t, err), name)
+		_, err = s.RevokeGrant(t.Context(), admin, request, false)
+		code(t, err, auth.InvalidArgument, name)
+	}
+	for _, ref := range []string{"missing-group", randomTestID(t), "NOT A NAME"} {
+		_, err := s.CreateGrant(t.Context(), admin, auth.GrantRequest{Group: ref, Connection: "payments-prod"}, false)
+		code(t, err, auth.GroupNotFound, ref)
+		require.Equal(t, hintGroupNotFound, hintOf(t, err))
+	}
+	require.Equal(t, rows, countRows(t, pool, "grants"))
+
+	// Membership makes the group's grants effective on the next request, with
+	// no derived row: the member reaches metrics-prod only through the group.
+	before, err := s.ListGrantedConnections(t.Context(), aliceSession, nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, []string{"payments-prod"}, summaryNames(before))
+	execSQL(t, pool, `INSERT INTO group_members (group_id, user_id, created_by) VALUES ($1::uuid, $2::uuid, $3::uuid)`,
+		finance.ID, alice.ID, admin.User.ID)
+	after, err := s.ListGrantedConnections(t.Context(), aliceSession, nil, 0)
+	require.NoError(t, err)
+	require.Equal(t, []string{"metrics-prod", "payments-prod"}, summaryNames(after),
+		"two paths to payments-prod still list it once")
+	record, err := s.AuthorizeConnection(t.Context(), aliceSession, "metrics-prod")
+	require.NoError(t, err)
+	require.Equal(t, metrics.ID, record.ID)
+	names, truncated, err := s.ListGrantedConnectionNames(t.Context(), aliceSession, 0)
+	require.NoError(t, err)
+	require.False(t, truncated)
+	require.Equal(t, []string{"metrics-prod", "payments-prod"}, names)
+
+	// Revoking the group's grant ends the inherited path and leaves the direct
+	// one; the listing still names the group recipient it removed.
+	revoked, err := s.RevokeGrant(t.Context(), admin, auth.GrantRequest{Group: "finance-managers", Connection: metrics.ID}, false)
+	require.NoError(t, err)
+	require.True(t, revoked.Revoked)
+	require.Equal(t, granted.Grant.Recipient, revoked.Recipient)
+	_, err = s.AuthorizeConnection(t.Context(), aliceSession, "metrics-prod")
+	code(t, err, auth.ConnectionNotFound)
+	still, err := s.AuthorizeConnection(t.Context(), aliceSession, "payments-prod")
+	require.NoError(t, err)
+	require.Equal(t, payments.ID, still.ID)
+	listed, err := s.ListGrants(t.Context(), admin, auth.GrantFilter{})
+	require.NoError(t, err)
+	require.Equal(t, []string{"alice", "finance-managers"}, grantUsernames(listed))
+	require.Equal(t, []auth.RecipientKind{auth.RecipientUser, auth.RecipientGroup},
+		[]auth.RecipientKind{listed.Grants[0].Recipient.Kind, listed.Grants[1].Recipient.Kind})
+}
+
 func TestCreateAndRevokeGrantAreIdempotent(t *testing.T) {
 	pool, s, admin, _ := connectionFixture(t)
 	payments := createConnection(t, s, admin, connectionRequest("payments-prod"))
@@ -64,7 +150,7 @@ func TestCreateAndRevokeGrantAreIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, created.Created)
 	require.False(t, created.DryRun)
-	require.Equal(t, auth.GrantParty{ID: alice.ID, Name: "alice"}, created.Grant.User)
+	require.Equal(t, auth.Recipient{Kind: auth.RecipientUser, ID: alice.ID, Name: "alice"}, created.Grant.Recipient)
 	require.Equal(t, auth.GrantParty{ID: payments.ID, Name: "payments-prod"}, created.Grant.Connection)
 	require.Equal(t, auth.GrantParty{ID: admin.User.ID, Name: admin.User.Username}, created.Grant.CreatedBy)
 	require.Equal(t, time.UTC, created.Grant.CreatedAt.Location())
@@ -90,7 +176,7 @@ func TestCreateAndRevokeGrantAreIdempotent(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, revoked.Revoked)
 	require.False(t, revoked.DryRun)
-	require.Equal(t, created.Grant.User, revoked.User)
+	require.Equal(t, created.Grant.Recipient, revoked.Recipient)
 	require.Equal(t, created.Grant.Connection, revoked.Connection)
 	require.Equal(t, 1, countRows(t, pool, "grants"))
 
@@ -98,7 +184,7 @@ func TestCreateAndRevokeGrantAreIdempotent(t *testing.T) {
 	again, err := s.RevokeGrant(t.Context(), admin, auth.GrantRequest{User: "alice", Connection: "payments-prod"}, false)
 	require.NoError(t, err)
 	require.False(t, again.Revoked)
-	require.Equal(t, revoked.User, again.User)
+	require.Equal(t, revoked.Recipient, again.Recipient)
 	require.Equal(t, revoked.Connection, again.Connection)
 	require.Equal(t, 1, countRows(t, pool, "grants"))
 	remaining, err := s.ListGrants(t.Context(), admin, auth.GrantFilter{})
@@ -434,7 +520,7 @@ func TestGrantDryRunLeavesNoTrace(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, created.Created)
 	require.True(t, created.DryRun)
-	require.Equal(t, alice.ID, created.Grant.User.ID)
+	require.Equal(t, alice.ID, created.Grant.Recipient.ID)
 	repeat, err := s.CreateGrant(t.Context(), admin, auth.GrantRequest{User: alice.ID, Connection: "metrics-prod"}, true)
 	require.NoError(t, err)
 	require.False(t, repeat.Created)

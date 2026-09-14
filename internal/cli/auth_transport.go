@@ -260,8 +260,21 @@ func validGrantParty(value auth.GrantParty, name func(string) bool) bool {
 	return auth.ValidUserID(value.ID) && name(value.Name)
 }
 
+// validRecipient accepts the one recipient a grant is keyed on. The kind says
+// which namespace the name belongs to, and an unknown kind is an undocumented
+// response rather than a grant to render.
+func validRecipient(value auth.Recipient) bool {
+	switch value.Kind {
+	case auth.RecipientUser:
+		return auth.ValidUserID(value.ID) && auth.ValidUsername(value.Name)
+	case auth.RecipientGroup:
+		return auth.ValidUserID(value.ID) && auth.ValidGroupName(value.Name)
+	}
+	return false
+}
+
 func validGrant(value auth.Grant) bool {
-	return validGrantParty(value.User, auth.ValidUsername) &&
+	return validRecipient(value.Recipient) &&
 		validGrantParty(value.Connection, auth.ValidConnectionName) &&
 		validGrantParty(value.CreatedBy, auth.ValidUsername) && validTimestamp(value.CreatedAt)
 }
@@ -281,7 +294,7 @@ func validGrantList(value auth.GrantList) bool {
 // A revocation that removed nothing is a documented success, so Revoked is not
 // required to be true; both parties must still be named.
 func validGrantRevocation(value auth.GrantRevocation) bool {
-	return validGrantParty(value.User, auth.ValidUsername) &&
+	return validRecipient(value.Recipient) &&
 		validGrantParty(value.Connection, auth.ValidConnectionName)
 }
 

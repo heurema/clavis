@@ -27,3 +27,18 @@ type Connection struct {
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
+
+type Group struct {
+	ID          string
+	Name        string
+	Description string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type GroupMember struct {
+	GroupID   string
+	UserID    string
+	CreatedAt time.Time
+	CreatedBy string
+}

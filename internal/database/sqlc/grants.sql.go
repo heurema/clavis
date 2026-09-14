@@ -11,7 +11,7 @@ import (
 )
 
 const checkGrantsColumns = `-- name: CheckGrantsColumns :exec
-SELECT user_id, connection_id, created_at, created_by FROM grants LIMIT 0
+SELECT user_id, group_id, connection_id, created_at, created_by FROM grants LIMIT 0
 `
 
 func (q *Queries) CheckGrantsColumns(ctx context.Context) error {
@@ -23,6 +23,8 @@ const countConnectionGrants = `-- name: CountConnectionGrants :one
 SELECT count(*) FROM grants WHERE connection_id = $1::text::uuid
 `
 
+// Both recipient kinds live in this table, so the connection delete guard
+// counts them together without knowing that groups exist.
 func (q *Queries) CountConnectionGrants(ctx context.Context, connectionID string) (int64, error) {
 	row := q.db.QueryRow(ctx, countConnectionGrants, connectionID)
 	var count int64
@@ -31,16 +33,20 @@ func (q *Queries) CountConnectionGrants(ctx context.Context, connectionID string
 }
 
 const deleteGrant = `-- name: DeleteGrant :execrows
-DELETE FROM grants WHERE user_id = $1::text::uuid AND connection_id = $2::text::uuid
+DELETE FROM grants
+WHERE connection_id = $1::text::uuid
+    AND user_id IS NOT DISTINCT FROM $2::text::uuid
+    AND group_id IS NOT DISTINCT FROM $3::text::uuid
 `
 
 type DeleteGrantParams struct {
-	UserID       string
 	ConnectionID string
+	UserID       *string
+	GroupID      *string
 }
 
 func (q *Queries) DeleteGrant(ctx context.Context, arg DeleteGrantParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteGrant, arg.UserID, arg.ConnectionID)
+	result, err := q.db.Exec(ctx, deleteGrant, arg.ConnectionID, arg.UserID, arg.GroupID)
 	if err != nil {
 		return 0, err
 	}
@@ -48,23 +54,30 @@ func (q *Queries) DeleteGrant(ctx context.Context, arg DeleteGrantParams) (int64
 }
 
 const findGrant = `-- name: FindGrant :one
-SELECT g.user_id::text AS user_id, u.username, g.connection_id::text AS connection_id, c.name AS connection_name,
-    g.created_at, g.created_by::text AS created_by, cb.username AS created_by_username
+SELECT g.user_id, u.username, g.group_id, gr.name AS group_name,
+    g.connection_id, c.name AS connection_name,
+    g.created_at, g.created_by, cb.username AS created_by_username
 FROM grants g
-    JOIN users u ON u.id = g.user_id
+    LEFT JOIN users u ON u.id = g.user_id
+    LEFT JOIN groups gr ON gr.id = g.group_id
     JOIN connections c ON c.id = g.connection_id
     JOIN users cb ON cb.id = g.created_by
-WHERE g.user_id = $1::text::uuid AND g.connection_id = $2::text::uuid
+WHERE g.connection_id = $1::text::uuid
+    AND g.user_id IS NOT DISTINCT FROM $2::text::uuid
+    AND g.group_id IS NOT DISTINCT FROM $3::text::uuid
 `
 
 type FindGrantParams struct {
-	UserID       string
 	ConnectionID string
+	UserID       *string
+	GroupID      *string
 }
 
 type FindGrantRow struct {
-	UserID            string
-	Username          string
+	UserID            *string
+	Username          *string
+	GroupID           *string
+	GroupName         *string
 	ConnectionID      string
 	ConnectionName    string
 	CreatedAt         time.Time
@@ -72,12 +85,16 @@ type FindGrantRow struct {
 	CreatedByUsername string
 }
 
+// The recipient is matched on both columns at once: IS NOT DISTINCT FROM makes
+// the NULL side of the pair part of the key rather than an unmatchable value.
 func (q *Queries) FindGrant(ctx context.Context, arg FindGrantParams) (FindGrantRow, error) {
-	row := q.db.QueryRow(ctx, findGrant, arg.UserID, arg.ConnectionID)
+	row := q.db.QueryRow(ctx, findGrant, arg.ConnectionID, arg.UserID, arg.GroupID)
 	var i FindGrantRow
 	err := row.Scan(
 		&i.UserID,
 		&i.Username,
+		&i.GroupID,
+		&i.GroupName,
 		&i.ConnectionID,
 		&i.ConnectionName,
 		&i.CreatedAt,
@@ -88,17 +105,23 @@ func (q *Queries) FindGrant(ctx context.Context, arg FindGrantParams) (FindGrant
 }
 
 const findGrantedConnectionByID = `-- name: FindGrantedConnectionByID :one
-SELECT c.id, c.name, c.title, c.description, c.scope, c.provider, c.target, c.labels, c.secret_envelope, c.enabled, c.statement_timeout_ms, c.max_rows, c.max_bytes, c.last_check_outcome, c.last_check_at, c.created_at, c.updated_at FROM connections c JOIN grants g ON g.connection_id = c.id
-WHERE g.user_id = $1::text::uuid AND c.id = $2::text::uuid
+SELECT c.id, c.name, c.title, c.description, c.scope, c.provider, c.target, c.labels, c.secret_envelope, c.enabled, c.statement_timeout_ms, c.max_rows, c.max_bytes, c.last_check_outcome, c.last_check_at, c.created_at, c.updated_at FROM connections c
+WHERE c.id = $1::text::uuid
+    AND EXISTS (
+        SELECT 1 FROM grants g
+        WHERE g.connection_id = c.id
+            AND (g.user_id = $2::text::uuid
+                OR g.group_id IN (SELECT m.group_id FROM group_members m WHERE m.user_id = $2::text::uuid))
+    )
 `
 
 type FindGrantedConnectionByIDParams struct {
-	UserID string
 	ID     string
+	UserID string
 }
 
 func (q *Queries) FindGrantedConnectionByID(ctx context.Context, arg FindGrantedConnectionByIDParams) (Connection, error) {
-	row := q.db.QueryRow(ctx, findGrantedConnectionByID, arg.UserID, arg.ID)
+	row := q.db.QueryRow(ctx, findGrantedConnectionByID, arg.ID, arg.UserID)
 	var i Connection
 	err := row.Scan(
 		&i.ID,
@@ -123,17 +146,23 @@ func (q *Queries) FindGrantedConnectionByID(ctx context.Context, arg FindGranted
 }
 
 const findGrantedConnectionByName = `-- name: FindGrantedConnectionByName :one
-SELECT c.id, c.name, c.title, c.description, c.scope, c.provider, c.target, c.labels, c.secret_envelope, c.enabled, c.statement_timeout_ms, c.max_rows, c.max_bytes, c.last_check_outcome, c.last_check_at, c.created_at, c.updated_at FROM connections c JOIN grants g ON g.connection_id = c.id
-WHERE g.user_id = $1::text::uuid AND c.name = $2
+SELECT c.id, c.name, c.title, c.description, c.scope, c.provider, c.target, c.labels, c.secret_envelope, c.enabled, c.statement_timeout_ms, c.max_rows, c.max_bytes, c.last_check_outcome, c.last_check_at, c.created_at, c.updated_at FROM connections c
+WHERE c.name = $1
+    AND EXISTS (
+        SELECT 1 FROM grants g
+        WHERE g.connection_id = c.id
+            AND (g.user_id = $2::text::uuid
+                OR g.group_id IN (SELECT m.group_id FROM group_members m WHERE m.user_id = $2::text::uuid))
+    )
 `
 
 type FindGrantedConnectionByNameParams struct {
-	UserID string
 	Name   string
+	UserID string
 }
 
 func (q *Queries) FindGrantedConnectionByName(ctx context.Context, arg FindGrantedConnectionByNameParams) (Connection, error) {
-	row := q.db.QueryRow(ctx, findGrantedConnectionByName, arg.UserID, arg.Name)
+	row := q.db.QueryRow(ctx, findGrantedConnectionByName, arg.Name, arg.UserID)
 	var i Connection
 	err := row.Scan(
 		&i.ID,
@@ -158,7 +187,7 @@ func (q *Queries) FindGrantedConnectionByName(ctx context.Context, arg FindGrant
 }
 
 const findUserIDByUsername = `-- name: FindUserIDByUsername :one
-SELECT id::text FROM users WHERE username = $1
+SELECT id FROM users WHERE username = $1
 `
 
 func (q *Queries) FindUserIDByUsername(ctx context.Context, username string) (string, error) {
@@ -169,32 +198,42 @@ func (q *Queries) FindUserIDByUsername(ctx context.Context, username string) (st
 }
 
 const insertGrant = `-- name: InsertGrant :one
-INSERT INTO grants (user_id, connection_id, created_by)
-VALUES ($1::text::uuid, $2::text::uuid, $3::text::uuid)
+INSERT INTO grants (user_id, group_id, connection_id, created_by)
+VALUES ($1::text::uuid, $2::text::uuid,
+    $3::text::uuid, $4::text::uuid)
 ON CONFLICT DO NOTHING
-RETURNING user_id::text, connection_id::text, created_at, created_by::text
+RETURNING user_id, group_id, connection_id, created_at, created_by
 `
 
 type InsertGrantParams struct {
-	UserID       string
+	UserID       *string
+	GroupID      *string
 	ConnectionID string
 	CreatedBy    string
 }
 
 type InsertGrantRow struct {
-	UserID       string
+	UserID       *string
+	GroupID      *string
 	ConnectionID string
 	CreatedAt    time.Time
 	CreatedBy    string
 }
 
-// A repeated grant is a no-op: no row is returned and the caller reads the
-// existing one.
+// Exactly one recipient is non-NULL; the table's check enforces that and the
+// two partial unique indexes make a repeated grant of either kind a no-op:
+// no row is returned and the caller reads the existing one.
 func (q *Queries) InsertGrant(ctx context.Context, arg InsertGrantParams) (InsertGrantRow, error) {
-	row := q.db.QueryRow(ctx, insertGrant, arg.UserID, arg.ConnectionID, arg.CreatedBy)
+	row := q.db.QueryRow(ctx, insertGrant,
+		arg.UserID,
+		arg.GroupID,
+		arg.ConnectionID,
+		arg.CreatedBy,
+	)
 	var i InsertGrantRow
 	err := row.Scan(
 		&i.UserID,
+		&i.GroupID,
 		&i.ConnectionID,
 		&i.CreatedAt,
 		&i.CreatedBy,
@@ -202,9 +241,70 @@ func (q *Queries) InsertGrant(ctx context.Context, arg InsertGrantParams) (Inser
 	return i, err
 }
 
+const listEffectiveAccess = `-- name: ListEffectiveAccess :many
+SELECT c.id AS connection_id, c.name AS connection_name,
+    gr.id AS group_id, gr.name AS group_name, g.created_at
+FROM grants g
+    JOIN connections c ON c.id = g.connection_id
+    LEFT JOIN groups gr ON gr.id = g.group_id
+WHERE (g.user_id = $1::text::uuid
+        OR g.group_id IN (SELECT m.group_id FROM group_members m WHERE m.user_id = $1::text::uuid))
+    AND ($2::text IS NULL OR c.id = $2::text::uuid)
+ORDER BY c.name, (g.group_id IS NOT NULL), gr.name
+LIMIT $3::integer
+`
+
+type ListEffectiveAccessParams struct {
+	UserID       string
+	ConnectionID *string
+	LimitRows    int32
+}
+
+type ListEffectiveAccessRow struct {
+	ConnectionID   string
+	ConnectionName string
+	GroupID        *string
+	GroupName      *string
+	CreatedAt      time.Time
+}
+
+// One row per configured path: a direct grant carries no group, a grant the
+// subject inherits carries the group it came through. A connection reached
+// twice is two entries, which is the provenance an administrator asked for.
+func (q *Queries) ListEffectiveAccess(ctx context.Context, arg ListEffectiveAccessParams) ([]ListEffectiveAccessRow, error) {
+	rows, err := q.db.Query(ctx, listEffectiveAccess, arg.UserID, arg.ConnectionID, arg.LimitRows)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEffectiveAccessRow
+	for rows.Next() {
+		var i ListEffectiveAccessRow
+		if err := rows.Scan(
+			&i.ConnectionID,
+			&i.ConnectionName,
+			&i.GroupID,
+			&i.GroupName,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGrantedConnectionNames = `-- name: ListGrantedConnectionNames :many
-SELECT c.name FROM connections c JOIN grants g ON g.connection_id = c.id
-WHERE g.user_id = $1::text::uuid
+SELECT c.name FROM connections c
+WHERE EXISTS (
+    SELECT 1 FROM grants g
+    WHERE g.connection_id = c.id
+        AND (g.user_id = $1::text::uuid
+            OR g.group_id IN (SELECT m.group_id FROM group_members m WHERE m.user_id = $1::text::uuid))
+)
 ORDER BY c.name LIMIT $2::integer
 `
 
@@ -234,8 +334,13 @@ func (q *Queries) ListGrantedConnectionNames(ctx context.Context, arg ListGrante
 }
 
 const listGrantedConnections = `-- name: ListGrantedConnections :many
-SELECT c.id, c.name, c.title, c.description, c.scope, c.provider, c.target, c.labels, c.secret_envelope, c.enabled, c.statement_timeout_ms, c.max_rows, c.max_bytes, c.last_check_outcome, c.last_check_at, c.created_at, c.updated_at FROM connections c JOIN grants g ON g.connection_id = c.id
-WHERE g.user_id = $1::text::uuid
+SELECT c.id, c.name, c.title, c.description, c.scope, c.provider, c.target, c.labels, c.secret_envelope, c.enabled, c.statement_timeout_ms, c.max_rows, c.max_bytes, c.last_check_outcome, c.last_check_at, c.created_at, c.updated_at FROM connections c
+WHERE EXISTS (
+        SELECT 1 FROM grants g
+        WHERE g.connection_id = c.id
+            AND (g.user_id = $1::text::uuid
+                OR g.group_id IN (SELECT m.group_id FROM group_members m WHERE m.user_id = $1::text::uuid))
+    )
     AND c.labels @> COALESCE($2::jsonb, '{}'::jsonb)
     AND NOT EXISTS (
         SELECT 1 FROM jsonb_array_elements(COALESCE($3::jsonb, '[]'::jsonb)) AS excluded
@@ -253,8 +358,10 @@ type ListGrantedConnectionsParams struct {
 	LimitRows int32
 }
 
-// The member listing: granted connections only, same selector semantics as
-// the administrator listing, one row beyond the bound for truncation.
+// The member listing: effectively accessible connections only, same selector
+// semantics as the administrator listing, one row beyond the bound. EXISTS
+// yields each connection once however many paths reach it, so neither this
+// query nor its caller deduplicates.
 func (q *Queries) ListGrantedConnections(ctx context.Context, arg ListGrantedConnectionsParams) ([]Connection, error) {
 	rows, err := q.db.Query(ctx, listGrantedConnections,
 		arg.UserID,
@@ -300,26 +407,33 @@ func (q *Queries) ListGrantedConnections(ctx context.Context, arg ListGrantedCon
 }
 
 const listGrants = `-- name: ListGrants :many
-SELECT g.user_id::text AS user_id, u.username, g.connection_id::text AS connection_id, c.name AS connection_name,
-    g.created_at, g.created_by::text AS created_by, cb.username AS created_by_username
+SELECT g.user_id, u.username, g.group_id, gr.name AS group_name,
+    g.connection_id, c.name AS connection_name,
+    g.created_at, g.created_by, cb.username AS created_by_username
 FROM grants g
-    JOIN users u ON u.id = g.user_id
+    LEFT JOIN users u ON u.id = g.user_id
+    LEFT JOIN groups gr ON gr.id = g.group_id
     JOIN connections c ON c.id = g.connection_id
     JOIN users cb ON cb.id = g.created_by
 WHERE ($1::text IS NULL OR g.user_id = $1::text::uuid)
-    AND ($2::text IS NULL OR g.connection_id = $2::text::uuid)
-ORDER BY u.username, c.name LIMIT $3::integer
+    AND ($2::text IS NULL OR g.group_id = $2::text::uuid)
+    AND ($3::text IS NULL OR g.connection_id = $3::text::uuid)
+ORDER BY (g.user_id IS NULL), COALESCE(u.username, gr.name), c.name
+LIMIT $4::integer
 `
 
 type ListGrantsParams struct {
 	UserID       *string
+	GroupID      *string
 	ConnectionID *string
 	LimitRows    int32
 }
 
 type ListGrantsRow struct {
-	UserID            string
-	Username          string
+	UserID            *string
+	Username          *string
+	GroupID           *string
+	GroupName         *string
 	ConnectionID      string
 	ConnectionName    string
 	CreatedAt         time.Time
@@ -328,8 +442,14 @@ type ListGrantsRow struct {
 }
 
 // NULL filters match every row; the caller requests one row beyond its bound.
+// User grants order before group grants, then by recipient name and connection.
 func (q *Queries) ListGrants(ctx context.Context, arg ListGrantsParams) ([]ListGrantsRow, error) {
-	rows, err := q.db.Query(ctx, listGrants, arg.UserID, arg.ConnectionID, arg.LimitRows)
+	rows, err := q.db.Query(ctx, listGrants,
+		arg.UserID,
+		arg.GroupID,
+		arg.ConnectionID,
+		arg.LimitRows,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -340,6 +460,8 @@ func (q *Queries) ListGrants(ctx context.Context, arg ListGrantsParams) ([]ListG
 		if err := rows.Scan(
 			&i.UserID,
 			&i.Username,
+			&i.GroupID,
+			&i.GroupName,
 			&i.ConnectionID,
 			&i.ConnectionName,
 			&i.CreatedAt,

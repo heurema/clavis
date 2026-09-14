@@ -18,7 +18,7 @@ import (
 
 var listedGrants = auth.GrantList{
 	Grants: []auth.Grant{{
-		User:       auth.GrantParty{ID: "12345678-1234-4234-8234-1234567890a1", Name: "granted-member"},
+		Recipient:  auth.Recipient{Kind: auth.RecipientUser, ID: "12345678-1234-4234-8234-1234567890a1", Name: "granted-member"},
 		Connection: auth.GrantParty{ID: "12345678-1234-4234-8234-1234567890c1", Name: "warehouse-primary"},
 		CreatedAt:  time.Date(2026, 6, 7, 8, 9, 10, 0, time.UTC),
 		CreatedBy:  auth.GrantParty{ID: fixtureIdentity.User.ID, Name: "personal-admin"},

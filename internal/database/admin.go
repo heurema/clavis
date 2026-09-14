@@ -97,7 +97,8 @@ func denial(err error) (string, bool) {
 	}
 	switch failure.Code {
 	case auth.UserNotFound, auth.UsernameTaken, auth.SelfTarget, auth.LastAdministrator,
-		auth.ConnectionExists, auth.ConnectionNotFound, auth.ConnectionInUse:
+		auth.ConnectionExists, auth.ConnectionNotFound, auth.ConnectionInUse,
+		auth.GroupExists, auth.GroupNotFound, auth.GroupInUse:
 		return failure.Code, true
 	}
 	return "", false

@@ -65,17 +65,23 @@ func (a *authHTTP) grant(w http.ResponseWriter, r *http.Request, body func() err
 	writeJSON(w, status, result)
 }
 
-// grantRequest decodes the two references both mutations take. Each is checked
-// for shape before the service, so an unusable reference is an adapter
-// rejection rather than a lookup.
+// grantRequest decodes the references both mutations take: the connection and
+// exactly one recipient. Each is checked for shape before the service, so an
+// unusable reference is an adapter rejection rather than a lookup, and a body
+// naming both recipients or neither is refused with the rule it broke.
 func grantRequest(r *http.Request, request *auth.GrantRequest) error {
 	if err := decodeFields(r, auth.MaxCredentialBody, map[string]jsonValue{
 		"user":       jsonString(func(value string) { request.User = value }),
+		"group":      jsonString(func(value string) { request.Group = value }),
 		"connection": jsonString(func(value string) { request.Connection = value }),
 	}); err != nil {
 		return err
 	}
-	if !auth.ValidUserRef(request.User) || !auth.ValidConnectionRef(request.Connection) {
+	kind, recipient, ok := request.RecipientRef()
+	if !ok {
+		return &auth.Error{Code: auth.InvalidArgument, Hint: auth.RecipientHint}
+	}
+	if !auth.ValidRecipientRef(kind, recipient) || !auth.ValidConnectionRef(request.Connection) {
 		return invalidArgument()
 	}
 	return nil

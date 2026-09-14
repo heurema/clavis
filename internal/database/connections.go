@@ -31,6 +31,8 @@ const (
 	hintConnectionExists   = "A connection named like that exists; use `clavis connections update` to change it or choose another name."
 	hintConnectionInUse    = "Disable the connection first; no grants remain."
 	hintUserNotFound       = "Use `clavis users list` to find the user's username or id."
+	hintGroupNotFound      = "Use `clavis groups list` to find the group's name or id."
+	hintGroupExists        = "A group named like that exists; use `clavis groups update` to change it or choose another name."
 	hintCredentials        = "Replace the connection's credentials with `clavis connections set-credentials`; the stored secret cannot be decrypted with the configured key."
 	hintName               = "A connection name is 3 to 64 characters of lowercase letters, digits, dot, dash or underscore, starts with a letter and is never shaped like a UUID."
 	hintTitle              = "A title is 1 to 128 characters without control characters."
@@ -82,6 +84,10 @@ func connectionExists() error {
 	return &auth.Error{Code: auth.ConnectionExists, Hint: hintConnectionExists}
 }
 
+func groupNotFound() error {
+	return &auth.Error{Code: auth.GroupNotFound, Hint: hintGroupNotFound}
+}
+
 func connectionContext(id string) string { return "connection:" + id }
 
 // hinted restores the guidance a denial drops: administer answers with the
@@ -101,6 +107,10 @@ func hinted(err error) error {
 		failure.Hint = hintConnectionInUse
 	case auth.UserNotFound:
 		failure.Hint = hintUserNotFound
+	case auth.GroupNotFound:
+		failure.Hint = hintGroupNotFound
+	case auth.GroupExists:
+		failure.Hint = hintGroupExists
 	}
 	return err
 }

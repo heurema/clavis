@@ -102,13 +102,13 @@ const (
 var (
 	grantTime   = time.Date(2030, 2, 3, 4, 5, 6, 0, time.UTC)
 	grantRecord = auth.Grant{
-		User:       auth.GrantParty{ID: grantUserID, Name: grantUsername},
+		Recipient:  auth.Recipient{Kind: auth.RecipientUser, ID: grantUserID, Name: grantUsername},
 		Connection: auth.GrantParty{ID: connectionTargetID, Name: grantConnection},
 		CreatedAt:  grantTime,
 		CreatedBy:  auth.GrantParty{ID: grantAdminID, Name: "personal-admin"},
 	}
 	grantCreated  = auth.GrantMutation{Grant: grantRecord, Created: true}
-	grantRevoked  = auth.GrantRevocation{User: grantRecord.User, Connection: grantRecord.Connection, Revoked: true}
+	grantRevoked  = auth.GrantRevocation{Recipient: grantRecord.Recipient, Connection: grantRecord.Connection, Revoked: true}
 	grantListing  = auth.GrantList{Grants: []auth.Grant{grantRecord}, Truncated: true}
 	grantedRecord = auth.ConnectionSummary{
 		ID: connectionTargetID, Name: connectionTargetName, Title: "Warehouse",
@@ -195,6 +195,7 @@ func TestGrantRoutesHandTheServiceExactlyWhatWasAsked(t *testing.T) {
 		{"GET", auth.GrantsPath + "?user=" + grantUserID, ""},
 		{"POST", auth.GrantsPath, validGrantBody},
 		{"POST", auth.GrantRevokePath, `{"user":"` + grantUserID + `","connection":"` + connectionTargetID + `"}`},
+		{"POST", auth.GrantsPath, `{"group":"finance-managers","connection":"` + grantConnection + `"}`},
 	} {
 		headers := bearerHeaders()
 		if tc.body != "" {
@@ -209,6 +210,7 @@ func TestGrantRoutesHandTheServiceExactlyWhatWasAsked(t *testing.T) {
 		{operation: "list", role: auth.Admin, filter: auth.GrantFilter{User: grantUserID, Limit: auth.MaxGrantListing}},
 		{operation: "create", role: auth.Admin, request: auth.GrantRequest{User: grantUsername, Connection: grantConnection}},
 		{operation: "revoke", role: auth.Admin, request: auth.GrantRequest{User: grantUserID, Connection: connectionTargetID}},
+		{operation: "create", role: auth.Admin, request: auth.GrantRequest{Group: "finance-managers", Connection: grantConnection}},
 	}, f.grantCalls)
 }
 
@@ -282,6 +284,10 @@ func TestGrantBodiesAndQueriesAreStrict(t *testing.T) {
 		{"numeric user", "POST", auth.GrantsPath, `{"user":7,"connection":"c-name"}`, "application/json"},
 		{"trailing document", "POST", auth.GrantsPath, validGrantBody + `{}`, "application/json"},
 		{"empty body", "POST", auth.GrantsPath, `{}`, "application/json"},
+		{"both recipients", "POST", auth.GrantsPath, `{"user":"alice","group":"finance-managers","connection":"c-name"}`, "application/json"},
+		{"no recipient", "POST", auth.GrantsPath, `{"connection":"c-name"}`, "application/json"},
+		{"bad group", "POST", auth.GrantsPath, `{"group":"Finance","connection":"c-name"}`, "application/json"},
+		{"revoke both recipients", "POST", auth.GrantRevokePath, `{"user":"alice","group":"finance-managers","connection":"c-name"}`, "application/json"},
 		{"missing connection", "POST", auth.GrantsPath, `{"user":"alice"}`, "application/json"},
 		{"uppercase user", "POST", auth.GrantsPath, `{"user":"ALICE","connection":"c-name"}`, "application/json"},
 		{"short user", "POST", auth.GrantsPath, `{"user":"ab","connection":"c-name"}`, "application/json"},
@@ -318,6 +324,25 @@ func TestGrantBodiesAndQueriesAreStrict(t *testing.T) {
 			require.NotContains(t, response.Body.String(), "alice")
 			require.Empty(t, f.grantCalls, "an invalid request must never reach the service")
 		})
+	}
+}
+
+// The exactly-one recipient rule is the adapter's: the service never sees a
+// body that names both recipients or neither, and the caller is told which
+// rule it broke rather than a bare rejection.
+func TestGrantRecipientRuleIsRejectedWithItsHint(t *testing.T) {
+	for _, body := range []string{
+		`{"connection":"` + grantConnection + `"}`,
+		`{"user":"alice","group":"finance-managers","connection":"` + grantConnection + `"}`,
+	} {
+		f, handler := grantFixture(t)
+		response := requestAuth(handler, "POST", auth.GrantsPath, body, bearerHeaders("Content-Type", "application/json"))
+		require.Equal(t, 400, response.Code)
+		var failure auth.ErrorResponse
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &failure))
+		require.Equal(t, auth.InvalidArgument, failure.Error.Code)
+		require.Equal(t, auth.RecipientHint, failure.Error.Hint)
+		require.Empty(t, f.grantCalls)
 	}
 }
 
@@ -402,7 +427,7 @@ func TestGrantRoutesHonorTheOperationDeadline(t *testing.T) {
 func maximalGrant() auth.Grant {
 	name := "u" + strings.Repeat("z", 63)
 	return auth.Grant{
-		User:       auth.GrantParty{ID: grantUserID, Name: name},
+		Recipient:  auth.Recipient{Kind: auth.RecipientUser, ID: grantUserID, Name: name},
 		Connection: auth.GrantParty{ID: connectionTargetID, Name: "c" + strings.Repeat("n", 63)},
 		CreatedAt:  grantTime,
 		CreatedBy:  auth.GrantParty{ID: grantAdminID, Name: name},

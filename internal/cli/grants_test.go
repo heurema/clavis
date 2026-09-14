@@ -25,7 +25,7 @@ const (
 
 func (f *cliAuthFixture) grantIndex(userID, connectionID string) int {
 	for i, grant := range f.grants {
-		if grant.User.ID == userID && grant.Connection.ID == connectionID {
+		if grant.Recipient.ID == userID && grant.Connection.ID == connectionID {
 			return i
 		}
 	}
@@ -102,7 +102,7 @@ func (f *cliAuthFixture) serveGrants(w http.ResponseWriter, r *http.Request, act
 		failHint(auth.ConnectionNotFound, grantNotFoundHint)
 		return
 	}
-	party := auth.GrantParty{ID: f.users[user].ID, Name: f.users[user].Username}
+	party := auth.Recipient{Kind: auth.RecipientUser, ID: f.users[user].ID, Name: f.users[user].Username}
 	target := auth.GrantParty{ID: f.connections[connection].ID, Name: f.connections[connection].Name}
 	existing := f.grantIndex(party.ID, target.ID)
 	if revoke {
@@ -110,7 +110,7 @@ func (f *cliAuthFixture) serveGrants(w http.ResponseWriter, r *http.Request, act
 			f.grants = append(f.grants[:existing], f.grants[existing+1:]...)
 			f.grantMutations++
 		}
-		encode(http.StatusOK, auth.GrantRevocation{User: party, Connection: target, Revoked: existing >= 0, DryRun: dryRun})
+		encode(http.StatusOK, auth.GrantRevocation{Recipient: party, Connection: target, Revoked: existing >= 0, DryRun: dryRun})
 		return
 	}
 	if existing >= 0 {
@@ -119,7 +119,7 @@ func (f *cliAuthFixture) serveGrants(w http.ResponseWriter, r *http.Request, act
 		encode(http.StatusOK, auth.GrantMutation{Grant: f.grants[existing], DryRun: dryRun})
 		return
 	}
-	granted := auth.Grant{User: party, Connection: target, CreatedAt: time.Now().UTC().Truncate(time.Second),
+	granted := auth.Grant{Recipient: party, Connection: target, CreatedAt: time.Now().UTC().Truncate(time.Second),
 		CreatedBy: auth.GrantParty{ID: actor.User.ID, Name: actor.User.Username}}
 	if dryRun {
 		encode(http.StatusOK, auth.GrantMutation{Grant: granted, Created: true, DryRun: true})
@@ -159,7 +159,7 @@ func (f *cliAuthFixture) listGrants(actor auth.Identity, role auth.Role, query m
 	}
 	matched := []auth.Grant{}
 	for _, grant := range f.grants {
-		if user != "" && grant.User.ID != strings.ToLower(user) && grant.User.Name != user {
+		if user != "" && grant.Recipient.ID != strings.ToLower(user) && grant.Recipient.Name != user {
 			continue
 		}
 		if connection != "" && grant.Connection.ID != strings.ToLower(connection) && grant.Connection.Name != connection {
@@ -168,8 +168,8 @@ func (f *cliAuthFixture) listGrants(actor auth.Identity, role auth.Role, query m
 		matched = append(matched, grant)
 	}
 	sort.Slice(matched, func(i, j int) bool {
-		if matched[i].User.Name != matched[j].User.Name {
-			return matched[i].User.Name < matched[j].User.Name
+		if matched[i].Recipient.Name != matched[j].Recipient.Name {
+			return matched[i].Recipient.Name < matched[j].Recipient.Name
 		}
 		return matched[i].Connection.Name < matched[j].Connection.Name
 	})
@@ -195,7 +195,7 @@ func memberFixture(t *testing.T) (*cliAuthFixture, *httptest.Server, string, aut
 		CreatedAt: time.Now().UTC().Truncate(time.Second)}
 	fixture.users = append(fixture.users, member)
 	fixture.grants = append(fixture.grants, auth.Grant{
-		User:       auth.GrantParty{ID: member.ID, Name: member.Username},
+		Recipient:  auth.Recipient{Kind: auth.RecipientUser, ID: member.ID, Name: member.Username},
 		Connection: auth.GrantParty{ID: granted.ID, Name: granted.Name},
 		CreatedAt:  time.Date(2026, 9, 11, 8, 30, 0, 0, time.UTC),
 		CreatedBy:  auth.GrantParty{ID: testIdentity().User.ID, Name: testIdentity().User.Username},
@@ -250,7 +250,7 @@ func TestGrantsWorkflow(t *testing.T) {
 	require.True(t, result.OK)
 	granted, ok := result.Data.(map[string]any)["grant"].(map[string]any)
 	require.True(t, ok)
-	require.Equal(t, map[string]any{"id": memberID, "name": "alice"}, granted["user"])
+	require.Equal(t, map[string]any{"kind": "user", "id": memberID, "name": "alice"}, granted["recipient"])
 	require.Equal(t, "payments-prod-reporting", granted["connection"].(map[string]any)["name"])
 	require.True(t, auth.ValidUserID(granted["connection"].(map[string]any)["id"].(string)))
 	require.Equal(t, "cli-test", granted["createdBy"].(map[string]any)["name"])
@@ -306,7 +306,7 @@ func TestGrantsWorkflow(t *testing.T) {
 func TestGrantsTextRendering(t *testing.T) {
 	moment := time.Date(2026, 9, 11, 8, 30, 0, 0, time.UTC)
 	grant := auth.Grant{
-		User:       auth.GrantParty{ID: testIdentity().User.ID, Name: "alice"},
+		Recipient:  auth.Recipient{Kind: auth.RecipientUser, ID: testIdentity().User.ID, Name: "alice"},
 		Connection: auth.GrantParty{ID: "0b6a8ca4-2b8a-4a06-9d6b-0d2c3f9c1e11", Name: "payments-prod-reporting"},
 		CreatedAt:  moment,
 		CreatedBy:  auth.GrantParty{ID: testIdentity().User.ID, Name: "personal-admin"},
@@ -325,9 +325,9 @@ func TestGrantsTextRendering(t *testing.T) {
 		"created":        {success(auth.GrantMutation{Grant: grant, Created: true}), block + "Created: true\n"},
 		"existing":       {success(auth.GrantMutation{Grant: grant}), block + "Created: false\n"},
 		"created-dry":    {success(auth.GrantMutation{Grant: grant, Created: true, DryRun: true}), block + "Created: true\nDry run: true\n"},
-		"revoked":        {success(auth.GrantRevocation{User: grant.User, Connection: grant.Connection, Revoked: true}), "Revoked: true\n"},
-		"revoked-none":   {success(auth.GrantRevocation{User: grant.User, Connection: grant.Connection}), "Revoked: false\n"},
-		"revoked-dry":    {success(auth.GrantRevocation{User: grant.User, Connection: grant.Connection, Revoked: true, DryRun: true}), "Revoked: true\nDry run: true\n"},
+		"revoked":        {success(auth.GrantRevocation{Recipient: grant.Recipient, Connection: grant.Connection, Revoked: true}), "Revoked: true\n"},
+		"revoked-none":   {success(auth.GrantRevocation{Recipient: grant.Recipient, Connection: grant.Connection}), "Revoked: false\n"},
+		"revoked-dry":    {success(auth.GrantRevocation{Recipient: grant.Recipient, Connection: grant.Connection, Revoked: true, DryRun: true}), "Revoked: true\nDry run: true\n"},
 		"failure-hint": {failureWithHint(auth.UserNotFound, "User not found", userNotFoundHint),
 			"USER_NOT_FOUND: User not found\nHint: " + userNotFoundHint + "\n"},
 	} {
@@ -432,13 +432,16 @@ func TestGrantsDocumentedFailures(t *testing.T) {
 // A grant body that is not the documented shape is refused rather than
 // rendered: a missing name, a bad timestamp or an unknown member.
 func TestGrantsTransportStrictResponses(t *testing.T) {
-	valid := `{"grant":{"user":{"id":"7fde7ce1-cc8d-4de8-a9c0-df22ce8d92ba","name":"alice"},` +
+	valid := `{"grant":{"recipient":{"kind":"user","id":"7fde7ce1-cc8d-4de8-a9c0-df22ce8d92ba","name":"alice"},` +
 		`"connection":{"id":"0b6a8ca4-2b8a-4a06-9d6b-0d2c3f9c1e11","name":"payments-prod-reporting"},` +
 		`"createdAt":"2026-09-11T08:30:00Z",` +
 		`"createdBy":{"id":"7fde7ce1-cc8d-4de8-a9c0-df22ce8d92ba","name":"personal-admin"}},"created":true,"dryRun":false}`
 	for name, body := range map[string]string{
 		"valid":             valid,
 		"unknown member":    strings.Replace(valid, `"created":true`, `"created":true,"extra":1`, 1),
+		"group recipient":   strings.Replace(valid, `"kind":"user"`, `"kind":"group"`, 1),
+		"unknown kind":      strings.Replace(valid, `"kind":"user"`, `"kind":"team"`, 1),
+		"missing kind":      strings.Replace(valid, `"kind":"user",`, ``, 1),
 		"missing user name": strings.Replace(valid, `"name":"alice"`, `"name":""`, 1),
 		"uppercase name":    strings.Replace(valid, `"name":"alice"`, `"name":"ALICE"`, 1),
 		"bad user id":       strings.Replace(valid, `"id":"7fde7ce1-cc8d-4de8-a9c0-df22ce8d92ba"`, `"id":"nope"`, 1),
@@ -457,9 +460,9 @@ func TestGrantsTransportStrictResponses(t *testing.T) {
 			var mutation auth.GrantMutation
 			route := apiCall{http.MethodPost, auth.GrantsPath, "", http.StatusCreated}
 			failed := (authTransport{server.URL, time.Second}).send(context.Background(), route, testToken(), &auth.GrantRequest{}, &mutation)
-			if name == "valid" {
+			if name == "valid" || name == "group recipient" {
 				require.Nil(t, failed)
-				require.Equal(t, "alice", mutation.Grant.User.Name)
+				require.Equal(t, "alice", mutation.Grant.Recipient.Name)
 				return
 			}
 			require.NotNil(t, failed)
@@ -492,7 +495,7 @@ func TestMemberReadsAreScopedAndReduced(t *testing.T) {
 	fixture, server, memberID, token := memberFixture(t)
 	fixture.mu.Lock()
 	fixture.grants = append(fixture.grants, auth.Grant{
-		User:       auth.GrantParty{ID: testIdentity().User.ID, Name: "cli-test"},
+		Recipient:  auth.Recipient{Kind: auth.RecipientUser, ID: testIdentity().User.ID, Name: "cli-test"},
 		Connection: auth.GrantParty{ID: fixture.connections[1].ID, Name: fixture.connections[1].Name},
 		CreatedAt:  time.Date(2026, 9, 11, 8, 30, 0, 0, time.UTC),
 		CreatedBy:  auth.GrantParty{ID: testIdentity().User.ID, Name: "cli-test"},

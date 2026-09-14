@@ -315,9 +315,9 @@ templ connectionsTable(model AdminModel) {
 	}
 }
 
-// Grants are the third read-only table: who may use which connection, when it
-// was granted and by whom. Every cell is a username, a connection name or a
-// time; identifiers never render.
+// Grants are the third read-only table: which recipient may use which
+// connection, when it was granted and by whom. Every cell is a recipient name,
+// a connection name or a time; identifiers never render.
 templ grantsTable(model AdminModel) {
 	@card.Card(card.Props{Class: "overflow-hidden py-0 gap-0"}) {
 		if len(model.Grants) == 0 {
@@ -327,7 +327,7 @@ templ grantsTable(model AdminModel) {
 				<table class="w-full border-collapse text-left text-[13px]">
 					<thead>
 						<tr>
-							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">User</th>
+							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Recipient</th>
 							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Connection</th>
 							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Granted</th>
 							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Granted by</th>
@@ -336,7 +336,7 @@ templ grantsTable(model AdminModel) {
 					<tbody>
 						for _, grant := range model.Grants {
 							<tr class="border-b last:border-0">
-								<th scope="row" class="h-[42px] break-words px-4 text-left align-middle font-medium">{ grant.User.Name }</th>
+								<th scope="row" class="h-[42px] break-words px-4 text-left align-middle font-medium">{ grant.Recipient.Name }</th>
 								<td class="h-[42px] break-words px-4 align-middle">{ grant.Connection.Name }</td>
 								<td class="h-[42px] whitespace-nowrap px-4 align-middle tabular-nums text-muted-foreground">{ createdLabel(grant.CreatedAt) }</td>
 								<td class="h-[42px] break-words px-4 align-middle text-muted-foreground">{ grant.CreatedBy.Name }</td>

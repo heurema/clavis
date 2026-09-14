@@ -70,12 +70,16 @@ type User struct {
 
 // Identity is the safe output projection shared by login and whoami. The
 // connection names are filled only by whoami for members: what the caller may
-// use, in name order, bounded with an explicit truncation flag.
+// use through any path, in name order, bounded with an explicit truncation
+// flag. The group names are filled by whoami for every caller, bounded and
+// truncated independently of the connections.
 type Identity struct {
 	User                 User      `json:"user"`
 	ExpiresAt            time.Time `json:"expiresAt"`
 	Connections          []string  `json:"connections,omitempty"`
 	ConnectionsTruncated bool      `json:"connectionsTruncated,omitempty"`
+	Groups               []string  `json:"groups,omitempty"`
+	GroupsTruncated      bool      `json:"groupsTruncated,omitempty"`
 }
 
 type LoginRequest struct {

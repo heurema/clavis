@@ -309,7 +309,7 @@ func (f *cliAuthFixture) grantedConnections(userID string) []auth.Connection {
 	granted := []auth.Connection{}
 	for _, connection := range f.connections {
 		for _, grant := range f.grants {
-			if grant.User.ID == userID && grant.Connection.ID == connection.ID {
+			if grant.Recipient.ID == userID && grant.Connection.ID == connection.ID {
 				granted = append(granted, connection)
 			}
 		}
