@@ -14,7 +14,6 @@ import (
 	"github.com/heurema/clavis/internal/web/ui/button"
 	"github.com/heurema/clavis/internal/web/ui/card"
 	"github.com/heurema/clavis/internal/web/ui/icon"
-	switchcomp "github.com/heurema/clavis/internal/web/ui/switch"
 )
 
 // Composition is a render-only compatibility fixture, not a product route.
@@ -104,7 +103,7 @@ func Composition(message string) templ.Component {
 					var templ_7745c5c3_Var6 string
 					templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(message)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `testdata/composition.templ`, Line: 20, Col: 13}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `testdata/composition.templ`, Line: 19, Col: 13}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 					if templ_7745c5c3_Err != nil {
@@ -225,7 +224,7 @@ func Composition(message string) templ.Component {
 						var templ_7745c5c3_Var12 string
 						templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(message)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `testdata/composition.templ`, Line: 33, Col: 14}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `testdata/composition.templ`, Line: 32, Col: 14}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 						if templ_7745c5c3_Err != nil {
@@ -288,17 +287,6 @@ func Composition(message string) templ.Component {
 					return nil
 				})
 				templ_7745c5c3_Err = button.Button(button.Props{ID: "retry"}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var14), templ_7745c5c3_Buffer)
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, " ")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = switchcomp.Switch(switchcomp.Props{
-					ID:         "appearance",
-					Attributes: templ.Attributes{"aria-label": "Dark appearance"},
-				}).Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

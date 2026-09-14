@@ -26,7 +26,11 @@ func renderAuth(t *testing.T, status int, view templ.Component) string {
 	assert.Contains(t, body, "<!doctype html>")
 	assert.Contains(t, body, `lang="en"`)
 	assert.Contains(t, body, `data-appearance="true"`)
-	assert.Contains(t, body, "/assets/notices.txt")
+	// The appearance control is a button whose state assistive technology reads.
+	assert.Contains(t, body, `<button type="button" data-appearance="true"`)
+	assert.Contains(t, body, `aria-pressed=`)
+	assert.Contains(t, body, `aria-label="Dark appearance"`)
+	assert.Equal(t, 1, strings.Count(body, "/assets/notices.txt"), "one attribution link per document")
 	assert.NotContains(t, body, "hx-post")
 	return body
 }
@@ -51,6 +55,10 @@ func TestLoginFailureDocuments(t *testing.T) {
 			assert.Contains(t, body, `id="auth-error"`)
 			assert.Contains(t, body, `role="alert"`)
 			assert.Contains(t, body, "Your password has been cleared")
+			assert.Contains(t, body, `>Sign in</h1>`)
+			// The username format is enforced by the input, not explained in prose.
+			assert.NotContains(t, body, "username-help")
+			assert.NotContains(t, body, "lowercase letters")
 		})
 	}
 }
@@ -135,8 +143,10 @@ func TestAuthErrorDocuments(t *testing.T) {
 	assert.Contains(t, body, "remote session revocation could not be confirmed")
 	assert.NotContains(t, body, "SENTINEL_SECRET")
 	assert.NotContains(t, body, "<form")
+	assert.Contains(t, body, `href="/login"`)
 	body = renderAuth(t, 403, AuthError(AuthErrorModel{ErrorCode: auth.Forbidden}))
 	assert.Contains(t, body, "administrator access is required")
+	assert.Contains(t, body, `href="/login"`)
 	assert.Contains(t, body, `action="/logout"`)
 	assert.Equal(t, "Wait a few minutes before trying again.", retryMessage(-1))
 	assert.Equal(t, "Wait a few minutes before trying again.", retryMessage(1<<30))

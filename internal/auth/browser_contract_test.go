@@ -11,7 +11,7 @@ import (
 )
 
 func TestBrowserLoginAndAdminContracts(t *testing.T) {
-	require.Equal(t, auth.BrowserOutcome{Status: 303, Location: "/admin"}, auth.LoginOutcome(nil))
+	require.Equal(t, auth.BrowserOutcome{Status: 303, Location: "/admin/users"}, auth.LoginOutcome(nil))
 	require.Equal(t, auth.BrowserOutcome{Status: 200}, auth.AdminOutcome(nil))
 	require.Equal(t, auth.BrowserOutcome{Status: 303, Location: "/login"}, auth.AdminOutcome(&auth.Error{Code: auth.Unauthenticated}))
 	for code, status := range map[string]int{

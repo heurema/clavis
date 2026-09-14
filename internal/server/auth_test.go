@@ -375,7 +375,7 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 		body := url.Values{"username": {"personal-admin"}, "password": {"SENTINEL_PRIVATE_PASSWORD"}}.Encode()
 		response := requestAuth(handler, "POST", "/login", body, http.Header{"Origin": {origin}, "Content-Type": {"application/x-www-form-urlencoded"}})
 		require.Equal(t, 303, response.Code)
-		require.Equal(t, "/admin", response.Header().Get("Location"))
+		require.Equal(t, "/admin/users", response.Header().Get("Location"))
 		require.NotContains(t, response.Body.String(), string(fixtureToken))
 		require.Equal(t, auth.Browser, f.lastInput.Kind)
 		cookies := response.Result().Cookies()

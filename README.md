@@ -198,7 +198,8 @@ database, supported schema and completed initialization, distinguishing
 If the Go server is stopped, fresh navigation receives the browser's connection
 error; there is no independent frontend or offline fallback.
 Appearance is the only persisted browser preference (`clavis.appearance`); with
-storage blocked, the switch still works for the lifetime of the loaded page.
+storage blocked, the appearance control still works for the lifetime of the
+loaded page.
 
 ## Agents
 

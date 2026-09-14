@@ -21,23 +21,20 @@ func TestComponentComposition(t *testing.T) {
 		`id="retry"`,
 		`type="button"`,
 		`Check again`,
-		`id="appearance"`,
-		`class="peer sr-only"`,
-		`role="switch"`,
-		`aria-label="Dark appearance"`,
 		`&lt;script&gt;private &amp; unsafe&lt;/script&gt;`,
 	} {
 		require.Contains(t, html, expected)
 	}
 	require.NotContains(t, html, "<script")
-	require.NotContains(t, html, `class="peer hidden"`)
 }
 
 func TestIconsEscapeDynamicClasses(t *testing.T) {
 	for name, component := range map[string]func(...icon.Props) templ.Component{
 		"database":   icon.Database,
 		"key-round":  icon.KeyRound,
+		"moon":       icon.Moon,
 		"refresh-cw": icon.RefreshCw,
+		"sun":        icon.Sun,
 	} {
 		t.Run(name, func(t *testing.T) {
 			var output bytes.Buffer

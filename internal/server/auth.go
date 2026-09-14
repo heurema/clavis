@@ -658,7 +658,7 @@ func (a *authHTTP) loginBrowser(w http.ResponseWriter, r *http.Request) {
 	}
 	a.cookie(w, response.Token, response.ExpiresAt, false)
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Location", "/admin")
+	w.Header().Set("Location", "/admin/users")
 	w.WriteHeader(303)
 }
 

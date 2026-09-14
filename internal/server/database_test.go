@@ -195,7 +195,7 @@ func TestNormalServeInitializesAndResolvesPortZero(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = response.Body.Close() }()
 	require.Equal(t, 303, response.StatusCode)
-	require.Equal(t, "/admin", response.Header.Get("Location"))
+	require.Equal(t, "/admin/users", response.Header.Get("Location"))
 	require.Len(t, response.Cookies(), 1)
 	require.Equal(t, developmentCookie, response.Cookies()[0].Name)
 	require.False(t, response.Cookies()[0].Secure)

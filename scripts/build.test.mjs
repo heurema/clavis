@@ -138,7 +138,7 @@ async function checkCopiedServer(directory) {
     assert.ok(running, `Copied server did not start: ${output}`)
     for (const [path, status, type, text, location] of [
       ["/", 303, "text/html", "/admin/users", "/admin/users"],
-      ["/assets/app.css", 200, "text/css", ".sr-only"],
+      ["/assets/app.css", 200, "text/css", ".bg-card{"],
       ["/assets/appearance.js", 200, "text/javascript", "clavis.appearance"],
       ["/assets/notices.txt", 200, "text/plain", "Cole Bemis"],
       ["/ui/readiness", 404, "text/plain", "404 page not found"],
