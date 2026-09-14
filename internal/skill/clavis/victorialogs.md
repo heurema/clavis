@@ -18,6 +18,12 @@ clavis query --connection <ref> --field-values level --match 'service_name:check
 clavis query --connection <ref> --streams --match 'namespace:payments' --start -15m
 ```
 
+Discovery sees stored fields only. A severity is often not a field but a key
+inside the JSON message, so an empty `--field-values level` means "not stored
+as a field", not "no levels": unpack it in the query (below) and count with a
+stats pipe to learn the values the application actually writes (`warn` or
+`warning`, `error` or `ERROR`).
+
 Each answer is a list of `{value, hits}` pairs. `--filter <substring>` narrows
 the values on the field endpoints; `--limit N` asks the source for at most N
 values on the value and stream endpoints, and under a limit the `hits` counts
@@ -33,9 +39,11 @@ clavis query --connection <ref> --logsql '_stream:{service_name="checkout"} erro
 clavis query --connection <ref> --logsql '* | stats by (service_name, level) count() as n | sort by (n) desc' --start -15m --limit 20
 ```
 
-Two knobs look alike and are not: `--limit N` is the source's own limit,
-forwarded as typed, which also makes the source sort by `_time` descending
-before cutting; `--max-rows N` is the platform's cap on what it keeps. Without
+Two knobs look alike and are not: `--limit N` is the source's own limit on
+the rows the query returns after its pipes (a `| stats` result is computed
+over the whole window and then limited), forwarded as typed, and on raw rows
+it makes the source sort by `_time` descending before cutting; `--max-rows N`
+is the platform's cap on what it keeps. Without
 `--limit` or a sort pipe the stream arrives in arbitrary order, so always end
 a query that should be ordered with `| sort by (_time) desc` and pass a
 `--limit`. The platform never adds a limit or a sort.
@@ -51,9 +59,16 @@ clavis query --connection <ref> --logsql 'service_name:checkout | unpack_json fi
 ```
 
 `unpack_json` keeps the original `_msg`; add `| fields ...` to return only
-what you need. Check the actual keys first with a small `--limit` on the raw
-rows, because a key that does not exist unpacks to nothing and a filter on it
-silently matches no row.
+what you need. Filter on an unpacked key with the `filter` pipe, and use `:=`
+for an exact value (`level:warn` matches `warning` too):
+
+```sh
+clavis query --connection <ref> --logsql 'service_name:checkout | unpack_json fields (level, msg) | filter level:=warn | stats by (msg) count() as n | sort by (n) desc' --start -15m --limit 50
+```
+
+Check the actual keys first with a small `--limit` on the raw rows, because a
+key that does not exist unpacks to nothing and a filter on it silently matches
+no row.
 
 ## Bound the answer
 
@@ -94,12 +109,12 @@ Only a source that stops answering is `SOURCE_TIMEOUT`.
 - Zero hits under `--limit`. Not an absence of matches; rerun without the
   limit or with a narrower query when the counts matter.
 - Treating message text as fields. Unpack in the query.
-- `end` is exclusive.
 
 ## Time formats
 
 RFC 3339 (`2026-09-14T10:00:00Z`), Unix seconds and the source's relative
-forms (`-1h`, `-15m`) work for `--start` and `--end`; `--at` and `--step` do
-not apply to logs and are refused with a hint. A window can also live inside
+forms (`-1h`, `-15m`) work for `--start` and `--end`, and `--end` is
+exclusive; `--at` and `--step` do not apply to logs and are refused with a
+hint. A window can also live inside
 the query (`_time:1h`). Prefer absolute times when the answer will be
 compared or rerun, because separate relative windows move between requests.

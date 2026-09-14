@@ -35,6 +35,18 @@ be combined with `--start`, and `--step` needs `--start`. Aggregate in the
 expression (`sum by`, `rate`, `topk`) rather than fetching raw series and
 summing yourself: the source computes, the platform only bounds.
 
+A ratio over a window, such as an error rate, is one instant query:
+
+```sh
+clavis query --connection <ref> --promql '100 * sum by (job) (increase(http_requests_total{status=~"5.."}[1h])) / sum by (job) (increase(http_requests_total[1h]))'
+```
+
+`increase` and `rate` extrapolate over the window and can overstate a counter
+that has few samples; when the exact count matters, cross-check with
+`http_requests_total - http_requests_total offset 1h`, which is the raw
+difference. Discover the status values before writing `5..`: a source may
+record only some of them.
+
 ## Bound the answer
 
 The row cap counts samples across all series: one per vector entry, one per
