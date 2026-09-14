@@ -77,6 +77,7 @@ export function copyMutationInputs(root, workspace, sources) {
     "sqlc.yaml",
     "internal/database/migrations",
     "internal/database/queries",
+    "internal/skill/clavis",
   ])
     cpSync(join(root, path), join(workspace, path), { recursive: true })
   for (const path of sources) {

@@ -66,6 +66,12 @@ test("isolated mutation inputs compile with embedded assets and exclude develope
         readFileSync(join(workspace, "internal/database", directory, name)),
         readFileSync(join(root, "internal/database", directory, name)),
       )
+  // The CLI embeds the agent skill, so the copy must compile against it too.
+  for (const name of readdirSync(join(root, "internal/skill/clavis")))
+    assert.deepEqual(
+      readFileSync(join(workspace, "internal/skill/clavis", name)),
+      readFileSync(join(root, "internal/skill/clavis", name)),
+    )
   const result = spawnSync("go", ["test", "./..."], {
     cwd: workspace,
     encoding: "utf8",
