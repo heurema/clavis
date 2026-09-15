@@ -15,6 +15,7 @@ import (
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/database/sqlc"
 	"github.com/heurema/clavis/internal/platform"
+	"github.com/heurema/clavis/internal/secrets"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sys/unix"
@@ -115,7 +116,7 @@ func ReadBootstrapPassword(path string) (auth.Secret, error) {
 	file := os.NewFile(uintptr(fd), "bootstrap-secret")
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 1026 {
+	if err != nil || !info.Mode().IsRegular() || !secrets.ProtectedFile(info) || info.Size() > 1026 {
 		return failure()
 	}
 	data, err := io.ReadAll(io.LimitReader(file, 1027))

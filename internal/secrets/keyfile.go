@@ -29,8 +29,8 @@ const maxKeyFileBytes = 66
 // LoadKeyFile reads a 32-byte key encoded as 64 hexadecimal characters from a
 // protected regular file, following the bootstrap secret-file rules: absolute
 // path, projected symlinks allowed but the opened target validated, special
-// files opened nonblocking, no group or world permission bits, bounded size,
-// at most one terminal newline removed.
+// files opened nonblocking, protected permissions, bounded size, at most one
+// terminal newline removed.
 func LoadKeyFile(path string) (*Keyring, error) {
 	if !filepath.IsAbs(path) {
 		return nil, &FileError{CodeInvalidPath}
@@ -45,7 +45,7 @@ func LoadKeyFile(path string) (*Keyring, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, &FileError{CodeUnreadable}
 	}
-	if info.Mode().Perm()&0077 != 0 {
+	if !ProtectedFile(info) {
 		return nil, &FileError{CodeUnsafePermissions}
 	}
 	if info.Size() > maxKeyFileBytes {
