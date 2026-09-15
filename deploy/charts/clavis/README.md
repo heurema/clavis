@@ -215,3 +215,10 @@ From the repository root, `make chart-lint` runs `helm lint --strict` and
 renders every value set in `ci/` through `kubeconform` against pinned
 Kubernetes and Gateway API schemas, including the two sets that must fail. It
 is part of `make check` and needs no network after `make setup`.
+
+`make verify-kind` goes further: it builds the image, installs this chart on a
+throwaway kind cluster with a first-install bootstrap, disables bootstrap and
+restarts, upgrades to an image that carries an extra migration, signs in through
+the CLI at each stage and records the secret file modes and the rollout
+handover in `reports/verify-kind.json`. It needs Docker and `kubectl` and takes
+a few minutes; run it after changing the chart's templates or the image.
