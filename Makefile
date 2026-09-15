@@ -53,7 +53,7 @@ DATE ?= unknown
 # The tag `make image` produces; a release pipeline overrides it.
 IMAGE ?= clavis:local
 
-.PHONY: setup dev dev-db dev-api build build-server compile-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode install-helm install-kind install-kubeconform install-kube-schemas chart-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke image smoke-image down reset-db
+.PHONY: setup dev dev-db dev-api build build-server compile-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode install-helm install-kind install-kubeconform install-kube-schemas chart-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke image smoke-image verify-kind down reset-db
 
 setup:
 	go mod download
@@ -259,6 +259,14 @@ image:
 
 smoke-image: image
 	$(NODE) scripts/smoke-image.mjs
+
+# The kind run builds its own two tags; naming the first one here makes the
+# image target the precondition, so a Docker or build failure surfaces in
+# seconds instead of minutes into the cluster run, and the script's own build
+# step then only restamps a cached image.
+verify-kind: IMAGE = clavis:kind-a
+verify-kind: image
+	$(NODE) scripts/verify-kind.mjs
 
 down:
 	$(NODE) scripts/dev.mjs down
