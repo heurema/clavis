@@ -35,7 +35,9 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
-COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml web/
+# .npmrc travels with the manifests so the install honours the same
+# engine-strict and strict-peer-dependencies settings contributors use.
+COPY web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml web/.npmrc web/
 RUN pnpm --dir web install --frozen-lockfile
 
 COPY . .

@@ -140,6 +140,7 @@ async function run() {
     composeStarted = false,
     stopped = false,
     before,
+    container,
     secretsDirectory
   function persist() {
     writeFileSync(
@@ -253,9 +254,12 @@ async function run() {
     await new Promise((resolve) => server.close(resolve))
     return port
   }
-  async function poll(describe, accept) {
+  // A guard runs before each attempt and throws, so a container that died on
+  // startup fails the check at once instead of after the whole deadline.
+  async function poll(describe, accept, guard) {
     let last = "no response yet"
     while (Date.now() < deadline && !stopped) {
+      if (guard) await guard()
       try {
         const outcome = await accept()
         if (outcome === true) return
@@ -266,6 +270,27 @@ async function run() {
       await delay(250)
     }
     throw new Error(`${describe} within the image smoke deadline: ${last}`)
+  }
+  // A container that exits never answers, so waiting out the deadline only
+  // hides the reason; its logs are written to reports during cleanup.
+  function stillRunning(container, service) {
+    return async () => {
+      const state = await execute(
+        "docker",
+        [
+          "inspect",
+          "--format",
+          "{{.State.Status}} {{.State.ExitCode}}",
+          container,
+        ],
+        `${service}-state`,
+      )
+      const [status, code = "unknown"] = state.split(/\s+/)
+      if (status !== "running")
+        throw new Error(
+          `the ${service} container is ${status} (exit code ${code}); see reports/smoke-image-${service}.log`,
+        )
+    }
   }
   function cancel() {
     stopped = true
@@ -298,9 +323,18 @@ async function run() {
     summary.origin = origin
     const username = "smoke-admin"
 
-    // The container reads both files as uid 65532, which owns neither, so they
-    // are group-readable and the container joins the group that owns them.
-    // Root-owned chown is not required and is not attempted.
+    // The container reads both files as uid 65532, which owns neither on a
+    // Linux host, so they are group-readable and the container joins the group
+    // that owns them. Root-owned chown is not required and is not attempted.
+    // On macOS Docker hosts the bind mount presents the files as owned by the
+    // container user, so the group-read branch of the permission rule is
+    // exercised on Linux hosts and by the kind verification; the refusal of a
+    // world-readable file holds on every host, which is what
+    // CLAVIS_SMOKE_IMAGE_SECRET_MODE=0444 exercises.
+    const secretMode = Number.parseInt(
+      process.env.CLAVIS_SMOKE_IMAGE_SECRET_MODE || "440",
+      8,
+    )
     mkdirSync(join(root, ".local"), { recursive: true })
     secretsDirectory = mkdtempSync(join(root, ".local/smoke-image-secrets-"))
     summary.secretsDirectory = secretsDirectory
@@ -319,10 +353,11 @@ async function run() {
     // mkdtemp creates 0700; the container's group needs to traverse it.
     for (const [path, mode] of [
       [secretsDirectory, 0o750],
-      [join(secretsDirectory, "encryption-key"), 0o440],
-      [join(secretsDirectory, "bootstrap-password"), 0o440],
+      [join(secretsDirectory, "encryption-key"), secretMode],
+      [join(secretsDirectory, "bootstrap-password"), secretMode],
     ])
       chmodSync(path, mode)
+    summary.secretMode = secretMode.toString(8).padStart(4, "0")
     const secretsGID = statSync(join(secretsDirectory, "encryption-key")).gid
     summary.secretsGID = secretsGID
 
@@ -352,6 +387,17 @@ async function run() {
     )
     await step("appStarted", async () => {
       await execute("docker", [...compose, "up", "-d", "app"], "app-start")
+      container = (
+        await execute(
+          "docker",
+          [...compose, "ps", "--all", "-q", "app"],
+          "app-container-id",
+        )
+      ).split("\n")[0]
+      assert(container, "compose created no app container")
+      // A container that refused its configuration is already gone; report the
+      // exit rather than the port query that fails as a consequence.
+      await stillRunning(container, "app")()
       publishedPort(
         await execute(
           "docker",
@@ -361,30 +407,39 @@ async function run() {
         appPort,
       )
     })
+    const running = stillRunning(container, "app")
 
     await step("livez", () =>
-      poll("Liveness did not reach HTTP 200", async () => {
-        const response = await fetch(`${origin}/livez`, {
-          signal: AbortSignal.timeout(2_000),
-        })
-        const body = await response.text()
-        return response.status === 200 || `HTTP ${response.status} ${body}`
-      }),
+      poll(
+        "Liveness did not reach HTTP 200",
+        async () => {
+          const response = await fetch(`${origin}/livez`, {
+            signal: AbortSignal.timeout(2_000),
+          })
+          const body = await response.text()
+          return response.status === 200 || `HTTP ${response.status} ${body}`
+        },
+        running,
+      ),
     )
 
     // The first start applies the migrations and creates the administrator, so
     // readiness trails liveness.
     await step("readyz", () =>
-      poll("Readiness did not report ready", async () => {
-        const response = await fetch(`${origin}/readyz`, {
-          signal: AbortSignal.timeout(2_000),
-        })
-        const body = (await response.text()).trim()
-        return (
-          (response.status === 200 && body === '{"status":"ready"}') ||
-          `HTTP ${response.status} ${body}`
-        )
-      }),
+      poll(
+        "Readiness did not report ready",
+        async () => {
+          const response = await fetch(`${origin}/readyz`, {
+            signal: AbortSignal.timeout(2_000),
+          })
+          const body = (await response.text()).trim()
+          return (
+            (response.status === 200 && body === '{"status":"ready"}') ||
+            `HTTP ${response.status} ${body}`
+          )
+        },
+        running,
+      ),
     )
 
     await step("healthz", async () => {
@@ -396,6 +451,24 @@ async function run() {
       assert.equal(health.status, "ok")
       assert.equal(typeof health.version, "string")
       assert(health.version, "/healthz reports no build version")
+      // The running executable must carry the identity the image advertises:
+      // the label and the linker stamp come from the same build arguments.
+      const labelled = await execute(
+        "docker",
+        [
+          "image",
+          "inspect",
+          options.image,
+          "--format",
+          '{{index .Config.Labels "org.opencontainers.image.version"}}',
+        ],
+        "image-version-label",
+      )
+      assert.equal(
+        health.version,
+        labelled,
+        "/healthz reports a different version than the image label",
+      )
       summary.version = health.version
     })
 
@@ -420,15 +493,6 @@ async function run() {
       summary.asset = assets[0]
     })
 
-    const container = (
-      await execute(
-        "docker",
-        [...compose, "ps", "-q", "app"],
-        "app-container-id",
-      )
-    ).split("\n")[0]
-    assert(container, "The app container disappeared")
-
     await step("nonRootProcess", async () => {
       const uids = processUIDs(
         await execute(
@@ -438,9 +502,8 @@ async function run() {
         ),
       )
       assert(uids.length, "docker top listed no process")
-      // A ps that reports a name rather than the id is still conclusive.
       assert(
-        uids.every((uid) => uid === "65532" || uid === "nonroot"),
+        uids.every((uid) => uid === "65532"),
         `The container runs as ${uids.join(", ")}, not 65532`,
       )
     })
@@ -531,6 +594,19 @@ async function run() {
     }
     for (const child of children)
       await cleanup(`process ${child.pid}`, () => stop(child))
+    // Capture the containers' own output before the teardown removes them:
+    // a refused secret file or a failed migration is only visible there.
+    // execute names the report, so these land in reports/smoke-image-<service>.log
+    // with the password already redacted.
+    if (composeStarted && summary.message !== undefined)
+      for (const service of ["app", "db"])
+        await cleanup(`${service} logs`, () =>
+          execute(
+            "docker",
+            [...compose, "logs", "--no-color", service],
+            service,
+          ),
+        )
     if (composeStarted)
       await cleanup("compose project", () =>
         execute(

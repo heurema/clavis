@@ -58,9 +58,9 @@ test("processUIDs reads the uid column of every process row", () => {
   assert.deepEqual(processUIDs(output), ["65532", "65532"])
 })
 
-test("processUIDs accepts a resolved user name", () => {
-  const output = "UID  PID  COMMAND\nnonroot  40321  server"
-  assert.deepEqual(processUIDs(output), ["nonroot"])
+test("processUIDs reads a single row and ignores trailing blank lines", () => {
+  const output = "UID  PID  COMMAND\n65532  40321  server\n\n"
+  assert.deepEqual(processUIDs(output), ["65532"])
 })
 
 test("processUIDs fails when no header is printed", () => {

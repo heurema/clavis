@@ -151,6 +151,9 @@ container's public URL is HTTPS, as a deployment's is, so browser sign-in is out
 of scope here. Per-check results go to `reports/smoke-image-summary.json`, and the
 project, its volume and the temporary secrets are removed afterwards; the
 development database and its volume belong to a different project and are untouched.
+On macOS Docker hosts the bind-mounted secret files appear owned by the container
+user, so the group-read branch is exercised on Linux hosts and by the kind
+verification, while the refusal of a world-readable file holds everywhere.
 
 To exercise failure cleanup, run `CLAVIS_SMOKE_FAIL=after-start make smoke`,
 `CLAVIS_SMOKE_FAIL=after-restart make smoke` or
