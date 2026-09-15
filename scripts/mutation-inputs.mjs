@@ -57,7 +57,9 @@ export function changedSources(root, ref) {
 export function isMutationTarget(root, path) {
   const name = relative(root, path)
   return (
-    /^internal\/(auth|database|platform|config|cli|server|web)\//.test(name) &&
+    /^internal\/(auth|database|platform|config|cli|secrets|server|web)\//.test(
+      name,
+    ) &&
     !/^internal\/web\/(ui|testdata)\//.test(name) &&
     !/(^|\/)testdata\//.test(name) &&
     !/(_test|_gen|_templ|\.gen)\.go$/.test(name) &&
