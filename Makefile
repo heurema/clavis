@@ -53,7 +53,7 @@ DATE ?= unknown
 # The tag `make image` produces; a release pipeline overrides it.
 IMAGE ?= clavis:local
 
-.PHONY: setup dev dev-db dev-api build build-server compile-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode install-helm install-kind install-kubeconform install-kube-schemas chart-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke image down reset-db
+.PHONY: setup dev dev-db dev-api build build-server compile-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode install-helm install-kind install-kubeconform install-kube-schemas chart-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke image smoke-image down reset-db
 
 setup:
 	go mod download
@@ -256,6 +256,9 @@ image:
 			--build-arg COMMIT="$$commit" \
 			--build-arg DATE="$$date" \
 			--tag '$(IMAGE)' .
+
+smoke-image: image
+	$(NODE) scripts/smoke-image.mjs
 
 down:
 	$(NODE) scripts/dev.mjs down

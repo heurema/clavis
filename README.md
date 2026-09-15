@@ -91,6 +91,7 @@ independently of HTML rendering.
 | `make format` | Format maintained Go, templates and JavaScript; regenerate templ Go source |
 | `make smoke` | Test standalone server HTTP/API/CLI behavior with real database outage, recovery and cleanup |
 | `make image` | Build the server container image, stamping the identity from Git, tagged `$(IMAGE)` (default `clavis:local`) |
+| `make smoke-image` | Build the image and test it against an isolated compose database over a published loopback port |
 | `make test-mutation` | Mutation-test the handwritten Go files changed against `main` in an isolated copy and report survivors |
 | `make test-mutation-full` | Mutation-test the whole handwritten scope with the extended bound |
 | `make down` | Stop the database and keep its data |
@@ -137,6 +138,19 @@ and Origin behavior. The runner has a 180-second execution deadline, followed by
 cleanup of its own resources.
 It leaves existing development processes, database containers and volumes alone.
 Logs and `smoke-summary.json` go under `reports/`.
+
+`make smoke-image` builds the image and runs it the way a deployment does, under
+its own compose project and the `app` profile no other command activates: a
+read-only root filesystem, uid 65532, an isolated PostgreSQL, and the encryption
+key and bootstrap password bind-mounted read-only at mode `0440` from a temporary
+directory whose group the container joins. It waits for `/livez` then `/readyz`,
+checks `/healthz`, the sign-in document and an asset the document references,
+confirms the process runs as uid 65532 with a read-only root filesystem, and runs
+`clavis doctor`, `login` and `whoami` over the published loopback port. The
+container's public URL is HTTPS, as a deployment's is, so browser sign-in is out
+of scope here. Per-check results go to `reports/smoke-image-summary.json`, and the
+project, its volume and the temporary secrets are removed afterwards; the
+development database and its volume belong to a different project and are untouched.
 
 To exercise failure cleanup, run `CLAVIS_SMOKE_FAIL=after-start make smoke`,
 `CLAVIS_SMOKE_FAIL=after-restart make smoke` or

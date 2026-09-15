@@ -46,5 +46,38 @@ services:
     # The image ships no shell or wget, so there is no container health check;
     # smoke waits on /health over HTTP from the host instead.
     stop_grace_period: 5s
+  # The built server image against the compose database, for `make smoke-image`
+  # only. Nothing else activates the profile, so `make dev-db`, `make down` and
+  # `make smoke` never start or stop this service.
+  app:
+    image: ${CLAVIS_APP_IMAGE:-clavis:local}
+    profiles: [app]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CLAVIS_DATABASE_URL: postgres://clavis:clavis-local-only@db:5432/clavis?sslmode=disable
+      # A deployment terminates TLS in front of the container, so the public
+      # origin is HTTPS. Browser sign-in therefore needs a proxy the image
+      # smoke has no use for; it checks health, documents and the CLI instead.
+      CLAVIS_PUBLIC_URL: https://clavis.local
+      CLAVIS_ENCRYPTION_KEY_FILE: /run/secrets/clavis/encryption-key
+      CLAVIS_BOOTSTRAP_USERNAME: ${CLAVIS_APP_BOOTSTRAP_USERNAME:-smoke-admin}
+      CLAVIS_BOOTSTRAP_PASSWORD_FILE: /run/secrets/clavis/bootstrap-password
+    volumes:
+      # Compose interpolates the whole file whatever the active profile, so a
+      # required variable here would break `make dev-db`. The placeholder names
+      # the missing setting instead; the smoke script always supplies the path.
+      - ${CLAVIS_APP_SECRETS_DIR:-./.local/CLAVIS_APP_SECRETS_DIR-is-unset}:/run/secrets/clavis:ro
+    ports:
+      - "127.0.0.1:${CLAVIS_APP_PORT:-8081}:8080"
+    read_only: true
+    user: "65532:65532"
+    # The mounted files are group-readable, not world-readable; the caller
+    # passes the gid owning them so the container process joins that group.
+    group_add: ["${CLAVIS_APP_SECRETS_GID:-65532}"]
+    # distroless ships no shell, so the service has no container health check;
+    # the smoke script probes /livez over the published port from the host.
+    stop_grace_period: 15s
 volumes:
   postgres-data:
