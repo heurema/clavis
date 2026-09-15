@@ -1,0 +1,15 @@
+apiVersion: v2
+name: clavis
+description: Controlled access to operational systems for people and agents
+type: application
+# The chart version moves with the chart, appVersion with the server image.
+# They are deliberately independent so a template fix can ship without a server
+# release, which is what Flux image automation and Renovate expect.
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/heurema/clavis
+sources:
+  - https://github.com/heurema/clavis
+# networking.k8s.io/v1 Ingress and policy/v1 PodDisruptionBudget are the oldest
+# APIs the chart renders.
+kubeVersion: ">=1.25.0-0"

@@ -33,7 +33,7 @@ func Doctor(ctx context.Context, baseURL string, timeout time.Duration) Result {
 	if err != nil || timeout <= 0 {
 		return failure("INVALID_ARGUMENT", "Use an HTTP(S) server URL without credentials, query, or fragment and a positive timeout", nil)
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/health/ready"
+	u.Path = strings.TrimRight(u.Path, "/") + "/readyz"
 	u.RawPath = ""
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

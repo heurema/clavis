@@ -1,0 +1,14 @@
+# The first install: bootstrap enabled, the password mounted from its own
+# Secret. The three references may name one Secret; here they do, as an
+# External Secrets Operator target usually would.
+publicURL: https://clavis.example.com
+secrets:
+  database:
+    secretName: clavis
+  encryptionKey:
+    secretName: clavis
+bootstrap:
+  enabled: true
+  username: owner
+  password:
+    secretName: clavis

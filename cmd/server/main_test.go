@@ -99,7 +99,7 @@ func TestServerProcess(t *testing.T) {
 		})
 		client := &http.Client{Timeout: 100 * time.Millisecond}
 		require.Eventually(t, func() bool {
-			response, err := client.Get("http://" + address + "/health/live")
+			response, err := client.Get("http://" + address + "/livez")
 			if err != nil {
 				return false
 			}
@@ -108,7 +108,7 @@ func TestServerProcess(t *testing.T) {
 		}, 5*time.Second, 20*time.Millisecond, "liveness must start without database connectivity")
 		requestCtx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		request, err := http.NewRequestWithContext(requestCtx, "GET", "http://"+address+"/health/ready", nil)
+		request, err := http.NewRequestWithContext(requestCtx, "GET", "http://"+address+"/readyz", nil)
 		require.NoError(t, err)
 		requestDone := make(chan struct{})
 		go func() {
@@ -141,7 +141,7 @@ func TestServerProcess(t *testing.T) {
 		assert.Contains(t, string(output), "server_started")
 		assert.Contains(t, string(output), "server_stopped")
 		assert.NotContains(t, string(output), "SECRET")
-		response, err := client.Get("http://" + address + "/health/live")
+		response, err := client.Get("http://" + address + "/livez")
 		if response != nil {
 			_ = response.Body.Close()
 		}

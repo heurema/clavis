@@ -1,0 +1,30 @@
+{{- include "clavis.validate" . -}}
+{{- if .Values.httpRoute.enabled }}
+{{- if not .Values.httpRoute.parentRefs }}
+{{- fail "clavis: httpRoute.parentRefs is required when httpRoute.enabled is true" }}
+{{- end }}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "clavis.fullname" . }}
+  labels:
+    {{- include "clavis.labels" . | nindent 4 }}
+  {{- with .Values.httpRoute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  # TLS terminates at the Gateway listener, so publicURL must name the origin
+  # the Gateway serves.
+  parentRefs:
+    {{- toYaml .Values.httpRoute.parentRefs | nindent 4 }}
+  {{- with .Values.httpRoute.hostnames }}
+  hostnames:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  # The server owns its own routing; the route sends everything to it.
+  rules:
+    - backendRefs:
+        - name: {{ include "clavis.fullname" . }}
+          port: {{ .Values.service.port }}
+{{- end }}

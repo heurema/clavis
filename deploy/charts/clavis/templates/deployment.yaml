@@ -1,0 +1,164 @@
+{{- include "clavis.validate" . -}}
+{{- /* A file reference marked external is supplied by a pass-through volume,
+so the chart sets the variable but renders no Secret volume for it. */ -}}
+{{- $keyVolume := not .Values.secrets.encryptionKey.external -}}
+{{- $passwordVolume := and .Values.bootstrap.enabled (not .Values.bootstrap.password.external) -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "clavis.fullname" . }}
+  labels:
+    {{- include "clavis.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "clavis.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "clavis.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "clavis.serviceAccountName" . }}
+      # The server calls no Kubernetes API.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # Longer than the server's own shutdown bound, so the kubelet never kills
+      # a shutdown that is still within its configured timeout.
+      terminationGracePeriodSeconds: {{ include "clavis.terminationGracePeriodSeconds" .Values.server.shutdownTimeout }}
+      containers:
+        - name: server
+          image: {{ include "clavis.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            # The image already binds all interfaces; the chart repeats it so a
+            # rendered manifest states the listener instead of implying it.
+            - name: CLAVIS_HTTP_ADDR
+              value: "0.0.0.0:8080"
+            - name: CLAVIS_PUBLIC_URL
+              value: {{ .Values.publicURL | quote }}
+            - name: CLAVIS_LOG_LEVEL
+              value: {{ .Values.server.logLevel | quote }}
+            - name: CLAVIS_SESSION_TTL
+              value: {{ .Values.server.sessionTTL | quote }}
+            - name: CLAVIS_DB_CHECK_TIMEOUT
+              value: {{ .Values.server.dbCheckTimeout | quote }}
+            - name: CLAVIS_SHUTDOWN_TIMEOUT
+              value: {{ .Values.server.shutdownTimeout | quote }}
+            # By reference only: no secret value is ever a chart value.
+            - name: CLAVIS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.database.secretName | quote }}
+                  key: {{ .Values.secrets.database.key | quote }}
+            - name: CLAVIS_ENCRYPTION_KEY_FILE
+              value: {{ .Values.secrets.encryptionKey.mountPath | quote }}
+            {{- if .Values.bootstrap.enabled }}
+            - name: CLAVIS_BOOTSTRAP_USERNAME
+              value: {{ .Values.bootstrap.username | quote }}
+            - name: CLAVIS_BOOTSTRAP_PASSWORD_FILE
+              value: {{ .Values.bootstrap.password.mountPath | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # Liveness is independent of the database: the process serves the
+          # public documents while the initializer retries in the background.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+          # The readiness check reaches the database under the configured
+          # timeout, so the probe timeout has to sit above it.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: {{ include "clavis.readinessTimeoutSeconds" .Values.server.dbCheckTimeout }}
+            failureThreshold: 3
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or $keyVolume $passwordVolume .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- if $keyVolume }}
+            - name: encryption-key
+              mountPath: {{ .Values.secrets.encryptionKey.mountPath | quote }}
+              subPath: encryption-key
+              readOnly: true
+            {{- end }}
+            {{- if $passwordVolume }}
+            - name: bootstrap-password
+              mountPath: {{ .Values.bootstrap.password.mountPath | quote }}
+              subPath: bootstrap-password
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+      {{- if or $keyVolume $passwordVolume .Values.extraVolumes }}
+      volumes:
+        {{- if or $keyVolume $passwordVolume }}
+        # Mode 0440 together with the pod's fsGroup is what the server accepts:
+        # nothing for others, read for a group the process belongs to. Each
+        # file is placed on its own absolute path through subPath, so the two
+        # references may name different Secrets and still share a directory.
+        {{- end }}
+        {{- if $keyVolume }}
+        - name: encryption-key
+          secret:
+            secretName: {{ .Values.secrets.encryptionKey.secretName | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.secrets.encryptionKey.key | quote }}
+                path: encryption-key
+        {{- end }}
+        {{- if $passwordVolume }}
+        - name: bootstrap-password
+          secret:
+            secretName: {{ .Values.bootstrap.password.secretName | quote }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.bootstrap.password.key | quote }}
+                path: bootstrap-password
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

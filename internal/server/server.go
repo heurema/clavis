@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/heurema/clavis/internal/auth"
+	"github.com/heurema/clavis/internal/buildinfo"
 	"github.com/heurema/clavis/internal/config"
 	store "github.com/heurema/clavis/internal/database"
 	"github.com/heurema/clavis/internal/platform"
@@ -82,16 +83,36 @@ func handler(checkTimeout time.Duration, checker platform.Checker, logger *slog.
 			logger.Info("request", "route", route, "method", method, "status", response.Status(), "duration_ms", time.Since(start).Milliseconds())
 		})
 	})
-	router.Get("/health/live", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "alive"})
-	})
-	router.Get("/health/ready", func(w http.ResponseWriter, r *http.Request) {
-		result := check(r.Context())
-		status := http.StatusServiceUnavailable
+	// A fresh map per request: a shared one would be writable by any handler.
+	live := func() map[string]string { return map[string]string{"status": "alive"} }
+	readyStatus := func(result platform.Readiness) int {
 		if result.Ready() {
-			status = http.StatusOK
+			return http.StatusOK
 		}
-		writeJSON(w, status, result.Response())
+		return http.StatusServiceUnavailable
+	}
+	router.Get("/livez", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, live())
+	})
+	router.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		result := check(r.Context())
+		writeJSON(w, readyStatus(result), result.Response())
+	})
+	// The aggregate serves a person, an uptime monitor or an agent: the same
+	// readiness check under the same timeout, both bodies nested so a reader
+	// sees which half failed, and the build version. Commit and date stay in
+	// the startup log entry, where an operator reads them once.
+	router.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		result := check(r.Context())
+		status := "unhealthy"
+		if result.Ready() {
+			status = "ok"
+		}
+		writeJSON(w, readyStatus(result), map[string]any{
+			"status":  status,
+			"version": buildinfo.Version,
+			"checks":  map[string]any{"live": live(), "ready": result.Response()},
+		})
 	})
 	// The origin has no document of its own: the administration shell owns the
 	// interface and sends a visitor without a session on to sign-in. The
@@ -164,7 +185,8 @@ func Serve(ctx context.Context, listener net.Listener, cfg config.Config, databa
 	}
 	finished := make(chan error, 1)
 	go func() { finished <- server.Serve(listener) }()
-	logger.Info("server_started")
+	build := buildinfo.Current()
+	logger.Info("server_started", "version", build.Version, "commit", build.Commit, "date", build.Date)
 	var serveError error
 	select {
 	case <-ctx.Done():

@@ -1,0 +1,9 @@
+# The smallest installable set: a public origin and the two required Secret
+# references. It must render exactly a Deployment, a Service and a
+# ServiceAccount.
+publicURL: https://clavis.example.com
+secrets:
+  database:
+    secretName: clavis
+  encryptionKey:
+    secretName: clavis

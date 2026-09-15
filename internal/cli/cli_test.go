@@ -86,8 +86,8 @@ func TestDoctorPreservesNonAuthURLsAndBasePaths(t *testing.T) {
 		require.Error(t, err, "doctor URLs are not authentication origins")
 	}
 	for base, want := range map[string]string{
-		"/base": "/base/health/ready", "/base///": "/base/health/ready",
-		"/a%20b": "/a b/health/ready",
+		"/base": "/base/readyz", "/base///": "/base/readyz",
+		"/a%20b": "/a b/readyz",
 	} {
 		t.Run(base, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +123,7 @@ func TestDoctorResponses(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, "/health/ready", r.URL.Path)
+				assert.Equal(t, "/readyz", r.URL.Path)
 				w.WriteHeader(tc.status)
 				_, _ = io.WriteString(w, tc.body)
 			}))

@@ -1,0 +1,121 @@
+# Every optional resource and every pass-through value at once. The route kind
+# here is the Ingress because HTTPRoute is mutually exclusive with it and has
+# its own set; everything else is enabled.
+publicURL: https://clavis.example.com
+image:
+  repository: ghcr.io/heurema/clavis
+  digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  pullPolicy: Always
+imagePullSecrets:
+  - name: ghcr
+replicaCount: 1
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+server:
+  logLevel: debug
+  sessionTTL: 1h30m
+  # Fractional and sub-second units, to exercise the duration helper: the
+  # readiness timeout becomes 3 and the grace period 8.
+  dbCheckTimeout: 1500ms
+  shutdownTimeout: 2s500ms
+secrets:
+  database:
+    secretName: clavis-database
+    key: url
+  encryptionKey:
+    secretName: clavis-encryption
+    key: key
+    mountPath: /etc/clavis/encryption-key
+bootstrap:
+  enabled: true
+  username: owner
+  password:
+    secretName: clavis-bootstrap
+    key: initial-password
+    mountPath: /etc/clavis/bootstrap-password
+serviceAccount:
+  annotations:
+    example.com/purpose: clavis-server
+service:
+  type: ClusterIP
+  port: 8080
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+  host: clavis.example.com
+  path: /
+  pathType: Prefix
+  tls:
+    - secretName: clavis-tls
+      hosts:
+        - clavis.example.com
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - protocol: TCP
+          port: 5432
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+extraEnv:
+  - name: HTTPS_PROXY
+    value: http://egress-proxy.example.svc:3128
+extraVolumes:
+  - name: tmp
+    emptyDir:
+      sizeLimit: 16Mi
+extraVolumeMounts:
+  - name: tmp
+    mountPath: /tmp
+nodeSelector:
+  kubernetes.io/os: linux
+tolerations:
+  - key: example.com/dedicated
+    operator: Equal
+    value: clavis
+    effect: NoSchedule
+affinity:
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/arch
+              operator: In
+              values:
+                - amd64
+                - arm64
+podAnnotations:
+  example.com/owner: platform
+podLabels:
+  example.com/tier: control

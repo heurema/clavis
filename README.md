@@ -22,7 +22,10 @@ account recovery are outside the MVP.
 ## Quick start
 
 Requires Go **1.27.1**, Node.js **26.8.2**, pnpm **12.3.4**, Docker with Compose,
-and GNU Make on macOS or Linux.
+and GNU Make on macOS or Linux. Helm, kind and kubeconform are not separate
+prerequisites: `make setup` installs the pinned versions into `.tools/`. Only
+`make verify-kind` needs one more, `kubectl` on the search path, which setup does
+not install.
 
 ```sh
 make setup
@@ -61,8 +64,9 @@ editing `.templ` files, run `make generate-web` before restarting; after editing
 application queries, migration schema inputs or `sqlc.yaml`, run `make generate-db`.
 Open `http://127.0.0.1:8080` to sign in; signing in lands on the Users page, and
 the sidebar reaches Connections and Grants.
-The same server exposes JSON health endpoints at `/health/live` and
-`/health/ready`, independently of HTML rendering.
+The same server exposes JSON health endpoints at `/livez`, `/readyz` and the
+aggregate `/healthz`, which reports the build version alongside both checks,
+independently of HTML rendering.
 
 ## Commands
 
@@ -70,9 +74,12 @@ The same server exposes JSON health endpoints at `/health/live` and
 | --- | --- |
 | `make build` | Build the server and CLI |
 | `make build-server` | Verify generated templates/queries, rebuild embedded assets and build the server |
+| `make compile-server` | Compile only the server, stamping `VERSION`, `COMMIT` and `DATE`, without the generated-source gates or the asset build |
 | `make build-cli` | Build only the CLI using Go, without web or SQL tools |
 | `make install-templ` / `make install-golangci-lint` / `make install-deadcode` | Install the exact template compiler / Go linter / dead-code tool pin |
 | `make install-sqlc` | Install the exact development sqlc pin |
+| `make install-helm` / `make install-kind` / `make install-kubeconform` | Install the exact Helm / kind / kubeconform pin |
+| `make install-kube-schemas` | Download and verify the pinned Kubernetes and Gateway API JSON schemas the chart check reads |
 | `make generate-db` | Explicitly regenerate checked-in pgx query methods |
 | `make check-db-generated` | Check the complete generated query tree without rewriting files |
 | `make check-sql-boundaries` | Check generated queries and the handwritten persistence boundary |
@@ -82,27 +89,37 @@ The same server exposes JSON health endpoints at `/health/live` and
 | `make check` | Run non-mutating source checks, linters, tests, and builds |
 | `make lint-go` | Run golangci-lint |
 | `make check-dead-code` | Fail on any Go function no executable reaches, test-only helpers included |
+| `make chart-lint` | Lint the Helm chart and schema-validate every representative value set |
 | `make format` | Format maintained Go, templates and JavaScript; regenerate templ Go source |
 | `make smoke` | Test standalone server HTTP/API/CLI behavior with real database outage, recovery and cleanup |
+| `make image` | Build the server container image, stamping the identity from Git, tagged `$(IMAGE)` (default `clavis:local`) |
+| `make smoke-image` | Build the image and test it against an isolated compose database over a published loopback port |
+| `make verify-kind` | Install the chart on a throwaway kind cluster and drive the bootstrap, restart and migration-upgrade lifecycle, then delete the cluster |
 | `make test-mutation` | Mutation-test the handwritten Go files changed against `main` in an isolated copy and report survivors |
 | `make test-mutation-full` | Mutation-test the whole handwritten scope with the extended bound |
 | `make down` | Stop the database and keep its data |
 | `make reset-db` | Delete the local Clavis database and its data |
 
-`make setup` installs templ, golangci-lint, deadcode and sqlc with versioned `go install`
-commands into ignored `.tools/<tool>/bin/`, and frontend development dependencies
+`make setup` installs templ, golangci-lint, deadcode, sqlc, Helm, kind and
+kubeconform with versioned `go install` commands into ignored
+`.tools/<tool>/bin/`, and frontend development dependencies
 with pnpm's frozen lockfile. Pins come from the templ runtime in `go.mod`,
-`GOLANGCI_VERSION` and `DEADCODE_VERSION` in `Makefile`, and `.sqlc-version`. Go verifies downloaded
-modules using its normal module integrity checks; no remote installer is executed
+`GOLANGCI_VERSION`, `DEADCODE_VERSION`, `HELM_VERSION`, `KIND_VERSION` and
+`KUBECONFORM_VERSION` in `Makefile`, and `.sqlc-version`. Setup also downloads the
+Kubernetes and Gateway API JSON schemas `make chart-lint` validates against into
+ignored `.tools/kube-schemas/`, pinned by repository commit and verified against
+a checksum per file in `Makefile`, so a repeat run re-verifies them and the chart
+check itself needs no network. Go verifies downloaded modules using its normal
+module integrity checks; no remote installer is executed
 and application Go dependencies are not changed. Package managers and pinned
 install arguments own tool versions; builds/checks do not add custom version gates
 or install tools.
 Rerun the relevant installation target after changing a pin.
 
 `make check` retains Go unit, render, HTTP, authentication, cookie and CSRF tests,
-Node build/tooling regression tests, generated-source checks, formatting, lint and
-builds. It does not run browser automation or visual/layout tests, and setup does
-not install browser binaries.
+Node build/tooling regression tests, generated-source checks, formatting, lint,
+builds and the chart lint. It does not run browser automation or visual/layout
+tests, and setup does not install browser binaries.
 
 `make smoke` copies only the server executable into a fresh temporary directory
 and runs it there with an empty executable search path. HTTP requests verify the
@@ -124,6 +141,22 @@ and Origin behavior. The runner has a 180-second execution deadline, followed by
 cleanup of its own resources.
 It leaves existing development processes, database containers and volumes alone.
 Logs and `smoke-summary.json` go under `reports/`.
+
+`make smoke-image` builds the image and runs it the way a deployment does, under
+its own compose project and the `app` profile no other command activates: a
+read-only root filesystem, uid 65532, an isolated PostgreSQL, and the encryption
+key and bootstrap password bind-mounted read-only at mode `0440` from a temporary
+directory whose group the container joins. It waits for `/livez` then `/readyz`,
+checks `/healthz`, the sign-in document and an asset the document references,
+confirms the process runs as uid 65532 with a read-only root filesystem, and runs
+`clavis doctor`, `login` and `whoami` over the published loopback port. The
+container's public URL is HTTPS, as a deployment's is, so browser sign-in is out
+of scope here. Per-check results go to `reports/smoke-image-summary.json`, and the
+project, its volume and the temporary secrets are removed afterwards; the
+development database and its volume belong to a different project and are untouched.
+On macOS Docker hosts the bind-mounted secret files appear owned by the container
+user, so the group-read branch is exercised on Linux hosts and by the kind
+verification, while the refusal of a world-readable file holds everywhere.
 
 To exercise failure cleanup, run `CLAVIS_SMOKE_FAIL=after-start make smoke`,
 `CLAVIS_SMOKE_FAIL=after-restart make smoke` or
@@ -191,17 +224,51 @@ rewriting them. Run the relevant explicit generation command after source edits.
 The public sign-in document and the assets remain available when PostgreSQL is
 unavailable; protected requests fail closed. `GET /` and `GET /admin` redirect
 into the administration pages without reading the database. Readiness is reported by
-`GET /health/ready` and `clavis doctor`, which require no sign-in but do not
+`GET /readyz` and `clavis doctor`, which require no sign-in but do not
 change your deployment's network exposure. Readiness requires a reachable
 database, supported schema and completed initialization, distinguishing
 `INITIALIZING`, `SETUP_REQUIRED`, `BOOTSTRAP_FAILED`, `SCHEMA_ERROR` and
-`DEPENDENCY_UNAVAILABLE` using safe messages. There is no browser status page.
+`DEPENDENCY_UNAVAILABLE` using safe messages. `GET /healthz` aggregates
+liveness and the same readiness check for a person or an uptime monitor and
+reports the build version; `GET /livez` reports liveness alone. There is no
+browser status page.
 
 If the Go server is stopped, fresh navigation receives the browser's connection
 error; there is no independent frontend or offline fallback.
 Appearance is the only persisted browser preference (`clavis.appearance`); with
 storage blocked, the appearance control still works for the lifetime of the
 loaded page.
+
+## Deployment
+
+A Helm chart for the server lives in `deploy/charts/clavis`. It installs one
+Deployment, one Service and one ServiceAccount, with an optional Ingress or
+Gateway API HTTPRoute, NetworkPolicy and PodDisruptionBudget, and it owns no
+database. The server image is `ghcr.io/heurema/clavis`, listening on port 8080
+as a non-root user with a read-only root filesystem.
+
+The chart takes the database URL, the encryption key and the bootstrap password
+as references to Secrets you already have, and requires `publicURL`, the HTTPS
+origin you terminate TLS on. `make chart-lint` lints the chart and
+schema-validates every value set in `deploy/charts/clavis/ci/`, and runs inside
+`make check`.
+
+Three commands verify the artifacts locally, all of them requiring Docker.
+`make image` builds the server image and `make smoke-image` runs it against an
+isolated compose database. `make verify-kind` additionally needs `kubectl`: it
+creates a throwaway kind cluster with a pinned node image and a plain PostgreSQL
+Deployment, builds one image from the checkout and a second one carrying an extra
+migration, installs the chart with bootstrap enabled, signs in with the CLI over
+a port-forward, upgrades with bootstrap disabled and the bootstrap Secret deleted,
+then upgrades across the migration and signs in again. It records every step in
+`reports/verify-kind.json` and deletes the cluster, the two images and its
+temporary copy even when a step fails; `--keep-cluster` keeps the cluster for
+debugging.
+
+Read `deploy/charts/clavis/README.md` before installing or upgrading: it carries
+the operator contract, including the bootstrap lifecycle, why an upgrade across
+a migration interrupts service and cannot be rolled back, and why the database
+and the encryption key must be backed up together.
 
 ## Agents
 

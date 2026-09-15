@@ -1,0 +1,24 @@
+# A file-based secret provider supplies the encryption key: the chart renders
+# no Secret volume for it and only points CLAVIS_ENCRYPTION_KEY_FILE at the
+# path the pass-through volume mounts. secrets.encryptionKey.secretName stays
+# required by the schema even when unused, so it names the Secret the provider
+# writes; nothing in the rendered manifest references it.
+publicURL: https://clavis.example.com
+secrets:
+  database:
+    secretName: clavis
+  encryptionKey:
+    secretName: clavis
+    mountPath: /mnt/secrets-store/encryption-key
+    external: true
+extraVolumes:
+  - name: secrets-store
+    csi:
+      driver: secrets-store.csi.k8s.io
+      readOnly: true
+      volumeAttributes:
+        secretProviderClass: clavis
+extraVolumeMounts:
+  - name: secrets-store
+    mountPath: /mnt/secrets-store
+    readOnly: true

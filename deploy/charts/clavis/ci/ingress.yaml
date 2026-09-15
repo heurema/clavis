@@ -1,0 +1,17 @@
+# The Ingress route kind on its own, with TLS terminating at the controller.
+publicURL: https://clavis.example.com
+secrets:
+  database:
+    secretName: clavis
+  encryptionKey:
+    secretName: clavis
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+  host: clavis.example.com
+  tls:
+    - secretName: clavis-tls
+      hosts:
+        - clavis.example.com

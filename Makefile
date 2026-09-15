@@ -10,13 +10,50 @@ PNPM := /usr/bin/env pnpm
 TEMPL_VERSION = $(shell go list -m -f '{{.Version}}' github.com/a-h/templ)
 GOLANGCI_VERSION := 2.13.2
 DEADCODE_VERSION := 0.50.0
+HELM_VERSION := 4.1.4
+KIND_VERSION := 0.31.0
+KUBECONFORM_VERSION := 0.7.0
 SQLC_VERSION = $(shell cat .sqlc-version)
 TEMPL := $(CURDIR)/.tools/templ/bin/templ
 GOLANGCI := $(CURDIR)/.tools/golangci-lint/bin/golangci-lint
 DEADCODE := $(CURDIR)/.tools/deadcode/bin/deadcode
 SQLC := $(CURDIR)/.tools/sqlc/bin/sqlc
+HELM := $(CURDIR)/.tools/helm/bin/helm
+KIND := $(CURDIR)/.tools/kind/bin/kind
+KUBECONFORM := $(CURDIR)/.tools/kubeconform/bin/kubeconform
 
-.PHONY: setup dev dev-db dev-api build build-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke down reset-db
+# Kubernetes and Gateway API JSON schemas for kubeconform, pinned by repository
+# commit and per-file checksum so a verified set is reproducible and chart-lint
+# needs no network after setup. The standalone-strict schemas carry no $ref, so
+# only the kinds the chart renders are downloaded and _definitions.json is not
+# needed. Paths are the layout kubeconform's -schema-location templates produce.
+KUBE_SCHEMAS := $(CURDIR)/.tools/kube-schemas
+KUBE_SCHEMA_SET := v1.34.0-standalone-strict
+KUBE_SCHEMA_COMMIT := 1360e239a56dcf2e5c7f99e61ccbaca1ea07036a
+KUBE_SCHEMA_URL := https://raw.githubusercontent.com/yannh/kubernetes-json-schema/$(KUBE_SCHEMA_COMMIT)/$(KUBE_SCHEMA_SET)
+CRD_SCHEMA_COMMIT := ad3b08c5045129d7bb1eeffd8e61719b2c8dd1e2
+CRD_SCHEMA_URL := https://raw.githubusercontent.com/datreeio/CRDs-catalog/$(CRD_SCHEMA_COMMIT)
+KUBE_SCHEMA_FILES := \
+	$(KUBE_SCHEMA_SET)/deployment-apps-v1.json@92b7a333a49124f5300095d3e7786ca2038b7d6e602c309f73e90631377e4b0a \
+	$(KUBE_SCHEMA_SET)/service-v1.json@8bf019854daed511e7c174896a898173fa65d88ec5937c687a37303d4cc9351b \
+	$(KUBE_SCHEMA_SET)/serviceaccount-v1.json@8193d6c3561475c6d3d5c44e1faedb1df53905373d904bc17015694326d659cf \
+	$(KUBE_SCHEMA_SET)/ingress-networking-v1.json@4e0f63ad84c2bf22565e489d1f4b885ddaa9f6bf7cff1ddd562553760afe4d79 \
+	$(KUBE_SCHEMA_SET)/networkpolicy-networking-v1.json@f6324cc464f62228b0418f438d167208e4f86c7e3677ba30f608e79a8b26ba79 \
+	$(KUBE_SCHEMA_SET)/poddisruptionbudget-policy-v1.json@da73f50ad0264d73f668eecaa9959da65afe2846602a7a5c8fd51f7799d6a258 \
+	crds/gateway.networking.k8s.io/httproute_v1.json@e5692e62edd9b8a14bd2527d0a732e174a649131aa4d47159737dc6527c59ca5
+# coreutils on Linux, the perl shasum macOS ships; both read "sum  path" lines.
+SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo 'shasum -a 256')
+
+# Build identity stamped into internal/buildinfo. A local build reports the
+# defaults; release builds pass the real values on the command line.
+VERSION ?= dev
+COMMIT ?= unknown
+DATE ?= unknown
+
+# The tag `make image` produces; a release pipeline overrides it.
+IMAGE ?= clavis:local
+
+.PHONY: setup dev dev-db dev-api build build-server compile-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode install-helm install-kind install-kubeconform install-kube-schemas chart-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke image smoke-image verify-kind down reset-db
 
 setup:
 	go mod download
@@ -25,6 +62,10 @@ setup:
 	$(MAKE) install-deadcode
 	$(MAKE) install-templ
 	$(MAKE) install-sqlc
+	$(MAKE) install-helm
+	$(MAKE) install-kind
+	$(MAKE) install-kubeconform
+	$(MAKE) install-kube-schemas
 	$(MAKE) build-web-assets
 
 dev-db:
@@ -37,11 +78,20 @@ dev-api: dev
 
 build-server: check-db-generated check-web-generated
 	$(MAKE) build-web-assets
+	$(MAKE) compile-server
+
+# The compile alone, for a build that has already run the gates and the asset
+# script: the image builder stages them itself and cross-compiles here.
+# GOOS/GOARCH come from the environment; the identity comes from the three
+# variables above, so a contributor and the image stamp the same way.
+compile-server:
 	@mkdir -p bin
 	@set -eu; output=$$(mktemp -d bin/.server-XXXXXX); \
 		trap 'rm -rf "$$output"' 0; \
 		trap 'exit 1' 1 2 15; \
-		CGO_ENABLED=0 go build -trimpath -o "$$output/server" ./cmd/server; \
+		CGO_ENABLED=0 go build -trimpath \
+			-ldflags '-X github.com/heurema/clavis/internal/buildinfo.Version=$(VERSION) -X github.com/heurema/clavis/internal/buildinfo.Commit=$(COMMIT) -X github.com/heurema/clavis/internal/buildinfo.Date=$(DATE)' \
+			-o "$$output/server" ./cmd/server; \
 		mv -f "$$output/server" bin/server
 
 build-cli:
@@ -75,6 +125,41 @@ check-web-generated:
 
 install-sqlc:
 	GOBIN='$(dir $(SQLC))' GOWORK=off go install github.com/sqlc-dev/sqlc/cmd/sqlc@v$(SQLC_VERSION)
+
+install-helm:
+	GOBIN='$(dir $(HELM))' GOWORK=off go install helm.sh/helm/v4/cmd/helm@v$(HELM_VERSION)
+
+install-kind:
+	GOBIN='$(dir $(KIND))' GOWORK=off go install sigs.k8s.io/kind@v$(KIND_VERSION)
+
+install-kubeconform:
+	GOBIN='$(dir $(KUBECONFORM))' GOWORK=off go install github.com/yannh/kubeconform/cmd/kubeconform@v$(KUBECONFORM_VERSION)
+
+# Downloads each pinned schema once and verifies every run, so a second run is
+# an offline re-verification and a changed pin is a checksum failure, not a
+# silently different schema. A mismatching file is removed, never kept.
+install-kube-schemas:
+	@set -eu; \
+		for entry in $(KUBE_SCHEMA_FILES); do \
+			path=$${entry%@*}; sum=$${entry##*@}; \
+			target='$(KUBE_SCHEMAS)'/$$path; \
+			mkdir -p "$$(dirname "$$target")"; \
+			if [ ! -f "$$target" ]; then \
+				case "$$path" in \
+					crds/*) url='$(CRD_SCHEMA_URL)'/$${path#crds/} ;; \
+					*) url='$(KUBE_SCHEMA_URL)'/$${path#$(KUBE_SCHEMA_SET)/} ;; \
+				esac; \
+				curl -fsSL -o "$$target" "$$url"; \
+			fi; \
+			printf '%s  %s\n' "$$sum" "$$target" | $(SHA256SUM) -c - >/dev/null 2>&1 || \
+				{ rm -f "$$target"; \
+					echo "Schema checksum mismatch for $$path; the pin in Makefile and the file disagree" >&2; \
+					exit 1; }; \
+		done; \
+		echo 'Kubernetes and Gateway API schemas verified in .tools/kube-schemas.'
+
+chart-lint:
+	$(NODE) scripts/chart-lint.mjs
 
 # sqlc owns YAML parsing. Copy only its maintained inputs, never assets or secrets.
 # Native sqlc diff misses extra files; compare the entire isolated output instead.
@@ -119,6 +204,7 @@ check:
 	$(PNPM) --dir web format:check
 	$(PNPM) --dir web lint
 	$(MAKE) build
+	$(MAKE) chart-lint
 	@echo '[check] All checks passed.'
 
 check-go-format:
@@ -154,6 +240,33 @@ test-mutation-full: check-db-generated check-web-generated
 
 smoke: build
 	$(NODE) scripts/smoke.mjs
+
+# Build identity comes from a checkout that has Git; a source export, or an
+# explicit VERSION/COMMIT/DATE, keeps whatever the variables already hold.
+image:
+	@set -eu; \
+		version='$(VERSION)'; commit='$(COMMIT)'; date='$(DATE)'; \
+		if git rev-parse --git-dir >/dev/null 2>&1; then \
+			test "$$version" != dev || version=$$(git describe --tags --always --dirty); \
+			test "$$commit" != unknown || commit=$$(git rev-parse HEAD); \
+			test "$$date" != unknown || date=$$(date -u +%Y-%m-%dT%H:%M:%SZ); \
+		fi; \
+		docker build \
+			--build-arg VERSION="$$version" \
+			--build-arg COMMIT="$$commit" \
+			--build-arg DATE="$$date" \
+			--tag '$(IMAGE)' .
+
+smoke-image: image
+	$(NODE) scripts/smoke-image.mjs
+
+# The kind run builds its own two tags; naming the first one here makes the
+# image target the precondition, so a Docker or build failure surfaces in
+# seconds instead of minutes into the cluster run, and the script's own build
+# step then only restamps a cached image.
+verify-kind: IMAGE = clavis:kind-a
+verify-kind: image
+	$(NODE) scripts/verify-kind.mjs
 
 down:
 	$(NODE) scripts/dev.mjs down

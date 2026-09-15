@@ -764,7 +764,7 @@ func TestAuthTransportRedirectDeadlineTLSAndErrors(t *testing.T) {
 func TestDoctorInitializationAllowlist(t *testing.T) {
 	for _, code := range []string{platform.CodeInitializing, platform.CodeSetupRequired, platform.CodeBootstrapFailed, platform.CodeSchemaError} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "/prefix/health/ready", r.URL.Path)
+			assert.Equal(t, "/prefix/readyz", r.URL.Path)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(platform.Response{Status: "not_ready", Error: &platform.Failure{Code: code, Message: "sentinel"}})
 		}))

@@ -1,0 +1,16 @@
+# The Gateway API route kind on its own, with TLS terminating at the Gateway
+# listener. Mutually exclusive with the Ingress above.
+publicURL: https://clavis.example.com
+secrets:
+  database:
+    secretName: clavis
+  encryptionKey:
+    secretName: clavis
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: public
+      namespace: gateway
+      sectionName: https
+  hostnames:
+    - clavis.example.com

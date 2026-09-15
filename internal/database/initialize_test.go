@@ -99,7 +99,6 @@ func TestBootstrapFileBoundaries(t *testing.T) {
 		{"max", strings.Repeat("x", 1024) + "\r\n", 0600, true},
 		{"too-large", strings.Repeat("x", 1027), 0600, false},
 		{"world", "a valid password", 0644, false},
-		{"group", "a valid password", 0640, false},
 		{"double-newline", "a valid password\n\n", 0600, false},
 		{"invalid-utf8", "a valid password\xff", 0600, false},
 		{"nul", "a valid password\x00", 0600, false},
@@ -130,6 +129,103 @@ func TestBootstrapFileBoundaries(t *testing.T) {
 		require.Less(t, time.Since(start), time.Second)
 		require.NotContains(t, err.Error(), path)
 	}
+}
+
+// bootstrapForeignGroup returns a group the process does not belong to, so the
+// group rule can be exercised from the refusing side.
+func bootstrapForeignGroup(t *testing.T) int {
+	t.Helper()
+	groups, err := os.Getgroups()
+	require.NoError(t, err)
+	member := map[int]bool{os.Getegid(): true}
+	for _, gid := range groups {
+		member[gid] = true
+	}
+	for gid := range 1000 {
+		if !member[gid] {
+			return gid
+		}
+	}
+	t.Skip("the process belongs to every group in the searched range")
+	return -1
+}
+
+// bootstrapSupplementaryGroup returns a group the process belongs to other
+// than its effective one, so the membership rule is exercised beyond the
+// effective gid. A file's owner may chown to any group it belongs to, so this
+// needs no privileges.
+func bootstrapSupplementaryGroup(t *testing.T) int {
+	t.Helper()
+	groups, err := os.Getgroups()
+	require.NoError(t, err)
+	for _, gid := range groups {
+		if gid != os.Getegid() {
+			return gid
+		}
+	}
+	t.Skip("the process has no group besides its effective one")
+	return -1
+}
+
+// A Secret volume mounted under fsGroup arrives group-readable, so group read
+// is accepted, but only for a group the process actually belongs to.
+func TestBootstrapFileGroupPermissions(t *testing.T) {
+	dir := t.TempDir()
+	const password = "a valid password"
+	write := func(t *testing.T, name string, mode os.FileMode) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		require.NoError(t, os.WriteFile(path, []byte(password), mode))
+		require.NoError(t, os.Chmod(path, mode))
+		return path
+	}
+	for _, mode := range []os.FileMode{0o400, 0o600, 0o440, 0o640} {
+		t.Run(fmt.Sprintf("accepts %04o", mode), func(t *testing.T) {
+			path := write(t, fmt.Sprintf("ok-%04o", mode), mode)
+			require.NoError(t, os.Chown(path, -1, os.Getegid()))
+			value, err := ReadBootstrapPassword(path)
+			require.NoError(t, err)
+			require.Equal(t, auth.Secret(password), value)
+		})
+	}
+	// A projected symlink to a group-readable target is accepted as well.
+	shared := write(t, "shared", 0o440)
+	require.NoError(t, os.Chown(shared, -1, os.Getegid()))
+	link := filepath.Join(dir, "shared-link")
+	require.NoError(t, os.Symlink(shared, link))
+	value, err := ReadBootstrapPassword(link)
+	require.NoError(t, err)
+	require.Equal(t, auth.Secret(password), value)
+
+	for _, mode := range []os.FileMode{0o460, 0o444, 0o404, 0o604, 0o620, 0o410} {
+		t.Run(fmt.Sprintf("refuses %04o", mode), func(t *testing.T) {
+			path := write(t, fmt.Sprintf("bad-%04o", mode), mode)
+			require.NoError(t, os.Chown(path, -1, os.Getegid()))
+			_, err := ReadBootstrapPassword(path)
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), path)
+		})
+	}
+
+	// fsGroup need not be the process's primary group: any group it belongs to
+	// unlocks a group-readable file.
+	t.Run("accepts a supplementary group", func(t *testing.T) {
+		path := write(t, "supplementary", 0o440)
+		require.NoError(t, os.Chown(path, -1, bootstrapSupplementaryGroup(t)))
+		value, err := ReadBootstrapPassword(path)
+		require.NoError(t, err)
+		require.Equal(t, auth.Secret(password), value)
+	})
+
+	t.Run("refuses a foreign group", func(t *testing.T) {
+		foreign := write(t, "foreign", 0o440)
+		if err := os.Chown(foreign, -1, bootstrapForeignGroup(t)); err != nil {
+			t.Skip("changing a file's group to one the process does not belong to needs privileges")
+		}
+		_, err := ReadBootstrapPassword(foreign)
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), foreign)
+	})
 }
 
 func TestMigrationProcessHelper(t *testing.T) {

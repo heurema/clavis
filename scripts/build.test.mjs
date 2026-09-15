@@ -123,7 +123,7 @@ async function checkCopiedServer(directory) {
     let running = false
     for (let attempt = 0; attempt < 50; attempt++) {
       try {
-        const response = await fetch(`${origin}/health/live`, {
+        const response = await fetch(`${origin}/livez`, {
           signal: AbortSignal.timeout(200),
         })
         assert.equal(response.status, 200)
@@ -142,7 +142,7 @@ async function checkCopiedServer(directory) {
       ["/assets/appearance.js", 200, "text/javascript", "clavis.appearance"],
       ["/assets/notices.txt", 200, "text/plain", "Cole Bemis"],
       ["/ui/readiness", 404, "text/plain", "404 page not found"],
-      ["/health/ready", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
+      ["/readyz", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
     ]) {
       const response = await fetch(`${origin}${path}`, {
         redirect: "manual",
@@ -157,6 +157,11 @@ async function checkCopiedServer(directory) {
     }
     assert.deepEqual(readdirSync(runtime), ["server"])
     assert.ok(!output.includes("sentinel-private"))
+    // A build without the linker flags reports the local identity.
+    assert.match(
+      output,
+      /"msg":"server_started","version":"dev","commit":"unknown","date":"unknown"/,
+    )
   } finally {
     child.kill("SIGTERM")
     const timer = setTimeout(() => child.kill("SIGKILL"), 2_000)
@@ -168,6 +173,48 @@ async function checkCopiedServer(directory) {
       clearTimeout(timer)
     }
   }
+}
+
+// Starts the built server against an unreachable database only long enough to
+// capture its structured startup entry, which carries the build identity.
+async function startupLog(directory) {
+  const port = await freePort()
+  const databasePort = await freePort()
+  const child = spawn(join(directory, "bin/server"), [], {
+    cwd: directory,
+    env: {
+      PATH: "",
+      CLAVIS_HTTP_ADDR: `127.0.0.1:${port}`,
+      CLAVIS_DATABASE_URL: `postgres://unused:unused@127.0.0.1:${databasePort}/unused?sslmode=disable`,
+      CLAVIS_ENCRYPTION_KEY_FILE: join(directory, "encryption-key"),
+      CLAVIS_DB_CHECK_TIMEOUT: "100ms",
+      CLAVIS_SHUTDOWN_TIMEOUT: "1s",
+      CLAVIS_LOG_LEVEL: "info",
+    },
+  })
+  let output = ""
+  child.stdout.on("data", (chunk) => (output += chunk))
+  child.stderr.on("data", (chunk) => (output += chunk))
+  const finished = new Promise((resolve) => child.once("close", resolve))
+  try {
+    for (
+      let attempt = 0;
+      attempt < 50 && !output.includes("server_started");
+      attempt++
+    ) {
+      if (child.exitCode !== null) break
+      await delay(100)
+    }
+  } finally {
+    child.kill("SIGTERM")
+    const timer = setTimeout(() => child.kill("SIGKILL"), 2_000)
+    try {
+      await finished
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+  return output
 }
 
 function descendants(parent) {
@@ -239,7 +286,7 @@ async function checkDevelopment(directory, target, signal) {
     let running = false
     for (let attempt = 0; attempt < 150; attempt++) {
       try {
-        const response = await fetch(`${origin}/health/live`, {
+        const response = await fetch(`${origin}/livez`, {
           signal: AbortSignal.timeout(200),
         })
         assert.equal(response.status, 200)
@@ -256,7 +303,7 @@ async function checkDevelopment(directory, target, signal) {
     for (const [path, status, type, text] of [
       ["/", 303, "text/html", "/admin/users"],
       ["/login", 200, "text/html", "Sign in"],
-      ["/health/ready", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
+      ["/readyz", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
     ]) {
       const response = await fetch(`${origin}${path}`, {
         redirect: "manual",
@@ -282,7 +329,7 @@ async function checkDevelopment(directory, target, signal) {
       for (const pid of pids)
         assert.throws(() => process.kill(pid, 0), { code: "ESRCH" })
       await assert.rejects(
-        fetch(`${origin}/health/live`, {
+        fetch(`${origin}/livez`, {
           signal: AbortSignal.timeout(200),
         }),
       )
@@ -334,6 +381,35 @@ test("server builds from clean assets and runs as a copied executable", async (t
     assert.equal(result.status, 2)
     assert.match(result.stderr, /CLAVIS_DATABASE_URL is required/)
   })
+
+  await t.test(
+    "compile-server stamps the identity without the gates",
+    async () => {
+      const template = join(directory, "internal/web/auth.templ")
+      const original = readFileSync(template, "utf8")
+      writeFileSync(
+        template,
+        original.replace("Dark appearance", "Changed without generation."),
+      )
+      try {
+        // The full build still refuses a stale generated source.
+        execute(directory, "make", ["build-server"], 2)
+        execute(directory, "make", [
+          "compile-server",
+          "VERSION=1.2.3",
+          "COMMIT=abc",
+          "DATE=2026-09-15",
+        ])
+        assert.deepEqual(readdirSync(join(directory, "bin")), ["server"])
+        assert.match(
+          await startupLog(directory),
+          /"msg":"server_started","version":"1.2.3","commit":"abc","date":"2026-09-15"/,
+        )
+      } finally {
+        writeFileSync(template, original)
+      }
+    },
+  )
 
   const binary = digest(join(directory, "bin/server"))
   for (const [name, path, damaged] of [

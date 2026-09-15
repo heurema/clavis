@@ -32,6 +32,8 @@ test("mutation targets include handwritten web behavior, not generated/vendor/fi
     "internal/auth/password.go",
     "internal/platform/readiness.go",
     "internal/database/initialize.go",
+    "internal/secrets/protected.go",
+    "internal/secrets/keyfile.go",
   ])
     assert(targets.includes(path), `Missing mutation target ${path}`)
   assert(targets.some((path) => path.startsWith("internal/cli/")))
