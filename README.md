@@ -90,6 +90,7 @@ independently of HTML rendering.
 | `make chart-lint` | Lint the Helm chart and schema-validate every representative value set |
 | `make format` | Format maintained Go, templates and JavaScript; regenerate templ Go source |
 | `make smoke` | Test standalone server HTTP/API/CLI behavior with real database outage, recovery and cleanup |
+| `make image` | Build the server container image, stamping the identity from Git, tagged `$(IMAGE)` (default `clavis:local`) |
 | `make test-mutation` | Mutation-test the handwritten Go files changed against `main` in an isolated copy and report survivors |
 | `make test-mutation-full` | Mutation-test the whole handwritten scope with the extended bound |
 | `make down` | Stop the database and keep its data |

@@ -1,0 +1,22 @@
+# Local secrets. The example carries no value and documents the settings.
+.env
+.env.*
+!.env.example
+# Installed tools, build output and reports: the builder produces its own.
+.tools/
+bin/
+reports/
+# Local notes, scratch files and agent state.
+.local/
+.delta/
+.claude/
+# Rebuilt inside the image; a stale copy must never be embedded.
+web/node_modules/
+internal/web/assets/
+internal/web/.assets-*/
+# Not build inputs. Excluding .git also keeps the builder from stamping VCS
+# state the Dockerfile passes in as build arguments instead.
+.git/
+openspec/
+docs/
+.DS_Store

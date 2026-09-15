@@ -50,7 +50,10 @@ VERSION ?= dev
 COMMIT ?= unknown
 DATE ?= unknown
 
-.PHONY: setup dev dev-db dev-api build build-server compile-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode install-helm install-kind install-kubeconform install-kube-schemas chart-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke down reset-db
+# The tag `make image` produces; a release pipeline overrides it.
+IMAGE ?= clavis:local
+
+.PHONY: setup dev dev-db dev-api build build-server compile-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode install-helm install-kind install-kubeconform install-kube-schemas chart-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke image down reset-db
 
 setup:
 	go mod download
@@ -237,6 +240,22 @@ test-mutation-full: check-db-generated check-web-generated
 
 smoke: build
 	$(NODE) scripts/smoke.mjs
+
+# Build identity comes from a checkout that has Git; a source export, or an
+# explicit VERSION/COMMIT/DATE, keeps whatever the variables already hold.
+image:
+	@set -eu; \
+		version='$(VERSION)'; commit='$(COMMIT)'; date='$(DATE)'; \
+		if git rev-parse --git-dir >/dev/null 2>&1; then \
+			test "$$version" != dev || version=$$(git describe --tags --always --dirty); \
+			test "$$commit" != unknown || commit=$$(git rev-parse HEAD); \
+			test "$$date" != unknown || date=$$(date -u +%Y-%m-%dT%H:%M:%SZ); \
+		fi; \
+		docker build \
+			--build-arg VERSION="$$version" \
+			--build-arg COMMIT="$$commit" \
+			--build-arg DATE="$$date" \
+			--tag '$(IMAGE)' .
 
 down:
 	$(NODE) scripts/dev.mjs down
