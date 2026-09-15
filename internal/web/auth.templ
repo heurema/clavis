@@ -1,6 +1,8 @@
 package web
 
 import (
+	"strconv"
+
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/web/ui/alert"
 	"github.com/heurema/clavis/internal/web/ui/badge"
@@ -113,6 +115,8 @@ templ status(kind statusKind, text string) {
 // sidebar cannot drift from the route it points at.
 templ navIcon(page AdminPage) {
 	switch page {
+		case PageGroups:
+			@icon.UsersRound(icon.Props{Class: "size-4 shrink-0"})
 		case PageConnections:
 			@icon.Link(icon.Props{Class: "size-4 shrink-0"})
 		case PageGrants:
@@ -142,7 +146,7 @@ templ navEntry(model AdminModel, page AdminPage, href string, count string) {
 }
 
 // adminShell frames every administration page: the sidebar with the mark, the
-// appearance button, the three list pages with their bounded counts and the
+// appearance button, the four list pages with their bounded counts and the
 // signed-in identity with sign-out, and the main column the caller fills. The
 // sidebar becomes a top row below the lg breakpoint.
 templ adminShell(model AdminModel) {
@@ -169,6 +173,7 @@ templ adminShell(model AdminModel) {
 					</div>
 					<nav aria-label="Administration" class="flex flex-row flex-wrap gap-1 lg:flex-col">
 						@navEntry(model, PageUsers, "/admin/users", listCount(len(model.Users), model.Truncated))
+						@navEntry(model, PageGroups, "/admin/groups", listCount(len(model.Groups), model.GroupsTruncated))
 						@navEntry(model, PageConnections, "/admin/connections", listCount(len(model.Connections), model.ConnectionsTruncated))
 						@navEntry(model, PageGrants, "/admin/grants", listCount(len(model.Grants), model.GrantsTruncated))
 					</nav>
@@ -196,10 +201,14 @@ templ adminShell(model AdminModel) {
 }
 
 // Admin renders the page the route asked for inside the shared shell. The
-// server keeps one view for the three routes, so the page value is the only
+// server keeps one view for the four routes, so the page value is the only
 // difference between them.
 templ Admin(model AdminModel) {
 	switch model.Page {
+		case PageGroups:
+			@adminShell(model) {
+				@groupsTable(model)
+			}
 		case PageConnections:
 			@adminShell(model) {
 				@connectionsTable(model)
@@ -250,6 +259,52 @@ templ usersTable(model AdminModel) {
 	}
 	if model.Truncated {
 		<p class="text-sm text-muted-foreground">{ truncationNotice() }</p>
+	}
+}
+
+// Groups are the second read-only table: who a grant can name beside a user,
+// what the group is for, and the two counts that say whether it can be
+// deleted. Members are never listed here; a roster is administrator-only data
+// the page has no reason to carry.
+templ groupsTable(model AdminModel) {
+	@card.Card(card.Props{Class: "overflow-hidden py-0 gap-0"}) {
+		if len(model.Groups) == 0 {
+			<p class="px-4 py-6 text-sm text-muted-foreground">No groups are defined.</p>
+		} else {
+			<div class="overflow-x-auto">
+				<table class="w-full border-collapse text-left text-[13px]">
+					<thead>
+						<tr>
+							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Name</th>
+							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Description</th>
+							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Members</th>
+							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Grants</th>
+							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Created</th>
+						</tr>
+					</thead>
+					<tbody>
+						for _, group := range model.Groups {
+							<tr class="border-b last:border-0">
+								<th scope="row" class="h-[42px] break-words px-4 text-left align-middle font-medium">{ group.Name }</th>
+								<td class="h-[42px] break-words px-4 align-middle">
+									if group.Description == "" {
+										<span class="text-muted-foreground">—</span>
+									} else {
+										{ group.Description }
+									}
+								</td>
+								<td class="h-[42px] whitespace-nowrap px-4 align-middle tabular-nums">{ strconv.Itoa(group.Members) }</td>
+								<td class="h-[42px] whitespace-nowrap px-4 align-middle tabular-nums">{ strconv.Itoa(group.Grants) }</td>
+								<td class="h-[42px] whitespace-nowrap px-4 align-middle tabular-nums text-muted-foreground">{ createdLabel(group.CreatedAt) }</td>
+							</tr>
+						}
+					</tbody>
+				</table>
+			</div>
+		}
+	}
+	if model.GroupsTruncated {
+		<p class="text-sm text-muted-foreground">{ groupsTruncationNotice() }</p>
 	}
 }
 
@@ -315,9 +370,10 @@ templ connectionsTable(model AdminModel) {
 	}
 }
 
-// Grants are the third read-only table: who may use which connection, when it
-// was granted and by whom. Every cell is a username, a connection name or a
-// time; identifiers never render.
+// Grants are the fourth read-only table: which recipient may use which
+// connection, when it was granted and by whom. Every cell is a recipient name,
+// a connection name or a time; identifiers never render. A group recipient
+// carries the kind beside its name, because a user and a group may share one.
 templ grantsTable(model AdminModel) {
 	@card.Card(card.Props{Class: "overflow-hidden py-0 gap-0"}) {
 		if len(model.Grants) == 0 {
@@ -327,7 +383,7 @@ templ grantsTable(model AdminModel) {
 				<table class="w-full border-collapse text-left text-[13px]">
 					<thead>
 						<tr>
-							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">User</th>
+							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Recipient</th>
 							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Connection</th>
 							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Granted</th>
 							<th scope="col" class="border-b bg-secondary/50 px-4 py-2 text-[11px] font-medium uppercase tracking-[.04em] text-muted-foreground">Granted by</th>
@@ -336,7 +392,14 @@ templ grantsTable(model AdminModel) {
 					<tbody>
 						for _, grant := range model.Grants {
 							<tr class="border-b last:border-0">
-								<th scope="row" class="h-[42px] break-words px-4 text-left align-middle font-medium">{ grant.User.Name }</th>
+								<th scope="row" class="h-[42px] break-words px-4 text-left align-middle font-medium">
+									{ grant.Recipient.Name }
+									if grant.Recipient.Kind == auth.RecipientGroup {
+										@badge.Badge(badge.Props{Variant: badge.VariantSecondary, Class: "ml-2 rounded px-1.5 py-0 text-[11px] font-normal text-muted-foreground"}) {
+											group
+										}
+									}
+								</th>
 								<td class="h-[42px] break-words px-4 align-middle">{ grant.Connection.Name }</td>
 								<td class="h-[42px] whitespace-nowrap px-4 align-middle tabular-nums text-muted-foreground">{ createdLabel(grant.CreatedAt) }</td>
 								<td class="h-[42px] break-words px-4 align-middle text-muted-foreground">{ grant.CreatedBy.Name }</td>

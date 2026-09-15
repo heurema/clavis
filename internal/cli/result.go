@@ -76,15 +76,7 @@ func render(w io.Writer, result Result, format string) error {
 		if _, err := fmt.Fprintf(w, "User: %s (%s)\nRole: %s\nExpires: %s\n", data.User.Username, data.User.ID, data.User.Role, timestamp(data.ExpiresAt)); err != nil {
 			return err
 		}
-		// Only whoami fills the names, and only for a member: an administrator
-		// needs no grant, so the line is absent rather than listing everything.
-		if len(data.Connections) == 0 {
-			return nil
-		}
-		if _, err := fmt.Fprintf(w, "Connections: %s\n", strings.Join(data.Connections, ", ")); err != nil {
-			return err
-		}
-		return renderTruncation(w, data.ConnectionsTruncated, auth.MaxConnectionListing, "connections")
+		return renderIdentityNames(w, data)
 	case auth.Revocation:
 		_, err := fmt.Fprintf(w, "Revoked: %t\n", data.Revoked)
 		return err
@@ -121,16 +113,58 @@ func render(w io.Writer, result Result, format string) error {
 			}
 		}
 		return renderTruncation(w, data.Truncated, auth.MaxConnectionListing, "connections")
+	case auth.AccessList:
+		return renderAccessList(w, data)
+	case auth.Group:
+		return renderGroup(w, data)
+	case auth.GroupList:
+		for _, group := range data.Groups {
+			if _, err := fmt.Fprintf(w, "%s %s %d %d\n", group.ID, group.Name, group.Members, group.Grants); err != nil {
+				return err
+			}
+		}
+		return renderTruncation(w, data.Truncated, auth.MaxGroupListing, "groups")
+	case auth.GroupMutation:
+		if err := renderGroup(w, data.Group); err != nil {
+			return err
+		}
+		return renderDryRun(w, data.DryRun)
+	case auth.GroupDeletion:
+		if _, err := fmt.Fprintf(w, "Deleted: %s (%s)\n", data.Group.Name, data.Group.ID); err != nil {
+			return err
+		}
+		return renderDryRun(w, data.DryRun)
+	case auth.MemberList:
+		for _, member := range data.Members {
+			if _, err := fmt.Fprintf(w, "%s %s %s %s\n", member.ID, member.Username,
+				userStatus(member.UserRecord), timestamp(member.AddedAt)); err != nil {
+				return err
+			}
+		}
+		return renderTruncation(w, data.Truncated, auth.MaxMemberListing, "members")
+	case auth.MembershipMutation:
+		if _, err := fmt.Fprintf(w, "Member: %s → %s\nAdded: %t\n",
+			data.Membership.User.Name, data.Membership.Group.Name, data.Added); err != nil {
+			return err
+		}
+		return renderDryRun(w, data.DryRun)
+	case auth.MembershipRemoval:
+		if _, err := fmt.Fprintf(w, "Member: %s → %s\nRemoved: %t\n",
+			data.User.Name, data.Group.Name, data.Removed); err != nil {
+			return err
+		}
+		return renderDryRun(w, data.DryRun)
 	case auth.GrantList:
 		for _, grant := range data.Grants {
-			if _, err := fmt.Fprintf(w, "%s %s %s\n", grant.User.Name, grant.Connection.Name, timestamp(grant.CreatedAt)); err != nil {
+			if _, err := fmt.Fprintf(w, "%s %s %s\n", recipientLabel(grant.Recipient),
+				grant.Connection.Name, timestamp(grant.CreatedAt)); err != nil {
 				return err
 			}
 		}
 		return renderTruncation(w, data.Truncated, auth.MaxGrantListing, "grants")
 	case auth.GrantMutation:
 		if _, err := fmt.Fprintf(w, "Grant: %s → %s\nGranted: %s by %s\nCreated: %t\n",
-			data.Grant.User.Name, data.Grant.Connection.Name, timestamp(data.Grant.CreatedAt),
+			recipientLabel(data.Grant.Recipient), data.Grant.Connection.Name, timestamp(data.Grant.CreatedAt),
 			data.Grant.CreatedBy.Name, data.Created); err != nil {
 			return err
 		}
@@ -553,6 +587,69 @@ func userStatus(user auth.UserRecord) string {
 		return "blocked"
 	}
 	return "enabled"
+}
+
+// renderIdentityNames prints what whoami adds to the identity: the groups the
+// caller belongs to, whatever their role, and the connections a member may
+// use. An administrator needs no grant, so the connection line is absent
+// rather than listing everything, and a caller in no group has no group line.
+func renderIdentityNames(w io.Writer, identity auth.Identity) error {
+	if len(identity.Groups) > 0 {
+		if _, err := fmt.Fprintf(w, "Groups: %s\n", strings.Join(identity.Groups, ", ")); err != nil {
+			return err
+		}
+		if err := renderTruncation(w, identity.GroupsTruncated, auth.MaxGroupListing, "groups"); err != nil {
+			return err
+		}
+	}
+	if len(identity.Connections) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintf(w, "Connections: %s\n", strings.Join(identity.Connections, ", ")); err != nil {
+		return err
+	}
+	return renderTruncation(w, identity.ConnectionsTruncated, auth.MaxConnectionListing, "connections")
+}
+
+// renderGroup prints the safe group projection: the name and UUID an agent
+// addresses it by, what it is for, and the two counts that decide whether it
+// can be deleted.
+func renderGroup(w io.Writer, group auth.Group) error {
+	_, err := fmt.Fprintf(w, "Group: %s (%s)\nDescription: %s\nMembers: %d\nGrants: %d\n",
+		group.Name, group.ID, group.Description, group.Members, group.Grants)
+	return err
+}
+
+// renderAccessList prints the subject first, because their role and status are
+// what explain the paths, then one line per configured path: the connection,
+// where the access comes from and when that path was created. It is a
+// description of the configuration, never a claim that the connection can be
+// used now.
+func renderAccessList(w io.Writer, access auth.AccessList) error {
+	if _, err := fmt.Fprintf(w, "User: %s (%s)\nRole: %s\nStatus: %s\n", access.User.Username,
+		access.User.ID, access.User.Role, userStatus(access.User)); err != nil {
+		return err
+	}
+	for _, entry := range access.Entries {
+		source := auth.AccessDirect
+		if entry.Source == auth.AccessGroup && entry.Group != nil {
+			source = "via " + entry.Group.Name
+		}
+		if _, err := fmt.Fprintf(w, "%s %s %s\n", entry.Connection.Name, source, timestamp(entry.CreatedAt)); err != nil {
+			return err
+		}
+	}
+	return renderTruncation(w, access.Truncated, auth.MaxAccessListing, "entries")
+}
+
+// recipientLabel renders the one recipient a grant names. A group is prefixed
+// so a group and a user of the same name stay distinguishable in text output,
+// where the kind has no field of its own.
+func recipientLabel(recipient auth.Recipient) string {
+	if recipient.Kind == auth.RecipientGroup {
+		return "group " + recipient.Name
+	}
+	return recipient.Name
 }
 
 func timestamp(value time.Time) string { return value.UTC().Format("2006-01-02T15:04:05Z") }

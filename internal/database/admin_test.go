@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/netip"
 	"strings"
 	"sync"
@@ -55,6 +56,36 @@ func userState(t *testing.T, pool *pgxpool.Pool, id string) (role string, disabl
 	t.Helper()
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT role, disabled FROM users WHERE id=$1`, id).Scan(&role, &disabled))
 	return role, disabled
+}
+
+// Every code a mutation body may answer with has to be on the allowlist, or
+// administer turns the denial into SERVICE_UNAVAILABLE and the caller loses
+// both the code and its hint. A driver error still never escapes unwrapped.
+func TestDenialAllowsEveryServiceOwnedCode(t *testing.T) {
+	for _, code := range []string{
+		auth.UserNotFound, auth.UsernameTaken, auth.SelfTarget, auth.LastAdministrator,
+		auth.ConnectionExists, auth.ConnectionNotFound, auth.ConnectionInUse,
+		auth.GroupExists, auth.GroupNotFound, auth.GroupInUse,
+	} {
+		got, ok := denial(&auth.Error{Code: code, Hint: "hint"})
+		require.True(t, ok, code)
+		require.Equal(t, code, got)
+	}
+	for _, err := range []error{
+		errors.New("SENTINEL_PRIVATE_DRIVER"),
+		&auth.Error{Code: auth.ServiceUnavailable},
+		&auth.Error{Code: auth.InvalidArgument},
+	} {
+		_, ok := denial(err)
+		require.False(t, ok, err)
+	}
+	// The hints the guarded operations re-attach are fixed application text.
+	require.Contains(t, hintGroupNotFound, "clavis groups list")
+	require.Contains(t, hintGroupExists, "clavis groups update")
+	var failure error = &auth.Error{Code: auth.GroupNotFound}
+	require.Equal(t, hintGroupNotFound, hintOf(t, hinted(failure)))
+	failure = &auth.Error{Code: auth.GroupExists}
+	require.Equal(t, hintGroupExists, hintOf(t, hinted(failure)))
 }
 
 func TestCreateUserSignsInOnBothTransports(t *testing.T) {

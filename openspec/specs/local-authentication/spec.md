@@ -65,7 +65,7 @@ The system SHALL allow users to revoke their current session and current adminis
 
 ### Requirement: Protected browser authentication
 
-The same server SHALL provide a public sign-in document at `/login`, same-origin login/logout form actions and an administrator-only shell with one page per list at `/admin/users`, `/admin/connections` and `/admin/grants`; `GET /admin` SHALL redirect to `/admin/users`. Successful browser sign-in SHALL redirect to `/admin/users`. Browser sessions SHALL use host-only HttpOnly cookies, SameSite protection and Secure cookies on HTTPS. Authentication tokens SHALL NOT appear in URLs, rendered HTML, JavaScript storage or application logs. Browser mutations SHALL reject absent, null, multiple or nonmatching configured Origin headers and cross-site Fetch Metadata. GET requests SHALL only validate existing credentials, never issue/rotate/revoke credentials or mutate accounts/sessions. Authentication documents SHALL reject framing. Every administration page SHALL render inside the shell, which SHALL show the signed-in username and role, the sign-out form, the appearance control and the three navigation entries with their bounded counts; each page SHALL load all three bounded lists for those counts and SHALL fail closed when any of them cannot be loaded.
+The same server SHALL provide a public sign-in document at `/login`, same-origin login/logout form actions and an administrator-only shell with one page per list at `/admin/users`, `/admin/groups`, `/admin/connections` and `/admin/grants`; `GET /admin` SHALL redirect to `/admin/users`. Successful browser sign-in SHALL redirect to `/admin/users`. Browser sessions SHALL use host-only HttpOnly cookies, SameSite protection and Secure cookies on HTTPS. Authentication tokens SHALL NOT appear in URLs, rendered HTML, JavaScript storage or application logs. Browser mutations SHALL reject absent, null, multiple or nonmatching configured Origin headers and cross-site Fetch Metadata. GET requests SHALL only validate existing credentials, never issue/rotate/revoke credentials or mutate accounts/sessions. Authentication documents SHALL reject framing. Every administration page SHALL render inside the shell, which SHALL show the signed-in username and role, the sign-out form, the appearance control and the four navigation entries with their bounded counts; each page SHALL load all four bounded lists for those counts and SHALL fail closed when any of them cannot be loaded.
 
 #### Scenario: Browser sign-in and protected navigation
 - **WHEN** a user signs in through the same-origin form
@@ -94,7 +94,7 @@ The same server SHALL provide a public sign-in document at `/login`, same-origin
 - **THEN** the browser cookie is cleared and a safe 503 document distinguishes local sign-out from unconfirmed remote revocation
 
 #### Scenario: Administration page cannot load a list
-- **WHEN** an administrator's valid session requests an administration page but the user, connection or grant listing fails or times out
+- **WHEN** an administrator's valid session requests an administration page but the user, group, connection or grant listing fails or times out
 - **THEN** the server returns safe 503 rather than rendering the page or its counts without current data
 
 #### Scenario: Old administration bookmark

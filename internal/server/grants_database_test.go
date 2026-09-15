@@ -2,20 +2,15 @@ package server
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/heurema/clavis/internal/auth"
-	store "github.com/heurema/clavis/internal/database"
-	"github.com/heurema/clavis/internal/platform"
 )
 
 // The grant routes and the member views end to end against PostgreSQL: the
@@ -23,38 +18,13 @@ import (
 // same handler the server mounts.
 func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	pool, path, password := serverDatabase(t)
-	checker := store.NewInitializer(pool, "personal-admin", path)
-	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
-	require.NoError(t, err)
-	service := local.WithKeyring(serverTestKeyring(t))
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service,
-		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
-	require.NoError(t, err)
-	body := func(value any) string {
-		t.Helper()
-		data, err := json.Marshal(value)
-		require.NoError(t, err)
-		return string(data)
-	}
+	handler := realHandler(t, pool, path)
+	body := func(value any) string { return jsonBody(t, value) }
 	login := func(username string, secret auth.Secret) http.Header {
-		t.Helper()
-		response := requestAuth(handler, "POST", auth.LoginPath, body(auth.LoginRequest{Username: username, Password: secret}),
-			http.Header{"Content-Type": {"application/json"}})
-		require.Equal(t, 200, response.Code)
-		var issued auth.LoginResponse
-		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &issued))
-		return http.Header{"Authorization": {"Bearer " + string(issued.Token)}, "Accept": {"application/json"}}
+		return bearerLogin(t, handler, username, secret)
 	}
 	send := func(headers http.Header, method, route, payload string) *httptest.ResponseRecorder {
-		t.Helper()
-		request := headers.Clone()
-		if payload != "" {
-			request.Set("Content-Type", "application/json")
-		}
-		result := requestAuth(handler, method, route, payload, request)
-		require.Equal(t, "no-store", result.Header().Get("Cache-Control"))
-		return result
+		return sendJSON(t, handler, headers, method, route, payload)
 	}
 	admin := login("personal-admin", password)
 
@@ -102,7 +72,7 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	var mutation auth.GrantMutation
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &mutation))
 	require.True(t, mutation.Created)
-	require.Equal(t, auth.GrantParty{ID: created.ID, Name: "alice"}, mutation.Grant.User)
+	require.Equal(t, auth.Recipient{Kind: auth.RecipientUser, ID: created.ID, Name: "alice"}, mutation.Grant.Recipient)
 	require.Equal(t, auth.GrantParty{ID: connection.ID, Name: "ledger-primary"}, mutation.Grant.Connection)
 	require.Equal(t, "personal-admin", mutation.Grant.CreatedBy.Name)
 	response = send(admin, "POST", auth.GrantsPath, grant)
@@ -144,7 +114,7 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	require.Equal(t, 200, response.Code)
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &list))
 	require.Len(t, list.Grants, 1)
-	require.Equal(t, "alice", list.Grants[0].User.Name)
+	require.Equal(t, "alice", list.Grants[0].Recipient.Name)
 
 	// The delete guard counts grants; disable first so the guard is the only
 	// remaining reason.
@@ -180,7 +150,7 @@ func TestRealHTTPGrantRoutesRoundTrip(t *testing.T) {
 	var revocation auth.GrantRevocation
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &revocation))
 	require.True(t, revocation.Revoked)
-	require.Equal(t, "alice", revocation.User.Name)
+	require.Equal(t, "alice", revocation.Recipient.Name)
 	response = send(admin, "POST", auth.GrantRevokePath, revoke)
 	require.Equal(t, 200, response.Code)
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &revocation))

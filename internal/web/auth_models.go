@@ -24,6 +24,7 @@ type AdminPage string
 
 const (
 	PageUsers       AdminPage = "users"
+	PageGroups      AdminPage = "groups"
 	PageConnections AdminPage = "connections"
 	PageGrants      AdminPage = "grants"
 )
@@ -32,6 +33,8 @@ const (
 // the heading, the sidebar entry and the document title cannot disagree.
 func pageHeading(page AdminPage) string {
 	switch page {
+	case PageGroups:
+		return "Groups"
 	case PageConnections:
 		return "Connections"
 	case PageGrants:
@@ -46,6 +49,8 @@ type AdminModel struct {
 	User                 auth.User
 	Users                []auth.UserRecord
 	Truncated            bool
+	Groups               []auth.Group
+	GroupsTruncated      bool
 	Connections          []auth.Connection
 	ConnectionsTruncated bool
 	Grants               []auth.Grant
@@ -132,6 +137,10 @@ func labelPairs(labels map[string]string) []string {
 	}
 	slices.Sort(pairs)
 	return pairs
+}
+
+func groupsTruncationNotice() string {
+	return "Showing the first " + strconv.Itoa(auth.MaxGroupListing) + " groups; the list is limited."
 }
 
 func connectionsTruncationNotice() string {

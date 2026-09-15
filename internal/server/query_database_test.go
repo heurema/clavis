@@ -31,7 +31,7 @@ func TestRealHTTPQueryRouteRoundTrip(t *testing.T) {
 	service := local.WithKeyring(serverTestKeyring(t))
 	_, isExecutor := any(service).(auth.QueryExecutor)
 	require.True(t, isExecutor, "the store value must satisfy the executor contract")
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service,
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, service,
 		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	body := func(value any) string {

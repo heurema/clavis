@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -59,6 +60,57 @@ func serverDatabase(t *testing.T) (*pgxpool.Pool, string, auth.Secret) {
 	return pool, path, password
 }
 
+// realHandler mounts the real service over a real database as the server
+// mounts it, so a route test drives the same handler production does.
+func realHandler(t *testing.T, pool *pgxpool.Pool, secretPath string) http.Handler {
+	t.Helper()
+	checker := store.NewInitializer(pool, "personal-admin", secretPath)
+	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
+	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	require.NoError(t, err)
+	service := local.WithKeyring(serverTestKeyring(t))
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, service,
+		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	require.NoError(t, err)
+	return handler
+}
+
+// jsonBody marshals a request body from the same DTO the CLI marshals, so the
+// shapes exercised are literally the ones the CLI sends.
+func jsonBody(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	return string(data)
+}
+
+// bearerLogin signs one account in and returns the headers a CLI session
+// carries from then on.
+func bearerLogin(t *testing.T, handler http.Handler, username string, secret auth.Secret) http.Header {
+	t.Helper()
+	response := requestAuth(handler, "POST", auth.LoginPath,
+		jsonBody(t, auth.LoginRequest{Username: username, Password: secret}),
+		http.Header{"Content-Type": {"application/json"}})
+	require.Equal(t, 200, response.Code)
+	var issued auth.LoginResponse
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &issued))
+	return http.Header{"Authorization": {"Bearer " + string(issued.Token)}, "Accept": {"application/json"}}
+}
+
+// sendJSON issues one request as the given session and checks the header every
+// JSON route carries, so no route can quietly become cacheable.
+func sendJSON(t *testing.T, handler http.Handler, headers http.Header,
+	method, route, payload string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := headers.Clone()
+	if payload != "" {
+		request.Set("Content-Type", "application/json")
+	}
+	result := requestAuth(handler, method, route, payload, request)
+	require.Equal(t, "no-store", result.Header().Get("Cache-Control"))
+	return result
+}
+
 func TestRealHTTPLoginFailsClosedBeforeInitializationAndAfterPoolClose(t *testing.T) {
 	pool, _, _ := serverDatabase(t)
 	checker := store.NewInitializer(pool, "", "")
@@ -71,7 +123,7 @@ func TestRealHTTPLoginFailsClosedBeforeInitializationAndAfterPoolClose(t *testin
 		checks++
 		return checker.Check(ctx)
 	})
-	handler, err := HandlerWithAuth(time.Second, health, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, health, service, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	reject := func(t *testing.T) {
 		t.Helper()
@@ -110,7 +162,7 @@ func TestRealHTTPAuthenticationAndLockDeadlines(t *testing.T) {
 	})
 	service, err := store.NewLocalAuth(pool, readiness, auth.DefaultSessionTTL)
 	require.NoError(t, err)
-	handler, err := HandlerWithAuth(time.Second, readiness, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, readiness, service, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
 	require.NoError(t, err)
@@ -212,7 +264,7 @@ func TestBrowserLoginNeverRetargetsAnExistingSession(t *testing.T) {
 	_, err = pool.Exec(t.Context(), `INSERT INTO users(id,username,password_hash,role)
 		SELECT $1,'member-user',password_hash,'member' FROM users WHERE username='personal-admin'`, fixtureIdentity.User.ID)
 	require.NoError(t, err)
-	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
 	headers := http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}
 	form := func(username string, password auth.Secret) string {

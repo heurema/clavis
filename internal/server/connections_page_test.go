@@ -97,6 +97,7 @@ func connectionsPageHandler(t *testing.T, f *backendFixture, connections auth.Co
 	adapter, err := newAuthHTTP("http://127.0.0.1", f, AuthViews{})
 	require.NoError(t, err)
 	adapter.admin = f
+	adapter.groups = f
 	adapter.connections = connections
 	adapter.grants = f
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness {
@@ -138,10 +139,10 @@ func TestConnectionsPageRendersTheConnectionsTable(t *testing.T) {
 	} {
 		require.Contains(t, body, fragment)
 	}
-	// The shell marks this page and counts all three lists beside it.
+	// The shell marks this page and counts all four lists beside it.
 	require.Contains(t, body, `<a href="/admin/connections" aria-current="page"`)
 	require.Equal(t, 1, strings.Count(body, `aria-current="page"`))
-	require.Len(t, sidebarCountsOf(body), 3)
+	require.Len(t, sidebarCountsOf(body), 4)
 	require.Equal(t, 1, fake.calls)
 	require.Equal(t, "12345678-1234-4234-8234-123456789aaa", fake.session.ID)
 	require.Equal(t, fixtureIdentity.User, fake.session.User)
@@ -194,7 +195,7 @@ func TestConnectionsPageUnauthenticatedListingRedirects(t *testing.T) {
 }
 
 // sidebarCountsOf reads the shell's bounded counts in document order, so a test
-// sees all three at once rather than one fragment at a time.
+// sees all four at once rather than one fragment at a time.
 var sidebarCountPattern = regexp.MustCompile(`<span class="ml-auto text-xs tabular-nums text-muted-foreground">([^<]*)</span>`)
 
 func sidebarCountsOf(body string) []string {

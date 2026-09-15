@@ -18,9 +18,14 @@ import (
 
 var listedGrants = auth.GrantList{
 	Grants: []auth.Grant{{
-		User:       auth.GrantParty{ID: "12345678-1234-4234-8234-1234567890a1", Name: "granted-member"},
+		Recipient:  auth.Recipient{Kind: auth.RecipientUser, ID: "12345678-1234-4234-8234-1234567890a1", Name: "granted-member"},
 		Connection: auth.GrantParty{ID: "12345678-1234-4234-8234-1234567890c1", Name: "warehouse-primary"},
 		CreatedAt:  time.Date(2026, 6, 7, 8, 9, 10, 0, time.UTC),
+		CreatedBy:  auth.GrantParty{ID: fixtureIdentity.User.ID, Name: "personal-admin"},
+	}, {
+		Recipient:  auth.Recipient{Kind: auth.RecipientGroup, ID: "abcdefab-1234-4234-8234-1234567890b1", Name: "finance-managers"},
+		Connection: auth.GrantParty{ID: "12345678-1234-4234-8234-1234567890c2", Name: "metrics-eu"},
+		CreatedAt:  time.Date(2026, 6, 8, 9, 10, 11, 0, time.UTC),
 		CreatedBy:  auth.GrantParty{ID: fixtureIdentity.User.ID, Name: "personal-admin"},
 	}},
 	Truncated: true,
@@ -33,6 +38,7 @@ func grantsPageHandler(t *testing.T, f *backendFixture, connections auth.Connect
 	adapter, err := newAuthHTTP("http://127.0.0.1", f, AuthViews{})
 	require.NoError(t, err)
 	adapter.admin = f
+	adapter.groups = f
 	adapter.connections = connections
 	adapter.grants = grants
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness {
@@ -49,15 +55,20 @@ func TestGrantsPageRendersTheGrantsTable(t *testing.T) {
 	require.Equal(t, 200, response.StatusCode)
 	body := connectionsPageBody(t, response)
 	for _, fragment := range []string{
-		">Grants</h1>", ">granted-member<", ">warehouse-primary<", ">personal-admin<", "2026-06-07 08:09 UTC",
+		">Grants</h1>", ">granted-member", ">warehouse-primary<", ">personal-admin<", "2026-06-07 08:09 UTC",
+		">finance-managers", ">metrics-eu<", "2026-06-08 09:10 UTC",
 		"Showing the first 1000 grants; the list is limited.",
 	} {
 		require.Contains(t, body, fragment)
 	}
-	// The shell marks this page and counts all three lists beside it.
+	// The group grant is distinguishable from the user grant without an
+	// identifier, and only it carries the kind.
+	require.Equal(t, 1, strings.Count(body, ">group</span>"))
+	require.Less(t, strings.Index(body, ">finance-managers"), strings.Index(body, ">group</span>"))
+	// The shell marks this page and counts all four lists beside it.
 	require.Contains(t, body, `<a href="/admin/grants" aria-current="page"`)
 	require.Equal(t, 1, strings.Count(body, `aria-current="page"`))
-	require.Equal(t, []string{"0", "2+", "1+"}, sidebarCountsOf(body))
+	require.Equal(t, []string{"0", "0", "2+", "2+"}, sidebarCountsOf(body))
 	// The grants page renders no other table.
 	require.NotContains(t, body, "Warehouse primary")
 	require.NotContains(t, body, "1234567890a1")
@@ -95,7 +106,8 @@ func TestGrantsPageFailsClosedInOrder(t *testing.T) {
 	// A handler composed without the grants dependency refuses the page.
 	adapter, err := newAuthHTTP("http://127.0.0.1", f, AuthViews{})
 	require.NoError(t, err)
-	adapter.admin, adapter.connections = f, &connectionsPageFake{list: listedConnections}
+	adapter.admin, adapter.groups = f, f
+	adapter.connections = &connectionsPageFake{list: listedConnections}
 	checker := platform.CheckFunc(func(context.Context) platform.Readiness { return platform.Readiness{State: platform.Ready} })
 	response = requestPage(handler(time.Second, checker, slog.New(slog.NewJSONHandler(io.Discard, nil)), adapter), "/admin/grants")
 	require.Equal(t, 503, response.StatusCode)

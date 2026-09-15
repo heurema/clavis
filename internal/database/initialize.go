@@ -68,6 +68,8 @@ func (i *Initializer) check(ctx context.Context) platform.State {
 		queries.CheckLoginLimitsColumns,
 		queries.CheckConnectionsColumns,
 		queries.CheckGrantsColumns,
+		queries.CheckGroupsColumns,
+		queries.CheckGroupMembersColumns,
 	} {
 		if err := check(ctx); err != nil {
 			if schemaFailure(err) {
