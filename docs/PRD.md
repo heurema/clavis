@@ -271,7 +271,7 @@ The platform stores the following in its own database:
 
 ### 7.8. Minimal Web Interface
 
-The MVP needs a sign-in screen plus read-only administrative pages for users, groups, connections and grants, each its own page inside one administration shell that carries the navigation, the bounded list counts, the signed-in identity and sign-out. The browser does not offer management forms in the MVP; every mutation goes through the CLI. There is no status page: readiness is reported by the JSON endpoint `GET /health/ready` and by `clavis doctor`.
+The MVP needs a sign-in screen plus read-only administrative pages for users, groups, connections and grants, each its own page inside one administration shell that carries the navigation, the bounded list counts, the signed-in identity and sign-out. The browser does not offer management forms in the MVP; every mutation goes through the CLI. There is no status page: readiness is reported by the JSON endpoint `GET /readyz` and by `clavis doctor`.
 
 Administrative capabilities are available through the CLI. Data exploration takes place through the agent and CLI; dedicated log browsers, query editors, monitoring dashboards, and investigation interfaces are not required for the MVP.
 
@@ -398,7 +398,7 @@ Decided on September 11, 2026 (applied throughout this document):
 | PostgreSQL operations | Pass-through of any submitted SQL; the external role is the only access boundary |
 | Resource bounds | Per-connection timeout and result cap with explicit truncation |
 | Audit journal | Removed from the MVP on September 12, 2026, including the events already recorded by earlier changes; a later stage |
-| Web interface | Sign-in plus read-only administration tables; no browser management forms; the public setup/status page and its HTML readiness fragment were removed on September 14, 2026, leaving `GET /health/ready` and `clavis doctor` as the readiness diagnostics |
+| Web interface | Sign-in plus read-only administration tables; no browser management forms; the public setup/status page and its HTML readiness fragment were removed on September 14, 2026, leaving `GET /readyz` and `clavis doctor` as the readiness diagnostics |
 | VictoriaMetrics authentication | None, basic, bearer, custom header; mutual TLS and OAuth2 deferred; the same methods for VictoriaLogs plus optional tenant settings |
 | Log source | VictoriaLogs pulled into the MVP on September 14, 2026 ahead of groups and the agent skill; rows pass through in the source's shape, the platform adds no limit and cuts the unbounded stream at the cap with explicit truncation; `hits`, stats endpoints and Loki deferred |
 | Pilot targets | Small teams; PostgreSQL 17 and 18; single-node VictoriaMetrics and VictoriaLogs; Claude Code and Codex agents |

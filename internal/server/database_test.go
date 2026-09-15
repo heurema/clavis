@@ -231,7 +231,7 @@ func TestNormalServeInitializesAndResolvesPortZero(t *testing.T) {
 	t.Cleanup(func() { cancel(); require.NoError(t, <-done) })
 	client := &http.Client{Timeout: 2 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	require.Eventually(t, func() bool {
-		response, err := client.Get(origin + "/health/ready")
+		response, err := client.Get(origin + "/readyz")
 		if err != nil {
 			return false
 		}

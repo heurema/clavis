@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heurema/clavis/internal/buildinfo"
 	"github.com/heurema/clavis/internal/platform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,7 +64,10 @@ func TestRootRedirectsWithoutCheckingDatabase(t *testing.T) {
 	assert.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 	assert.Empty(t, response.Header().Get("Set-Cookie"))
 
-	for _, path := range []string{"/not-a-page", "/ui/readiness"} {
+	// The former health paths were removed rather than redirected. Their
+	// prefix is assembled so a repository-wide search for it stays empty.
+	old := "/health" + "/"
+	for _, path := range []string{"/not-a-page", "/ui/readiness", old + "live", old + "ready"} {
 		unknown := httptest.NewRecorder()
 		handler.ServeHTTP(unknown, httptest.NewRequest(http.MethodGet, path, nil))
 		assert.Equal(t, http.StatusNotFound, unknown.Code, path)
@@ -79,7 +83,7 @@ func TestReadinessRouteHonorsDeadline(t *testing.T) {
 	handler := Handler(20*time.Millisecond, db, slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	start := time.Now()
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	assert.Equal(t, http.StatusServiceUnavailable, response.Code)
 	assert.Less(t, time.Since(start), time.Second)
 }
@@ -91,9 +95,11 @@ func TestJSONIgnoresPresentationHeaders(t *testing.T) {
 		status int
 		body   string
 	}{
-		{"/health/live", false, 200, `{"status":"alive"}`},
-		{"/health/ready", true, 200, `{"status":"ready"}`},
-		{"/health/ready", false, 503, `{"status":"not_ready","error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Database unavailable"}}`},
+		{"/livez", false, 200, `{"status":"alive"}`},
+		{"/readyz", true, 200, `{"status":"ready"}`},
+		{"/readyz", false, 503, `{"status":"not_ready","error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Database unavailable"}}`},
+		{"/healthz", true, 200, `{"status":"ok","version":"` + buildinfo.Version + `","checks":{"live":{"status":"alive"},"ready":{"status":"ready"}}}`},
+		{"/healthz", false, 503, `{"status":"unhealthy","version":"` + buildinfo.Version + `","checks":{"live":{"status":"alive"},"ready":{"status":"not_ready","error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Database unavailable"}}}}`},
 	} {
 		t.Run(tc.path+tc.body, func(t *testing.T) {
 			db := &fakeDatabase{ping: func(context.Context) error {

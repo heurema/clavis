@@ -335,8 +335,8 @@ try {
   let api = startAPI()
   const secondPort = await freePort()
   const second = startAPI({ CLAVIS_HTTP_ADDR: `127.0.0.1:${secondPort}` })
-  await waitHTTP(`${apiURL}/health/ready`, 200)
-  await waitHTTP(`http://127.0.0.1:${secondPort}/health/ready`, 200)
+  await waitHTTP(`${apiURL}/readyz`, 200)
+  await waitHTTP(`http://127.0.0.1:${secondPort}/readyz`, 200)
   await stop(second)
   assert.equal(
     await sql("SELECT count(*) FROM users", "bootstrap-account-count"),
@@ -353,6 +353,16 @@ try {
   assert.equal(doctor.schemaVersion, 1)
   assert.equal(doctor.ok, true)
   assert.equal(doctor.data.database, "ready")
+  // The aggregate reports both halves and the build identity of the binary.
+  const healthy = await fetch(apiURL + "/healthz", {
+    signal: AbortSignal.timeout(2_000),
+  })
+  assert.equal(healthy.status, 200)
+  assert.deepEqual(await healthy.json(), {
+    status: "ok",
+    version: "dev",
+    checks: { live: { status: "alive" }, ready: { status: "ready" } },
+  })
   // The origin redirects into the administration shell without a database read.
   const rootRedirect = await fetch(apiURL + "/", {
     redirect: "manual",
@@ -845,7 +855,7 @@ try {
     mode: 0o600,
   })
   api = startAPI({ CLAVIS_ENCRYPTION_KEY_FILE: otherKeyFile })
-  await waitHTTP(`${apiURL}/health/ready`, 200)
+  await waitHTTP(`${apiURL}/readyz`, 200)
   const undecryptable = await check("smoke-postgres", "", 1)
   assert.equal(undecryptable.error.code, "CREDENTIALS_UNAVAILABLE")
   assert(undecryptable.error.hint)
@@ -862,7 +872,7 @@ try {
   )
   await stop(api)
   api = startAPI()
-  await waitHTTP(`${apiURL}/health/ready`, 200)
+  await waitHTTP(`${apiURL}/readyz`, 200)
   await check("smoke-postgres", "reachable")
   summary.connectionManagement = "passed"
   console.log(
@@ -2342,8 +2352,18 @@ try {
   )
 
   await execute("docker", [...compose, "stop", "db"], "database-stop")
-  await waitHTTP(`${apiURL}/health/live`, 200)
-  await waitHTTP(`${apiURL}/health/ready`, 503)
+  await waitHTTP(`${apiURL}/livez`, 200)
+  await waitHTTP(`${apiURL}/readyz`, 503)
+  // The aggregate stays live and names the half that failed.
+  const unhealthy = await fetch(apiURL + "/healthz", {
+    signal: AbortSignal.timeout(2_000),
+  })
+  assert.equal(unhealthy.status, 503)
+  const unhealthyBody = await unhealthy.json()
+  assert.equal(unhealthyBody.status, "unhealthy")
+  assert.equal(unhealthyBody.version, "dev")
+  assert.deepEqual(unhealthyBody.checks.live, { status: "alive" })
+  assert.equal(unhealthyBody.checks.ready.error.code, "DEPENDENCY_UNAVAILABLE")
   const databaseUnavailable = JSON.parse(
     await execute(
       join(root, "bin/clavis"),
@@ -2373,7 +2393,7 @@ try {
     ),
     binding,
   )
-  await waitHTTP(`${apiURL}/health/ready`, 200)
+  await waitHTTP(`${apiURL}/readyz`, 200)
   const recovered = JSON.parse(
     await execute(
       join(root, "bin/clavis"),
@@ -2401,7 +2421,7 @@ try {
   writeFileSync(passwordFile, changedPassword)
   serverEnv.CLAVIS_BOOTSTRAP_USERNAME = "changed-admin"
   api = startAPI()
-  await waitHTTP(`${apiURL}/health/ready`, 200)
+  await waitHTTP(`${apiURL}/readyz`, 200)
   summary.serverOutageRecovery = "passed"
   console.log("[smoke] Same-address server restart recovered HTTP readiness")
   injectFailure("after-restart")
@@ -2410,7 +2430,7 @@ try {
   await stop(api)
   rmSync(passwordFile)
   startAPI()
-  await waitHTTP(`${apiURL}/health/ready`, 200)
+  await waitHTTP(`${apiURL}/readyz`, 200)
   assert.equal((await login("without-secret")).data.user.id, administrator.id)
   await cli("without-secret", ["logout"])
   summary.bootstrapCredentialsIgnoredAfterInitialization = "passed"

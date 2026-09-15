@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heurema/clavis/internal/buildinfo"
 	"github.com/heurema/clavis/internal/platform"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +27,7 @@ func TestInjectedReadinessIsBoundedAndPublicDocumentsBypassIt(t *testing.T) {
 	// The root redirect is public too: it never reaches the checker.
 	for path, status := range map[string]int{
 		"/":                     http.StatusSeeOther,
-		"/health/live":          http.StatusOK,
+		"/livez":                http.StatusOK,
 		"/assets/appearance.js": http.StatusOK,
 	} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
@@ -37,10 +38,16 @@ func TestInjectedReadinessIsBoundedAndPublicDocumentsBypassIt(t *testing.T) {
 	}
 	require.Zero(t, calls)
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health/ready", nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/readyz", nil))
 	require.Equal(t, http.StatusServiceUnavailable, response.Code)
 	require.Contains(t, response.Body.String(), platform.CodeSetupRequired)
 	require.Equal(t, 1, calls)
+	// The aggregate runs the same bounded check and nests the same failure.
+	aggregate := httptest.NewRecorder()
+	handler.ServeHTTP(aggregate, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	require.Equal(t, http.StatusServiceUnavailable, aggregate.Code)
+	require.JSONEq(t, `{"status":"unhealthy","version":"`+buildinfo.Version+`","checks":{"live":{"status":"alive"},"ready":{"status":"not_ready","error":{"code":"SETUP_REQUIRED","message":"Initial administrator configuration is required"}}}}`, aggregate.Body.String())
+	require.Equal(t, 2, calls)
 }
 
 func TestRealRoutesNeverExposeAuthenticationFixtures(t *testing.T) {

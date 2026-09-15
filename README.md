@@ -61,8 +61,9 @@ editing `.templ` files, run `make generate-web` before restarting; after editing
 application queries, migration schema inputs or `sqlc.yaml`, run `make generate-db`.
 Open `http://127.0.0.1:8080` to sign in; signing in lands on the Users page, and
 the sidebar reaches Connections and Grants.
-The same server exposes JSON health endpoints at `/health/live` and
-`/health/ready`, independently of HTML rendering.
+The same server exposes JSON health endpoints at `/livez`, `/readyz` and the
+aggregate `/healthz`, which reports the build version alongside both checks,
+independently of HTML rendering.
 
 ## Commands
 
@@ -191,11 +192,14 @@ rewriting them. Run the relevant explicit generation command after source edits.
 The public sign-in document and the assets remain available when PostgreSQL is
 unavailable; protected requests fail closed. `GET /` and `GET /admin` redirect
 into the administration pages without reading the database. Readiness is reported by
-`GET /health/ready` and `clavis doctor`, which require no sign-in but do not
+`GET /readyz` and `clavis doctor`, which require no sign-in but do not
 change your deployment's network exposure. Readiness requires a reachable
 database, supported schema and completed initialization, distinguishing
 `INITIALIZING`, `SETUP_REQUIRED`, `BOOTSTRAP_FAILED`, `SCHEMA_ERROR` and
-`DEPENDENCY_UNAVAILABLE` using safe messages. There is no browser status page.
+`DEPENDENCY_UNAVAILABLE` using safe messages. `GET /healthz` aggregates
+liveness and the same readiness check for a person or an uptime monitor and
+reports the build version; `GET /livez` reports liveness alone. There is no
+browser status page.
 
 If the Go server is stopped, fresh navigation receives the browser's connection
 error; there is no independent frontend or offline fallback.

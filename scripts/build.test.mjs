@@ -123,7 +123,7 @@ async function checkCopiedServer(directory) {
     let running = false
     for (let attempt = 0; attempt < 50; attempt++) {
       try {
-        const response = await fetch(`${origin}/health/live`, {
+        const response = await fetch(`${origin}/livez`, {
           signal: AbortSignal.timeout(200),
         })
         assert.equal(response.status, 200)
@@ -142,7 +142,7 @@ async function checkCopiedServer(directory) {
       ["/assets/appearance.js", 200, "text/javascript", "clavis.appearance"],
       ["/assets/notices.txt", 200, "text/plain", "Cole Bemis"],
       ["/ui/readiness", 404, "text/plain", "404 page not found"],
-      ["/health/ready", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
+      ["/readyz", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
     ]) {
       const response = await fetch(`${origin}${path}`, {
         redirect: "manual",
@@ -157,6 +157,11 @@ async function checkCopiedServer(directory) {
     }
     assert.deepEqual(readdirSync(runtime), ["server"])
     assert.ok(!output.includes("sentinel-private"))
+    // A build without the linker flags reports the local identity.
+    assert.match(
+      output,
+      /"msg":"server_started","version":"dev","commit":"unknown","date":"unknown"/,
+    )
   } finally {
     child.kill("SIGTERM")
     const timer = setTimeout(() => child.kill("SIGKILL"), 2_000)
@@ -239,7 +244,7 @@ async function checkDevelopment(directory, target, signal) {
     let running = false
     for (let attempt = 0; attempt < 150; attempt++) {
       try {
-        const response = await fetch(`${origin}/health/live`, {
+        const response = await fetch(`${origin}/livez`, {
           signal: AbortSignal.timeout(200),
         })
         assert.equal(response.status, 200)
@@ -256,7 +261,7 @@ async function checkDevelopment(directory, target, signal) {
     for (const [path, status, type, text] of [
       ["/", 303, "text/html", "/admin/users"],
       ["/login", 200, "text/html", "Sign in"],
-      ["/health/ready", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
+      ["/readyz", 503, "application/json", "DEPENDENCY_UNAVAILABLE"],
     ]) {
       const response = await fetch(`${origin}${path}`, {
         redirect: "manual",
@@ -282,7 +287,7 @@ async function checkDevelopment(directory, target, signal) {
       for (const pid of pids)
         assert.throws(() => process.kill(pid, 0), { code: "ESRCH" })
       await assert.rejects(
-        fetch(`${origin}/health/live`, {
+        fetch(`${origin}/livez`, {
           signal: AbortSignal.timeout(200),
         }),
       )

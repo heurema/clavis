@@ -193,7 +193,7 @@ func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
 				require.Equal(t, 1, calls)
 			}
 			calls = 0
-			response := requestAuth(handler, "GET", "/health/ready", "", http.Header{})
+			response := requestAuth(handler, "GET", "/readyz", "", http.Header{})
 			require.Equal(t, 503, response.Code)
 			require.Equal(t, 1, calls, "public health must still invoke its checker")
 			require.Equal(t, 1, healthCalls)
@@ -439,7 +439,7 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 	handler := authHandler(t, f, checker, "http://127.0.0.1")
 	// The root redirect is local-only as well: it answers without the database.
 	for path, status := range map[string]int{
-		"/": 303, "/login": 200, "/assets/appearance.js": 200, "/health/live": 200,
+		"/": 303, "/login": 200, "/assets/appearance.js": 200, "/livez": 200,
 	} {
 		for _, cookie := range []string{"", developmentCookie + "=malformed", developmentCookie + "=" + string(fixtureToken)} {
 			response := requestAuth(handler, "GET", path, "", http.Header{"Cookie": {cookie}})
