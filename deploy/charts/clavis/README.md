@@ -9,7 +9,7 @@ documented inline in `values.yaml` and constrained by `values.schema.json`.
 
 - Kubernetes 1.25 or newer, and a Gateway API installation if you use
   `httpRoute`.
-- PostgreSQL 18 or compatible, reachable from the pod, as a **direct endpoint or
+- PostgreSQL 17 or 18, reachable from the pod, as a **direct endpoint or
   a session-pooling proxy** (see [Upgrades](#upgrades)).
 - Three values in existing Secrets in the release namespace: the database URL,
   the encryption key, and, for the first install only, the administrator's
@@ -24,11 +24,11 @@ The chart takes the three secrets **by reference** and never accepts a secret
 value, generates one, rotates one or deletes one. Each reference is a Secret
 name and a key, and all three may name the same Secret:
 
-| Value | Becomes | Default key |
-| --- | --- | --- |
-| `secrets.database.secretName` | `CLAVIS_DATABASE_URL` in the environment | `database-url` |
+| Value                              | Becomes                                     | Default key      |
+| ---------------------------------- | ------------------------------------------- | ---------------- |
+| `secrets.database.secretName`      | `CLAVIS_DATABASE_URL` in the environment    | `database-url`   |
 | `secrets.encryptionKey.secretName` | a file at `secrets.encryptionKey.mountPath` | `encryption-key` |
-| `bootstrap.password.secretName` | a file at `bootstrap.password.mountPath` | `password` |
+| `bootstrap.password.secretName`    | a file at `bootstrap.password.mountPath`    | `password`       |
 
 The two files are mounted read-only with mode `0440`, and the pod's `fsGroup`
 65532 owns them. That is exactly what the server accepts: a secret file may

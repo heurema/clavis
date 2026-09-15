@@ -269,12 +269,23 @@ export function record(summary, name, status, seconds) {
   return summary
 }
 
+// A skipped step is evidence that was not collected, never a failure: the
+// summary names it so a reader does not mistake silence for proof.
+export const skipped = Symbol("skipped")
+
 export function finalize(summary) {
-  const failed = Object.entries(summary.checks)
-    .filter(([, check]) => check.status !== "passed")
+  const entries = Object.entries(summary.checks)
+  const failed = entries
+    .filter(
+      ([, check]) => check.status !== "passed" && check.status !== "skipped",
+    )
+    .map(([name]) => name)
+  const skippedChecks = entries
+    .filter(([, check]) => check.status === "skipped")
     .map(([name]) => name)
   summary.status = failed.length || summary.message ? "failed" : "passed"
   if (failed.length) summary.failedChecks = failed
+  if (skippedChecks.length) summary.skippedChecks = skippedChecks
   return summary
 }
 
@@ -445,14 +456,15 @@ async function run() {
     persist()
     try {
       const outcome = await action()
+      const status = outcome === skipped ? "skipped" : "passed"
       record(
         summary,
         name,
-        "passed",
+        status,
         Number(((Date.now() - started) / 1000).toFixed(1)),
       )
       persist()
-      console.log(`[verify-kind] ${name}: passed`)
+      console.log(`[verify-kind] ${name}: ${status}`)
       return outcome
     } catch (error) {
       record(
@@ -901,12 +913,13 @@ async function run() {
       )
       if (created.code !== 0) {
         // Readiness already proves the reader accepted the files; record why
-        // the direct listing is missing rather than failing the run.
+        // the direct listing is missing and mark the step skipped rather than
+        // passed, so the summary never claims evidence it did not collect.
         summary.secretFiles = {
           captured: false,
           reason: redact(created.output.trim()).slice(0, 500),
         }
-        return
+        return skipped
       }
       let listing = ""
       await poll(

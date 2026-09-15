@@ -297,6 +297,18 @@ test("finalize names the steps that stopped the run", () => {
   assert.deepEqual(summary.failedChecks, ["rollout", "migrationUpgrade"])
 })
 
+test("finalize keeps a skipped step out of the failures but names it", () => {
+  const summary = finalize({
+    checks: {
+      install: { status: "passed" },
+      secretFiles: { status: "skipped", seconds: 4 },
+    },
+  })
+  assert.equal(summary.status, "passed")
+  assert.equal(summary.failedChecks, undefined)
+  assert.deepEqual(summary.skippedChecks, ["secretFiles"])
+})
+
 test("finalize fails a run that reported a message before any step", () => {
   assert.equal(
     finalize({ checks: {}, message: "docker is not running" }).status,

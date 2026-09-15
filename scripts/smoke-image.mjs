@@ -339,12 +339,13 @@ async function run() {
     secretsDirectory = mkdtempSync(join(root, ".local/smoke-image-secrets-"))
     summary.secretsDirectory = secretsDirectory
     const password = randomBytes(24).toString("base64url")
-    secrets.add(password)
-    writeFileSync(
-      join(secretsDirectory, "encryption-key"),
-      randomBytes(32).toString("hex") + "\n",
-      { mode: 0o440 },
-    )
+    const key = randomBytes(32).toString("hex")
+    // Nothing prints the key today; redact it anyway so a future log line
+    // cannot leak it through the report.
+    for (const secret of [password, key]) secrets.add(secret)
+    writeFileSync(join(secretsDirectory, "encryption-key"), key + "\n", {
+      mode: 0o440,
+    })
     writeFileSync(
       join(secretsDirectory, "bootstrap-password"),
       password + "\n",
