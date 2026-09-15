@@ -150,6 +150,23 @@ func bootstrapForeignGroup(t *testing.T) int {
 	return -1
 }
 
+// bootstrapSupplementaryGroup returns a group the process belongs to other
+// than its effective one, so the membership rule is exercised beyond the
+// effective gid. A file's owner may chown to any group it belongs to, so this
+// needs no privileges.
+func bootstrapSupplementaryGroup(t *testing.T) int {
+	t.Helper()
+	groups, err := os.Getgroups()
+	require.NoError(t, err)
+	for _, gid := range groups {
+		if gid != os.Getegid() {
+			return gid
+		}
+	}
+	t.Skip("the process has no group besides its effective one")
+	return -1
+}
+
 // A Secret volume mounted under fsGroup arrives group-readable, so group read
 // is accepted, but only for a group the process actually belongs to.
 func TestBootstrapFileGroupPermissions(t *testing.T) {
@@ -189,6 +206,16 @@ func TestBootstrapFileGroupPermissions(t *testing.T) {
 			require.NotContains(t, err.Error(), path)
 		})
 	}
+
+	// fsGroup need not be the process's primary group: any group it belongs to
+	// unlocks a group-readable file.
+	t.Run("accepts a supplementary group", func(t *testing.T) {
+		path := write(t, "supplementary", 0o440)
+		require.NoError(t, os.Chown(path, -1, bootstrapSupplementaryGroup(t)))
+		value, err := ReadBootstrapPassword(path)
+		require.NoError(t, err)
+		require.Equal(t, auth.Secret(password), value)
+	})
 
 	t.Run("refuses a foreign group", func(t *testing.T) {
 		foreign := write(t, "foreign", 0o440)

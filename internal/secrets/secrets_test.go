@@ -194,6 +194,23 @@ func foreignGroup(t *testing.T) int {
 	return -1
 }
 
+// supplementaryGroup returns a group the process belongs to other than its
+// effective one, so the membership rule is exercised beyond the effective gid.
+// A file's owner may chown to any group it belongs to, so this needs no
+// privileges.
+func supplementaryGroup(t *testing.T) int {
+	t.Helper()
+	groups, err := os.Getgroups()
+	require.NoError(t, err)
+	for _, gid := range groups {
+		if gid != os.Getegid() {
+			return gid
+		}
+	}
+	t.Skip("the process has no group besides its effective one")
+	return -1
+}
+
 // A Secret volume mounted under fsGroup arrives group-readable, so group read
 // is accepted, but only for a group the process actually belongs to.
 func TestLoadKeyFileGroupPermissions(t *testing.T) {
@@ -228,6 +245,16 @@ func TestLoadKeyFileGroupPermissions(t *testing.T) {
 		})
 	}
 
+	// fsGroup need not be the process's primary group: any group it belongs to
+	// unlocks a group-readable file.
+	t.Run("accepts a supplementary group", func(t *testing.T) {
+		path := writeKeyFile(t, dir, "supplementary", encoded, 0o440)
+		require.NoError(t, os.Chown(path, -1, supplementaryGroup(t)))
+		ring, err := LoadKeyFile(path)
+		require.NoError(t, err)
+		require.NotNil(t, ring)
+	})
+
 	t.Run("refuses a foreign group", func(t *testing.T) {
 		foreign := writeKeyFile(t, dir, "foreign", encoded, 0o440)
 		if err := os.Chown(foreign, -1, foreignGroup(t)); err != nil {
@@ -253,9 +280,15 @@ func (i stubInfo) Sys() any          { return &syscall.Stat_t{Gid: i.gid} }
 
 func TestProtectedFileGroupMembership(t *testing.T) {
 	require.True(t, ProtectedFile(stubInfo{mode: 0o440, gid: uint32(os.Getegid())}))
-	require.False(t, ProtectedFile(stubInfo{mode: 0o440, gid: uint32(foreignGroup(t))}))
 	// Anything beyond group read is refused whatever the group is.
 	require.False(t, ProtectedFile(stubInfo{mode: 0o460, gid: uint32(os.Getegid())}))
-	// An owner-only file is protected without consulting its group at all.
-	require.True(t, ProtectedFile(stubInfo{mode: 0o400, gid: uint32(foreignGroup(t))}))
+	// Membership, not the effective gid alone, decides a group-readable file.
+	t.Run("supplementary group", func(t *testing.T) {
+		require.True(t, ProtectedFile(stubInfo{mode: 0o440, gid: uint32(supplementaryGroup(t))}))
+	})
+	t.Run("foreign group", func(t *testing.T) {
+		require.False(t, ProtectedFile(stubInfo{mode: 0o440, gid: uint32(foreignGroup(t))}))
+		// An owner-only file is protected without consulting its group at all.
+		require.True(t, ProtectedFile(stubInfo{mode: 0o400, gid: uint32(foreignGroup(t))}))
+	})
 }
