@@ -16,7 +16,13 @@ GOLANGCI := $(CURDIR)/.tools/golangci-lint/bin/golangci-lint
 DEADCODE := $(CURDIR)/.tools/deadcode/bin/deadcode
 SQLC := $(CURDIR)/.tools/sqlc/bin/sqlc
 
-.PHONY: setup dev dev-db dev-api build build-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke down reset-db
+# Build identity stamped into internal/buildinfo. A local build reports the
+# defaults; release builds pass the real values on the command line.
+VERSION ?= dev
+COMMIT ?= unknown
+DATE ?= unknown
+
+.PHONY: setup dev dev-db dev-api build build-server compile-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke down reset-db
 
 setup:
 	go mod download
@@ -37,11 +43,20 @@ dev-api: dev
 
 build-server: check-db-generated check-web-generated
 	$(MAKE) build-web-assets
+	$(MAKE) compile-server
+
+# The compile alone, for a build that has already run the gates and the asset
+# script: the image builder stages them itself and cross-compiles here.
+# GOOS/GOARCH come from the environment; the identity comes from the three
+# variables above, so a contributor and the image stamp the same way.
+compile-server:
 	@mkdir -p bin
 	@set -eu; output=$$(mktemp -d bin/.server-XXXXXX); \
 		trap 'rm -rf "$$output"' 0; \
 		trap 'exit 1' 1 2 15; \
-		CGO_ENABLED=0 go build -trimpath -o "$$output/server" ./cmd/server; \
+		CGO_ENABLED=0 go build -trimpath \
+			-ldflags '-X github.com/heurema/clavis/internal/buildinfo.Version=$(VERSION) -X github.com/heurema/clavis/internal/buildinfo.Commit=$(COMMIT) -X github.com/heurema/clavis/internal/buildinfo.Date=$(DATE)' \
+			-o "$$output/server" ./cmd/server; \
 		mv -f "$$output/server" bin/server
 
 build-cli:

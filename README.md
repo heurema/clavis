@@ -71,6 +71,7 @@ independently of HTML rendering.
 | --- | --- |
 | `make build` | Build the server and CLI |
 | `make build-server` | Verify generated templates/queries, rebuild embedded assets and build the server |
+| `make compile-server` | Compile only the server, stamping `VERSION`, `COMMIT` and `DATE`, without the generated-source gates or the asset build |
 | `make build-cli` | Build only the CLI using Go, without web or SQL tools |
 | `make install-templ` / `make install-golangci-lint` / `make install-deadcode` | Install the exact template compiler / Go linter / dead-code tool pin |
 | `make install-sqlc` | Install the exact development sqlc pin |
