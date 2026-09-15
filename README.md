@@ -23,7 +23,9 @@ account recovery are outside the MVP.
 
 Requires Go **1.27.1**, Node.js **26.8.2**, pnpm **12.3.4**, Docker with Compose,
 and GNU Make on macOS or Linux. Helm, kind and kubeconform are not separate
-prerequisites: `make setup` installs the pinned versions into `.tools/`.
+prerequisites: `make setup` installs the pinned versions into `.tools/`. Only
+`make verify-kind` needs one more, `kubectl` on the search path, which setup does
+not install.
 
 ```sh
 make setup
@@ -92,6 +94,7 @@ independently of HTML rendering.
 | `make smoke` | Test standalone server HTTP/API/CLI behavior with real database outage, recovery and cleanup |
 | `make image` | Build the server container image, stamping the identity from Git, tagged `$(IMAGE)` (default `clavis:local`) |
 | `make smoke-image` | Build the image and test it against an isolated compose database over a published loopback port |
+| `make verify-kind` | Install the chart on a throwaway kind cluster and drive the bootstrap, restart and migration-upgrade lifecycle, then delete the cluster |
 | `make test-mutation` | Mutation-test the handwritten Go files changed against `main` in an isolated copy and report survivors |
 | `make test-mutation-full` | Mutation-test the whole handwritten scope with the extended bound |
 | `make down` | Stop the database and keep its data |
@@ -249,6 +252,18 @@ as references to Secrets you already have, and requires `publicURL`, the HTTPS
 origin you terminate TLS on. `make chart-lint` lints the chart and
 schema-validates every value set in `deploy/charts/clavis/ci/`, and runs inside
 `make check`.
+
+Three commands verify the artifacts locally, all of them requiring Docker.
+`make image` builds the server image and `make smoke-image` runs it against an
+isolated compose database. `make verify-kind` additionally needs `kubectl`: it
+creates a throwaway kind cluster with a pinned node image and a plain PostgreSQL
+Deployment, builds one image from the checkout and a second one carrying an extra
+migration, installs the chart with bootstrap enabled, signs in with the CLI over
+a port-forward, upgrades with bootstrap disabled and the bootstrap Secret deleted,
+then upgrades across the migration and signs in again. It records every step in
+`reports/verify-kind.json` and deletes the cluster, the two images and its
+temporary copy even when a step fails; `--keep-cluster` keeps the cluster for
+debugging.
 
 Read `deploy/charts/clavis/README.md` before installing or upgrading: it carries
 the operator contract, including the bootstrap lifecycle, why an upgrade across
