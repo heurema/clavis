@@ -1,0 +1,77 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+
+body { margin: 0; font-family: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif; color: #d6dde6; -webkit-font-smoothing: antialiased; }
+a { color: #7dd3a8; text-decoration: none; } a:hover { color: #a7f3c9; }
+.mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+.root { width: 1440px; background: #0b0e13; display: flex; flex-direction: column; }
+.top { height: 48px; display: flex; align-items: center; gap: 24px; padding: 0 32px; box-sizing: border-box; border-bottom: 1px solid #1c2430; font-size: 13px; }
+.top .word { font-weight: 600; color: #f2f5f8; display: flex; align-items: center; gap: 8px; }
+.top .path { color: #6b7684; }
+.top .path b { color: #d6dde6; font-weight: 500; }
+.tabs { display: flex; gap: 4px; margin-left: auto; }
+.tab { padding: 6px 10px; border-radius: 4px; color: #8b95a3; }
+.tab.on { background: #161c25; color: #f2f5f8; }
+.tab .n { color: #6b7684; margin-left: 6px; }
+.right { display: flex; align-items: center; gap: 14px; color: #8b95a3; }
+.wrap { padding: 32px 32px 56px; display: flex; flex-direction: column; gap: 40px; }
+h1 { margin: 0; font-size: 18px; font-weight: 600; color: #f2f5f8; }
+.sub { margin: 6px 0 0; font-size: 13px; color: #8b95a3; }
+.prompt { font-size: 13px; color: #7dd3a8; display: flex; gap: 8px; align-items: center; }
+.prompt .d { color: #6b7684; }
+.prompt .c { color: #6b7684; margin-left: 12px; }
+section { display: flex; flex-direction: column; gap: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 500; color: #6b7684; padding: 8px 12px; border-bottom: 1px solid #1c2430; text-transform: lowercase; }
+td { padding: 0 12px; height: 38px; border-bottom: 1px solid #141a22; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+tr:hover td { background: #10151c; }
+td.k { color: #f2f5f8; }
+td.m { color: #8b95a3; }
+.ok { color: #7dd3a8; } .bad { color: #f87171; } .off { color: #6b7684; }
+.lbl { color: #c7b26a; }
+.btn { height: 34px; padding: 0 14px; border-radius: 4px; font-size: 13px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; border: 1px solid #263040; color: #d6dde6; background: #10151c; }
+.btn.p { background: #7dd3a8; color: #0b0e13; border-color: #7dd3a8; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+label { font-size: 12px; color: #8b95a3; }
+.in { height: 38px; border: 1px solid #263040; border-radius: 4px; background: #0f131a; padding: 0 12px; font-size: 14px; display: flex; align-items: center; color: #f2f5f8; box-sizing: border-box; gap: 8px; }
+.in .cur { color: #6b7684; }
+.in.pw { letter-spacing: .2em; }
+.box { border: 1px solid #1c2430; border-radius: 6px; background: #0f131a; }
+.line { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #1c2430; font-size: 13px; }
+.line:last-child { border-bottom: 0; }
+.hint { font-size: 12px; color: #6b7684; margin: 0; line-height: 18px; }
+
+  </style>
+</helmet>
+
+<div class="root" style="min-height: 720px">
+  
+<header class="top">
+  <span class="word"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"></path><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"></circle></svg>clavis</span>
+  <span class="path mono">status</span>
+  
+  <span class="right"><span class="btn" style="height: 28px; font-size: 12px">Sign in</span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2"></path><path d="M12 20v2"></path><path d="m4.93 4.93 1.41 1.41"></path><path d="m17.66 17.66 1.41 1.41"></path><path d="M2 12h2"></path><path d="M20 12h2"></path><path d="m6.34 17.66-1.41 1.41"></path><path d="m19.07 4.93-1.41 1.41"></path></svg></span>
+</header>
+  <div style="width: 640px; margin: 0 auto; padding-top: 72px; display: flex; flex-direction: column; gap: 20px">
+    <div class="prompt mono"><span class="d">$</span>clavis doctor<span class="c"># runs when this page opens</span></div>
+    <div class="box mono">
+      <div class="line"><span>server</span><span class="ok">reachable</span></div>
+      <div class="line"><span>database</span><span class="bad">unavailable</span></div>
+    </div>
+    <p style="margin: 0; font-size: 13px; line-height: 20px; color: #8b95a3">The server is reachable, but its platform database is not responding. Start the database, then retry.</p>
+    <div><span class="btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>Retry</span></div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
