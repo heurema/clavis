@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap">
+  <style>
+
+body { margin: 0; font-family: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #0f172a; -webkit-font-smoothing: antialiased; }
+a { color: #2563eb; text-decoration: none; } a:hover { text-decoration: underline; }
+.root { width: 1440px; background: #f8fafc; display: flex; }
+.side { width: 232px; flex-shrink: 0; background: #ffffff; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; padding: 16px 12px; gap: 4px; box-sizing: border-box; }
+.brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px 18px; font-weight: 600; font-size: 15px; letter-spacing: -0.01em; }
+.mark { width: 26px; height: 26px; border-radius: 6px; background: #0f172a; color: #ffffff; display: flex; align-items: center; justify-content: center; }
+.nav { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 6px; font-size: 13.5px; color: #334155; }
+.nav.on { background: #f1f5f9; color: #0f172a; font-weight: 500; }
+.nav .n { margin-left: auto; font-size: 12px; color: #94a3b8; font-variant-numeric: tabular-nums; }
+.side .foot { margin-top: auto; border-top: 1px solid #e2e8f0; padding-top: 12px; display: flex; flex-direction: column; gap: 2px; }
+.who { display: flex; align-items: center; gap: 10px; padding: 6px 10px; font-size: 13px; }
+.who .av { width: 24px; height: 24px; border-radius: 999px; background: #dbeafe; color: #1e40af; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; }
+.who .r { color: #64748b; font-size: 12px; }
+.top { height: 56px; border-bottom: 1px solid #e2e8f0; background: #ffffff; display: flex; align-items: center; padding: 0 40px; gap: 16px; box-sizing: border-box; }
+.main { flex: 1; min-width: 0; padding: 32px 40px 48px; box-sizing: border-box; display: flex; flex-direction: column; gap: 20px; }
+.ph { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+.sub { margin: 4px 0 0; font-size: 13.5px; color: #64748b; }
+.card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 1px 2px rgba(15,23,42,.04); overflow: hidden; }
+.cli { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #64748b; background: #f1f5f9; border-radius: 6px; padding: 4px 8px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-size: 11px; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: #64748b; padding: 8px 16px; border-bottom: 1px solid #e2e8f0; background: #fafbfc; }
+td { padding: 0 16px; height: 42px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.k { font-weight: 500; }
+td.m { color: #64748b; }
+td.num { font-variant-numeric: tabular-nums; color: #64748b; }
+.dot { display: inline-flex; align-items: center; gap: 7px; }
+.dot i { width: 7px; height: 7px; border-radius: 999px; background: #94a3b8; display: inline-block; }
+.dot.ok i { background: #16a34a; } .dot.bad i { background: #dc2626; } .dot.off i { background: #cbd5e1; }
+.dot.bad { color: #b91c1c; }
+.chips { display: flex; gap: 6px; }
+.chip { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 11px; border: 1px solid #e2e8f0; border-radius: 4px; padding: 1px 6px; color: #475569; background: #ffffff; }
+.btn { height: 36px; padding: 0 14px; border-radius: 6px; font-size: 13.5px; font-weight: 500; display: inline-flex; align-items: center; gap: 8px; border: 1px solid transparent; box-sizing: border-box; }
+.btn.p { background: #2563eb; color: #ffffff; }
+.btn.o { background: #ffffff; border-color: #e2e8f0; color: #0f172a; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+.ib { width: 32px; height: 32px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; color: #64748b; border: 1px solid #e2e8f0; background: #ffffff; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+label { font-size: 13px; font-weight: 500; }
+.in { height: 36px; border: 1px solid #cbd5e1; border-radius: 6px; background: #ffffff; padding: 0 10px; font-size: 14px; display: flex; align-items: center; color: #0f172a; box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+.in.pw { letter-spacing: .2em; }
+.in.empty { color: #94a3b8; }
+.help { font-size: 12px; color: #64748b; margin: 0; line-height: 18px; }
+.alert { border: 1px solid #fecaca; background: #fef2f2; color: #991b1b; border-radius: 6px; padding: 10px 12px; font-size: 13px; line-height: 19px; display: flex; flex-direction: column; gap: 2px; }
+.note { font-size: 12.5px; color: #64748b; margin: 0; }
+
+  </style>
+</helmet>
+
+<div class="root" style="min-height: 720px; flex-direction: column">
+  
+<header class="top">
+  <div class="brand" style="padding: 0; margin-right: auto"><span class="mark"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"></path><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"></circle></svg></span>Clavis</div>
+  <span class="ib"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path></svg></span>
+</header>
+  <div style="flex: 1; display: flex; align-items: flex-start; justify-content: center; padding-top: 96px">
+    <div style="width: 384px; display: flex; flex-direction: column; gap: 20px">
+      <div style="display: flex; flex-direction: column; gap: 6px">
+        <h1 style="font-size: 22px">Sign in</h1>
+        
+      </div>
+      <div class="alert">Incorrect username or password.</div>
+      <div class="card" style="padding: 20px; display: flex; flex-direction: column; gap: 16px">
+        <div class="field"><label>Username</label><div class="in">emil</div></div>
+        <div class="field"><label>Password</label><div class="in empty">Password</div></div>
+        <span class="btn p" style="justify-content: center">Sign in</span>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

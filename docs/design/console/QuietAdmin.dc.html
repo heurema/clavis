@@ -1,0 +1,97 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Serif&display=swap">
+  <style>
+
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Source Sans 3", sans-serif; color: #1c1917; -webkit-font-smoothing: antialiased; }
+a { color: #1c1917; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: #a8a29e; } a:hover { text-decoration-color: #1c1917; }
+.root { width: 1440px; background: #fbfaf8; display: flex; flex-direction: column; }
+.top { height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 64px; box-sizing: border-box; border-bottom: 1px solid #e7e5e4; }
+.word { font-family: "Instrument Serif", Georgia, "Times New Roman", serif; font-size: 26px; letter-spacing: -0.01em; }
+.links { display: flex; gap: 28px; font-size: 14px; color: #57534e; align-items: center; }
+.links .on { color: #1c1917; font-weight: 500; }
+.wrap { width: 1040px; margin: 0 auto; padding: 56px 0 72px; display: flex; flex-direction: column; gap: 48px; }
+h1 { margin: 0; font-family: "Instrument Serif", Georgia, serif; font-weight: 400; font-size: 40px; line-height: 1.1; letter-spacing: -0.01em; }
+.lede { margin: 12px 0 0; font-size: 16px; line-height: 24px; color: #57534e; max-width: 560px; }
+section { display: flex; flex-direction: column; gap: 16px; }
+h2 { margin: 0; font-family: "Instrument Serif", Georgia, serif; font-weight: 400; font-size: 26px; display: flex; align-items: baseline; gap: 10px; }
+h2 .n { font-family: -apple-system, BlinkMacSystemFont, sans-serif; font-size: 14px; color: #a8a29e; font-variant-numeric: tabular-nums; }
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+th { text-align: left; font-weight: 500; font-size: 13px; color: #78716c; padding: 0 0 10px; border-bottom: 1px solid #1c1917; }
+td { padding: 14px 0; border-bottom: 1px solid #e7e5e4; vertical-align: top; }
+td.k { font-weight: 500; }
+td.m { color: #78716c; }
+td.num { font-variant-numeric: tabular-nums; }
+.bad { color: #b91c1c; }
+.tag { font-size: 13px; color: #57534e; border: 1px solid #d6d3d1; border-radius: 999px; padding: 1px 9px; margin-right: 6px; white-space: nowrap; }
+.btn { height: 40px; padding: 0 18px; border-radius: 4px; font-size: 15px; font-weight: 500; display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; border: 1px solid #1c1917; }
+.btn.p { background: #1c1917; color: #fbfaf8; }
+.btn.o { background: transparent; color: #1c1917; }
+.field { display: flex; flex-direction: column; gap: 8px; }
+label { font-size: 14px; font-weight: 500; }
+.in { height: 42px; border: 1px solid #a8a29e; border-radius: 4px; background: #ffffff; padding: 0 12px; font-size: 16px; display: flex; align-items: center; box-sizing: border-box; }
+.in.pw { letter-spacing: .2em; }
+.small { font-size: 13px; color: #78716c; margin: 0; line-height: 20px; }
+.rows { display: flex; flex-direction: column; }
+.row { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; border-bottom: 1px solid #e7e5e4; font-size: 16px; }
+.row:first-child { border-top: 1px solid #1c1917; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: #f0eeeb; padding: 2px 6px; border-radius: 3px; }
+
+  </style>
+</helmet>
+
+<div class="root" style="min-height: 1200px">
+  <header class="top"><span class="word">Clavis</span><nav class="links"><span class="on">Administration</span><span>emil</span><span>Dark</span><span>Sign out</span></nav></header>
+  <div class="wrap">
+    <div><h1>Administration</h1><p class="lede">Read-only view of the accounts, connections and grants on this installation. Every change goes through the CLI.</p></div>
+    <section>
+      <h2>Users <span class="n">3</span></h2>
+      <table>
+        <thead><tr><th style="width: 260px">Username</th><th style="width: 160px">Role</th><th style="width: 200px">Status</th><th>Created</th></tr></thead>
+        <tbody><tr><td class="k">emil</td><td class="m">admin</td><td class="">Active</td><td class="num m">2026-09-10</td></tr><tr><td class="k">alice.smith</td><td class="m">member</td><td class="">Active</td><td class="num m">2026-09-11</td></tr><tr><td class="k">bob</td><td class="m">member</td><td class="bad">Blocked</td><td class="num m">2026-09-12</td></tr></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Connections <span class="n">3</span></h2>
+      <table>
+        <thead><tr><th style="width: 260px">Name</th><th style="width: 160px">Provider</th><th style="width: 260px">Labels</th><th style="width: 140px">Status</th><th>Last check</th></tr></thead>
+        <tbody><tr>
+          <td class="k">reporting-pg<div class="m" style="font-weight: 400; font-size: 13px; margin-top: 2px">Reporting warehouse</div></td>
+          <td class="m">postgresql</td>
+          <td><span class="tag">env=prod</span><span class="tag">team=data</span></td>
+          <td class="m">Enabled</td>
+          <td><span class="">Reachable</span> <span class="m">· 2 h ago</span></td>
+        </tr><tr>
+          <td class="k">vm-main<div class="m" style="font-weight: 400; font-size: 13px; margin-top: 2px">Metrics</div></td>
+          <td class="m">victoriametrics</td>
+          <td><span class="m">—</span></td>
+          <td class="m">Enabled</td>
+          <td><span class="bad">Unreachable</span> <span class="m">· 5 min ago</span></td>
+        </tr><tr>
+          <td class="k">vl-logs<div class="m" style="font-weight: 400; font-size: 13px; margin-top: 2px">Logs</div></td>
+          <td class="m">victorialogs</td>
+          <td><span class="tag">env=staging</span></td>
+          <td class="m">Disabled</td>
+          <td><span class="m">Not checked yet</span></td>
+        </tr></tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Grants <span class="n">2</span></h2>
+      <table>
+        <thead><tr><th style="width: 260px">User</th><th style="width: 260px">Connection</th><th style="width: 200px">Granted</th><th>Granted by</th></tr></thead>
+        <tbody><tr><td class="k">alice.smith</td><td>reporting-pg</td><td class="num m">2026-09-11</td><td class="m">emil</td></tr><tr><td class="k">bob</td><td>vm-main</td><td class="num m">2026-09-12</td><td class="m">emil</td></tr></tbody>
+      </table>
+    </section>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

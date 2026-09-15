@@ -1,0 +1,282 @@
+{
+  "artboards": [
+    {
+      "file": "SignIn.dc.html",
+      "title": "Sign in",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 720,
+      "page": "page-1"
+    },
+    {
+      "file": "SignInError.dc.html",
+      "title": "Sign in \u2014 wrong password",
+      "x": 1520,
+      "y": 0,
+      "w": 1440,
+      "h": 720,
+      "page": "page-1"
+    },
+    {
+      "file": "Users.dc.html",
+      "title": "Users",
+      "x": 0,
+      "y": 860,
+      "w": 1440,
+      "h": 960,
+      "page": "page-1"
+    },
+    {
+      "file": "Main.dc.html",
+      "title": "Connections",
+      "x": 1520,
+      "y": 860,
+      "w": 1440,
+      "h": 960,
+      "page": "page-1"
+    },
+    {
+      "file": "Grants.dc.html",
+      "title": "Grants",
+      "x": 3040,
+      "y": 860,
+      "w": 1440,
+      "h": 960,
+      "page": "page-1"
+    },
+    {
+      "file": "ConnectionsDark.dc.html",
+      "title": "Connections \u2014 dark",
+      "x": 0,
+      "y": 1960,
+      "w": 1440,
+      "h": 960,
+      "page": "page-1"
+    },
+    {
+      "file": "QuietStatus.dc.html",
+      "title": "B \u00b7 Quiet \u2014 Status",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 720,
+      "page": "page-2"
+    },
+    {
+      "file": "QuietLogin.dc.html",
+      "title": "B \u00b7 Quiet \u2014 Login",
+      "x": 1520,
+      "y": 0,
+      "w": 1440,
+      "h": 720,
+      "page": "page-2"
+    },
+    {
+      "file": "QuietAdmin.dc.html",
+      "title": "B \u00b7 Quiet \u2014 Admin",
+      "x": 3040,
+      "y": 0,
+      "w": 1440,
+      "h": 1200,
+      "page": "page-2"
+    },
+    {
+      "file": "TerminalStatus.dc.html",
+      "title": "C \u00b7 Terminal \u2014 Status",
+      "x": 0,
+      "y": 1400,
+      "w": 1440,
+      "h": 720,
+      "page": "page-2"
+    },
+    {
+      "file": "TerminalLogin.dc.html",
+      "title": "C \u00b7 Terminal \u2014 Login",
+      "x": 1520,
+      "y": 1400,
+      "w": 1440,
+      "h": 720,
+      "page": "page-2"
+    },
+    {
+      "file": "TerminalAdmin.dc.html",
+      "title": "C \u00b7 Terminal \u2014 Admin",
+      "x": 3040,
+      "y": 1400,
+      "w": 1440,
+      "h": 960,
+      "page": "page-2"
+    },
+    {
+      "file": "GrantsByConnection.dc.html",
+      "title": "A \u00b7 By connection",
+      "x": 0,
+      "y": 2800,
+      "w": 1440,
+      "h": 960,
+      "page": "page-2"
+    },
+    {
+      "file": "GrantsByRecipient.dc.html",
+      "title": "B \u00b7 By recipient",
+      "x": 1520,
+      "y": 2800,
+      "w": 1440,
+      "h": 960,
+      "page": "page-2"
+    },
+    {
+      "file": "GrantsMatrix.dc.html",
+      "title": "C \u00b7 Access matrix",
+      "x": 3040,
+      "y": 2800,
+      "w": 1440,
+      "h": 960,
+      "page": "page-2"
+    },
+    {
+      "file": "GroupsList.dc.html",
+      "title": "Groups",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 960,
+      "page": "page-3"
+    },
+    {
+      "file": "GroupDetail.dc.html",
+      "title": "D \u00b7 Group detail",
+      "x": 0,
+      "y": 3880,
+      "w": 1440,
+      "h": 960,
+      "page": "page-2"
+    },
+    {
+      "file": "UserDetail.dc.html",
+      "title": "D \u00b7 User detail",
+      "x": 1520,
+      "y": 3880,
+      "w": 1440,
+      "h": 960,
+      "page": "page-2"
+    },
+    {
+      "file": "GroupTabs.dc.html",
+      "title": "Group \u00b7 Members",
+      "x": 1520,
+      "y": 0,
+      "w": 1440,
+      "h": 960,
+      "page": "page-3"
+    },
+    {
+      "file": "UserTabs.dc.html",
+      "title": "User \u00b7 Access",
+      "x": 3040,
+      "y": 1080,
+      "w": 1440,
+      "h": 960,
+      "page": "page-3"
+    },
+    {
+      "file": "UsersInline.dc.html",
+      "title": "F \u00b7 Users with groups inline",
+      "x": 3040,
+      "y": 3880,
+      "w": 1440,
+      "h": 960,
+      "page": "page-2"
+    },
+    {
+      "file": "ConnectionAccess.dc.html",
+      "title": "Connection \u00b7 Access",
+      "x": 0,
+      "y": 2160,
+      "w": 1440,
+      "h": 960,
+      "page": "page-3"
+    },
+    {
+      "file": "AccessToggle.dc.html",
+      "title": "H \u00b7 One Access page",
+      "x": 0,
+      "y": 4960,
+      "w": 1440,
+      "h": 960,
+      "page": "page-2"
+    },
+    {
+      "file": "GroupTabsConnections.dc.html",
+      "w": 1440,
+      "h": 960,
+      "title": "Group \u00b7 Connections",
+      "x": 3040,
+      "y": 0,
+      "page": "page-3"
+    },
+    {
+      "file": "UsersList.dc.html",
+      "w": 1440,
+      "h": 960,
+      "title": "Users",
+      "x": 0,
+      "y": 1080,
+      "page": "page-3"
+    },
+    {
+      "file": "UserTabsGroups.dc.html",
+      "w": 1440,
+      "h": 960,
+      "title": "User \u00b7 Groups",
+      "x": 1520,
+      "y": 1080,
+      "page": "page-3"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "flow",
+      "x": -520,
+      "y": 0,
+      "w": 420,
+      "page": "page-1",
+      "text": "Console direction, built out.\n\nNo status page: the root redirects to sign-in, and a signed-in administrator lands on Users. The sidebar replaces the old single admin page; each list gets its own page with room for its columns.\n\nRow 1: sign-in, plain and after a wrong password.\nRow 2: the three admin pages.\nRow 3: the same shell in dark appearance."
+    },
+    {
+      "id": "other",
+      "x": -520,
+      "y": 0,
+      "w": 420,
+      "page": "page-2",
+      "text": "The two directions not chosen for the console, and below them the grants-page directions not chosen (A, B, C, D, F, H), kept for reference."
+    },
+    {
+      "id": "chosen-e",
+      "x": -520,
+      "y": 0,
+      "w": 420,
+      "page": "page-3",
+      "text": "Chosen direction: tabbed detail pages, no Grants page.\n\nRow 1: the Groups list opens a group; its page has Members, Connections and Details tabs.\nRow 2: the Users list carries counts only; a user's page has Groups, Access, Sessions and Details tabs. Access lists every connection with the path it comes through (\"direct \u00b7 also via finance-managers\").\nRow 3: a connection's Access tab lists the groups granted and every person who can use it, with the group they come through.\n\nThe sidebar has three entries: Users, Groups, Connections. Demo data: two groups, two members, two connections, one direct grant."
+    }
+  ],
+  "launch": {
+    "view": "canvas",
+    "page": "page-3"
+  },
+  "pages": [
+    {
+      "id": "page-1",
+      "name": "Clavis UI"
+    },
+    {
+      "id": "page-2",
+      "name": "Other directions"
+    },
+    {
+      "id": "page-3",
+      "name": "Groups and access"
+    }
+  ]
+}
