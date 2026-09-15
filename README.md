@@ -218,6 +218,25 @@ Appearance is the only persisted browser preference (`clavis.appearance`); with
 storage blocked, the appearance control still works for the lifetime of the
 loaded page.
 
+## Deployment
+
+A Helm chart for the server lives in `deploy/charts/clavis`. It installs one
+Deployment, one Service and one ServiceAccount, with an optional Ingress or
+Gateway API HTTPRoute, NetworkPolicy and PodDisruptionBudget, and it owns no
+database. The server image is `ghcr.io/heurema/clavis`, listening on port 8080
+as a non-root user with a read-only root filesystem.
+
+The chart takes the database URL, the encryption key and the bootstrap password
+as references to Secrets you already have, and requires `publicURL`, the HTTPS
+origin you terminate TLS on. `make chart-lint` lints the chart and
+schema-validates every value set in `deploy/charts/clavis/ci/`, and runs inside
+`make check`.
+
+Read `deploy/charts/clavis/README.md` before installing or upgrading: it carries
+the operator contract, including the bootstrap lifecycle, why an upgrade across
+a migration interrupts service and cannot be rolled back, and why the database
+and the encryption key must be backed up together.
+
 ## Agents
 
 Agents use the CLI plus a skill that teaches it. The skill ships inside the
