@@ -1,0 +1,16 @@
+{{- include "clavis.validate" . -}}
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "clavis.fullname" . }}
+  labels:
+    {{- include "clavis.labels" . | nindent 4 }}
+spec:
+  # With one replica this blocks voluntary evictions, a node drain included,
+  # until an operator intervenes. That is the point; see README.md.
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "clavis.selectorLabels" . | nindent 6 }}
+{{- end }}

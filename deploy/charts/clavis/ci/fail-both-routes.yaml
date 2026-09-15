@@ -1,0 +1,17 @@
+# Two route kinds for one Service is an ambiguity JSON Schema states badly, so
+# the fail rule in templates/_helpers.tpl is the only gate. Rendering must fail
+# saying they are mutually exclusive.
+publicURL: https://clavis.example.com
+secrets:
+  database:
+    secretName: clavis
+  encryptionKey:
+    secretName: clavis
+ingress:
+  enabled: true
+  host: clavis.example.com
+httpRoute:
+  enabled: true
+  parentRefs:
+    - name: public
+      namespace: gateway

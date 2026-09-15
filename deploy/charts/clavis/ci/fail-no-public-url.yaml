@@ -1,0 +1,8 @@
+# publicURL is left at its empty default. Rendering must fail naming the value:
+# a non-loopback bind without an HTTPS origin is a server startup error, and the
+# chart refuses to produce a manifest that cannot start.
+secrets:
+  database:
+    secretName: clavis
+  encryptionKey:
+    secretName: clavis

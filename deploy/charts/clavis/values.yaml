@@ -1,0 +1,163 @@
+# Clavis server values. Every setting the chart exposes maps to a documented
+# CLAVIS_* variable or to a Kubernetes field; nothing here is a secret value.
+# See README.md in this directory for the operator contract.
+
+image:
+  repository: ghcr.io/heurema/clavis
+  # Empty tag means Chart.yaml's appVersion, so a chart release pins a server
+  # release by default. A digest, when set, wins over the tag: image automation
+  # writes digests and a digest is the only immutable reference.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+# Names of image pull Secrets that already exist in the release namespace.
+imagePullSecrets: []
+
+# One replica is the supported topology. The server applies migrations at
+# startup under a session-level advisory lock and an old pod fails closed once a
+# newer pod's migration commits, so extra replicas do not survive a schema
+# change. See "Upgrades" in README.md.
+replicaCount: 1
+# maxUnavailable 0 with maxSurge 1 starts the new pod before the old one goes
+# away. It does not make an upgrade across a migration seamless; nothing can.
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+# Required. The HTTPS origin browsers and CLIs reach this installation on,
+# scheme and host only, no path. The server binds all interfaces in the
+# container, and a non-loopback bind refuses to start without an HTTPS origin.
+# Terminate TLS at the Ingress or the Gateway; Clavis never reads forwarded
+# headers to guess its origin.
+publicURL: ""
+
+# Server settings. Durations use Go duration syntax with the units ms, s, m and
+# h, optionally combined (2s, 500ms, 1m30s); the chart derives the readiness
+# probe timeout and the termination grace period from two of them.
+server:
+  # debug, info, warn or error.
+  logLevel: info
+  # Session lifetime, between 5m and 24h.
+  sessionTTL: 8h
+  # Bound on the readiness database check. The readiness probe timeout is this
+  # value plus one second, rounded up.
+  dbCheckTimeout: 2s
+  # Bound on graceful shutdown. terminationGracePeriodSeconds is this value
+  # plus five seconds, rounded up.
+  shutdownTimeout: 10s
+
+# References to Secrets that already exist in the release namespace. The chart
+# never accepts a secret value and never creates, rotates or deletes a Secret.
+# The three references may name the same Secret.
+secrets:
+  database:
+    # Required. Secret holding the PostgreSQL connection URL.
+    secretName: ""
+    key: database-url
+  encryptionKey:
+    # Required. Secret holding the 64 hexadecimal characters of the encryption
+    # key. Losing this key makes every stored connection credential
+    # unrecoverable; back it up with the database.
+    secretName: ""
+    key: encryption-key
+    # Absolute path the key file appears at in the container, and the value of
+    # CLAVIS_ENCRYPTION_KEY_FILE.
+    mountPath: /var/run/secrets/clavis/encryption-key
+    # true when a file-based provider (a Secrets Store CSI driver, for example)
+    # supplies the file through extraVolumes and extraVolumeMounts: the chart
+    # then renders no Secret volume for it and only sets the variable.
+    external: false
+
+# The initial administrator, created once against a fresh database. Enable for
+# the first install, wait for readiness, then disable, upgrade and delete the
+# Secret. The chart never inspects cluster state and never varies by revision.
+bootstrap:
+  enabled: false
+  # Required when enabled. 3-64 lowercase letters, digits, ".", "_" or "-",
+  # starting with a letter.
+  username: ""
+  password:
+    # Required when enabled. Secret holding the administrator's initial
+    # password, 15-1024 UTF-8 bytes.
+    secretName: ""
+    key: password
+    # Absolute path the password file appears at, and the value of
+    # CLAVIS_BOOTSTRAP_PASSWORD_FILE.
+    mountPath: /var/run/secrets/clavis/bootstrap-password
+    external: false
+
+serviceAccount:
+  # The server calls no Kubernetes API, so its token is never mounted.
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 80
+
+# Ingress and httpRoute are mutually exclusive; enable at most one.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # Empty host matches every request reaching the controller.
+  host: ""
+  path: /
+  pathType: Prefix
+  # Standard Ingress TLS entries, for example
+  # [{secretName: clavis-tls, hosts: [clavis.example.com]}].
+  tls: []
+
+httpRoute:
+  enabled: false
+  annotations: {}
+  # Required when enabled, for example [{name: public, namespace: gateway}].
+  parentRefs: []
+  hostnames: []
+
+# Disabled by default. Enabling it with empty rules denies all traffic in both
+# directions, DNS included: supply the egress rules your cluster needs to reach
+# DNS and PostgreSQL, and the ingress rules your router needs.
+networkPolicy:
+  enabled: false
+  ingress: []
+  egress: []
+
+# With one replica, minAvailable 1 blocks voluntary evictions such as a node
+# drain until the operator intervenes. Leave it disabled unless that is wanted.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+# 65532 is the image's nonroot user and group. fsGroup makes the mounted secret
+# files group-readable by the server process, which is the only way it accepts
+# a file that is not owner-only. Overriding this block without an fsGroup the
+# process belongs to makes the server refuse to start.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources: {}
+
+# Pass-through values. extraEnv holds plain container env entries; put secret
+# material in a Secret and reference it with valueFrom.
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}

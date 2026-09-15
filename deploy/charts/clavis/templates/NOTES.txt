@@ -1,0 +1,32 @@
+Clavis {{ .Chart.AppVersion }} is installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Public origin: {{ .Values.publicURL }}
+Image:         {{ include "clavis.image" . }}
+
+Watch the rollout and readiness:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deployment/{{ include "clavis.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "clavis.fullname" . }} 8080:{{ .Values.service.port }}
+  curl -s localhost:8080/readyz
+
+The server applies its migrations at startup. Readiness stays "not_ready" with
+an initialization code until that finishes, and /healthz shows both checks and
+the build version.
+{{ if .Values.bootstrap.enabled }}
+Bootstrap is enabled. Once readiness reports "ready", sign in with the CLI,
+then finish the lifecycle so the password Secret can go away:
+
+  helm upgrade {{ .Release.Name }} <chart> --reuse-values --set bootstrap.enabled=false
+  kubectl -n {{ .Release.Namespace }} delete secret {{ .Values.bootstrap.password.secretName }}
+
+Subsequent starts ignore bootstrap inputs; they never reset credentials.
+{{- else }}
+Bootstrap is disabled. An uninitialized installation stays "not_ready" with
+SETUP_REQUIRED until it is installed once with bootstrap enabled.
+{{- end }}
+{{ if and (not .Values.ingress.enabled) (not .Values.httpRoute.enabled) }}
+No route is enabled: only in-cluster clients reach the Service. Terminate TLS
+at an Ingress or a Gateway on {{ .Values.publicURL }} before browsers sign in.
+{{- end }}
+Read deploy/charts/clavis/README.md before upgrading: an image carrying a new
+migration interrupts service, and rollback across a migration is unsupported.

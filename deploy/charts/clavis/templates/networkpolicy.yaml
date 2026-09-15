@@ -1,0 +1,23 @@
+{{- include "clavis.validate" . -}}
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "clavis.fullname" . }}
+  labels:
+    {{- include "clavis.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "clavis.selectorLabels" . | nindent 6 }}
+  # Both directions are always declared, so an empty rule list denies rather
+  # than silently allows. The rules themselves are the operator's: only the
+  # cluster knows where DNS and PostgreSQL live.
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- toYaml .Values.networkPolicy.ingress | nindent 4 }}
+  egress:
+    {{- toYaml .Values.networkPolicy.egress | nindent 4 }}
+{{- end }}
