@@ -72,6 +72,12 @@ seconds as a float.
 {{- $number := float64 (regexFind "^[0-9]+(\\.[0-9]+)?" $part) -}}
 {{- $_ := set $total "value" (addf $total.value (mulf $number (index $seconds $unit))) -}}
 {{- end -}}
+{{- /* A zero timeout is invalid configuration for the server, and a zero
+probe timeout or grace period is invalid for Kubernetes. The schema rejects
+zero too; this is the gate when schema validation is skipped. */ -}}
+{{- if le $total.value 0.0 -}}
+{{- fail (printf "clavis: %q must be a positive duration" $value) -}}
+{{- end -}}
 {{- $total.value -}}
 {{- end -}}
 
@@ -105,6 +111,12 @@ Every template includes this first, so any render fails with the same message.
 {{- end -}}
 {{- if not (hasPrefix "https://" .Values.publicURL) -}}
 {{- fail (printf "clavis: publicURL must be an https:// origin, got %q" .Values.publicURL) -}}
+{{- end -}}
+{{- /* A JSON Schema pattern cannot express a duration range, so the bound the
+server accepts is checked here instead of being left to a startup failure. */ -}}
+{{- $sessionTTL := float64 (include "clavis.durationSeconds" .Values.server.sessionTTL) -}}
+{{- if or (lt $sessionTTL 300.0) (gt $sessionTTL 86400.0) -}}
+{{- fail (printf "clavis: server.sessionTTL must be between 5m and 24h, got %q" .Values.server.sessionTTL) -}}
 {{- end -}}
 {{- if and .Values.ingress.enabled .Values.httpRoute.enabled -}}
 {{- fail "clavis: ingress.enabled and httpRoute.enabled are mutually exclusive; enable at most one route kind" -}}

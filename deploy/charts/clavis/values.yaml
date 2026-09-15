@@ -34,8 +34,9 @@ strategy:
 publicURL: ""
 
 # Server settings. Durations use Go duration syntax with the units ms, s, m and
-# h, optionally combined (2s, 500ms, 1m30s); the chart derives the readiness
-# probe timeout and the termination grace period from two of them.
+# h, optionally combined (2s, 500ms, 1m30s), and must be greater than zero; the
+# chart derives the readiness probe timeout and the termination grace period
+# from two of them.
 server:
   # debug, info, warn or error.
   logLevel: info
@@ -71,8 +72,13 @@ secrets:
     external: false
 
 # The initial administrator, created once against a fresh database. Enable for
-# the first install, wait for readiness, then disable, upgrade and delete the
-# Secret. The chart never inspects cluster state and never varies by revision.
+# the first install, wait for readiness, then disable and upgrade. Then get rid
+# of the initial password: delete the Secret only when password.secretName
+# differs from both secrets.database.secretName and
+# secrets.encryptionKey.secretName; when it names the same Secret as either,
+# remove only password.key, because deleting a shared Secret takes the database
+# URL or the encryption key with it. NOTES.txt prints whichever applies.
+# The chart never inspects cluster state and never varies by revision.
 bootstrap:
   enabled: false
   # Required when enabled. 3-64 lowercase letters, digits, ".", "_" or "-",

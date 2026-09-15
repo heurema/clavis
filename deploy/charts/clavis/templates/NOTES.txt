@@ -13,11 +13,22 @@ The server applies its migrations at startup. Readiness stays "not_ready" with
 an initialization code until that finishes, and /healthz shows both checks and
 the build version.
 {{ if .Values.bootstrap.enabled }}
+{{- $password := .Values.bootstrap.password -}}
+{{- /* The three references may name one Secret, in which case deleting it
+would take the database URL or the encryption key with it. */ -}}
+{{- $shared := or (eq $password.secretName .Values.secrets.database.secretName) (eq $password.secretName .Values.secrets.encryptionKey.secretName) -}}
 Bootstrap is enabled. Once readiness reports "ready", sign in with the CLI,
-then finish the lifecycle so the password Secret can go away:
+then finish the lifecycle so the initial password stops existing:
 
   helm upgrade {{ .Release.Name }} <chart> --reuse-values --set bootstrap.enabled=false
-  kubectl -n {{ .Release.Namespace }} delete secret {{ .Values.bootstrap.password.secretName }}
+{{- if $shared }}
+
+Do not delete that Secret: {{ $password.secretName }} also holds this release's
+database URL or encryption key. Remove only its "{{ $password.key }}" key, at
+the source your secret tooling writes it from.
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} delete secret {{ $password.secretName }}
+{{- end }}
 
 Subsequent starts ignore bootstrap inputs; they never reset credentials.
 {{- else }}

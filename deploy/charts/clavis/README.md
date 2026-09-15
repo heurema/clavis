@@ -65,7 +65,9 @@ spec:
       remoteRef:
         key: clavis/encryption
         property: key
-    # Only for the first install; remove this entry and the Secret afterwards.
+    # Only for the first install. Afterwards drop this entry so the operator
+    # removes the key from the Secret. Do not delete the Secret itself: the
+    # database URL and the encryption key live in it too.
     - secretKey: password
       remoteRef:
         key: clavis/bootstrap
@@ -140,9 +142,17 @@ cluster state and does not vary by Helm revision, so the lifecycle is yours:
 3. Sign in and confirm the account works.
 4. Upgrade with `bootstrap.enabled=false`. The variables and the volume
    disappear from the pod template, so the pod is replaced without them.
-5. Delete the bootstrap Secret.
+5. Get rid of the initial password. **Which action depends on whether the
+   bootstrap Secret is its own Secret.** When `bootstrap.password.secretName`
+   differs from both `secrets.database.secretName` and
+   `secrets.encryptionKey.secretName`, delete the Secret. When it names the
+   same Secret as either of them — as the External Secrets example above does —
+   remove only the `bootstrap.password.key` key, at the source your secret
+   tooling writes it from. Deleting a shared Secret takes the database URL or
+   the encryption key with it. `NOTES.txt` prints whichever applies to your
+   values.
 
-Doing step 5 before step 4 leaves the pod template referencing a Secret that no
+Doing step 5 before step 4 leaves the pod template referencing a file that no
 longer exists, and the next pod never starts: the kubelet cannot mount the
 volume and the pod sits in `ContainerCreating` with a `FailedMount` event.
 
@@ -152,10 +162,9 @@ volume and the pod sits in `ContainerCreating` with a `FailedMount` event.
 
 - The server applies its embedded migrations at startup under a session-level
   advisory lock, and the migration ledger is forward-only and fails closed on a
-  row it does not recognize. When a new image carries a new migration, the new
-  pod migrates and becomes ready, and the old pod then fails closed until the
-  rollout replaces it. Expect an interruption of about one readiness period
-  (`server.dbCheckTimeout` plus the 5-second probe period).
+  row it does not recognize. When a new image carries a new migration, the old
+  pod stops serving the moment the migration commits, and it is removed once
+  the new pod is ready, so the interruption is about one readiness period.
 - **Rolling back an image across a migration is unsupported.** The older
   executable sees a ledger row it does not know and refuses to serve. Roll
   forward, or restore the database and the encryption key together from backup.
@@ -196,7 +205,9 @@ timeout from `server.dbCheckTimeout` (plus one second, rounded up) and
 `terminationGracePeriodSeconds` from `server.shutdownTimeout` (plus five
 seconds), so raising either value raises the probe bound with it. Durations use
 Go syntax with the units `ms`, `s`, `m` and `h`, optionally combined: `2s`,
-`500ms`, `1m30s`.
+`500ms`, `1m30s`. Every duration must be greater than zero, and
+`server.sessionTTL` must be between `5m` and `24h`; the chart refuses to render
+values the server would reject at startup.
 
 ## Verifying a change to this chart
 

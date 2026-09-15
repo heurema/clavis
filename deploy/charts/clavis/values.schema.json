@@ -32,13 +32,23 @@
         "required": ["name"]
       }
     },
-    "strategy": { "type": "object" },
+    "strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["RollingUpdate", "Recreate"] },
+        "rollingUpdate": { "type": "object" }
+      }
+    },
     "server": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "logLevel": { "enum": ["debug", "info", "warn", "error"] },
-        "sessionTTL": { "$ref": "#/definitions/duration" },
+        "sessionTTL": {
+          "description": "Session lifetime. A pattern cannot express the bound, so it is stated here and enforced by a fail rule in templates/_helpers.tpl: at least 5m and at most 24h, the range the server accepts.",
+          "allOf": [{ "$ref": "#/definitions/duration" }]
+        },
         "dbCheckTimeout": { "$ref": "#/definitions/duration" },
         "shutdownTimeout": { "$ref": "#/definitions/duration" }
       }
@@ -75,7 +85,11 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "type": "boolean" },
-        "username": { "type": "string" },
+        "username": {
+          "type": "string",
+          "description": "The server's username grammar: 3 to 64 characters, lowercase letters, digits, \".\", \"_\" or \"-\", starting with a letter. Empty is allowed here because bootstrap.enabled false needs no username; the fail rule in templates/_helpers.tpl requires one when it is true.",
+          "pattern": "^([a-z][a-z0-9._-]{2,63})?$"
+        },
         "password": {
           "type": "object",
           "additionalProperties": false,
@@ -163,8 +177,8 @@
   "definitions": {
     "duration": {
       "type": "string",
-      "description": "Go duration syntax with the units ms, s, m or h, for example 2s, 500ms or 1m30s.",
-      "pattern": "^([0-9]+(\\.[0-9]+)?(ms|s|m|h))+$"
+      "description": "A positive Go duration: one or more number-and-unit pairs using ms, s, m or h, for example 2s, 500ms or 1m30s. At least one pair must be non-zero, so 0s, 0ms and 0h0m are rejected; the server treats a zero timeout as invalid configuration.",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ms|s|m|h))*(0*[1-9][0-9]*(\\.[0-9]+)?|0+\\.[0-9]*[1-9][0-9]*)(ms|s|m|h)([0-9]+(\\.[0-9]+)?(ms|s|m|h))*$"
     },
     "absolutePath": { "type": "string", "pattern": "^/[^\\s]*[^/\\s]$" },
     "stringMap": { "type": "object", "additionalProperties": { "type": "string" } }
