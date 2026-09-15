@@ -22,7 +22,8 @@ account recovery are outside the MVP.
 ## Quick start
 
 Requires Go **1.27.1**, Node.js **26.8.2**, pnpm **12.3.4**, Docker with Compose,
-and GNU Make on macOS or Linux.
+and GNU Make on macOS or Linux. Helm, kind and kubeconform are not separate
+prerequisites: `make setup` installs the pinned versions into `.tools/`.
 
 ```sh
 make setup
@@ -75,6 +76,8 @@ independently of HTML rendering.
 | `make build-cli` | Build only the CLI using Go, without web or SQL tools |
 | `make install-templ` / `make install-golangci-lint` / `make install-deadcode` | Install the exact template compiler / Go linter / dead-code tool pin |
 | `make install-sqlc` | Install the exact development sqlc pin |
+| `make install-helm` / `make install-kind` / `make install-kubeconform` | Install the exact Helm / kind / kubeconform pin |
+| `make install-kube-schemas` | Download and verify the pinned Kubernetes and Gateway API JSON schemas the chart check reads |
 | `make generate-db` | Explicitly regenerate checked-in pgx query methods |
 | `make check-db-generated` | Check the complete generated query tree without rewriting files |
 | `make check-sql-boundaries` | Check generated queries and the handwritten persistence boundary |
@@ -84,6 +87,7 @@ independently of HTML rendering.
 | `make check` | Run non-mutating source checks, linters, tests, and builds |
 | `make lint-go` | Run golangci-lint |
 | `make check-dead-code` | Fail on any Go function no executable reaches, test-only helpers included |
+| `make chart-lint` | Lint the Helm chart and schema-validate every representative value set |
 | `make format` | Format maintained Go, templates and JavaScript; regenerate templ Go source |
 | `make smoke` | Test standalone server HTTP/API/CLI behavior with real database outage, recovery and cleanup |
 | `make test-mutation` | Mutation-test the handwritten Go files changed against `main` in an isolated copy and report survivors |
@@ -91,20 +95,26 @@ independently of HTML rendering.
 | `make down` | Stop the database and keep its data |
 | `make reset-db` | Delete the local Clavis database and its data |
 
-`make setup` installs templ, golangci-lint, deadcode and sqlc with versioned `go install`
-commands into ignored `.tools/<tool>/bin/`, and frontend development dependencies
+`make setup` installs templ, golangci-lint, deadcode, sqlc, Helm, kind and
+kubeconform with versioned `go install` commands into ignored
+`.tools/<tool>/bin/`, and frontend development dependencies
 with pnpm's frozen lockfile. Pins come from the templ runtime in `go.mod`,
-`GOLANGCI_VERSION` and `DEADCODE_VERSION` in `Makefile`, and `.sqlc-version`. Go verifies downloaded
-modules using its normal module integrity checks; no remote installer is executed
+`GOLANGCI_VERSION`, `DEADCODE_VERSION`, `HELM_VERSION`, `KIND_VERSION` and
+`KUBECONFORM_VERSION` in `Makefile`, and `.sqlc-version`. Setup also downloads the
+Kubernetes and Gateway API JSON schemas `make chart-lint` validates against into
+ignored `.tools/kube-schemas/`, pinned by repository commit and verified against
+a checksum per file in `Makefile`, so a repeat run re-verifies them and the chart
+check itself needs no network. Go verifies downloaded modules using its normal
+module integrity checks; no remote installer is executed
 and application Go dependencies are not changed. Package managers and pinned
 install arguments own tool versions; builds/checks do not add custom version gates
 or install tools.
 Rerun the relevant installation target after changing a pin.
 
 `make check` retains Go unit, render, HTTP, authentication, cookie and CSRF tests,
-Node build/tooling regression tests, generated-source checks, formatting, lint and
-builds. It does not run browser automation or visual/layout tests, and setup does
-not install browser binaries.
+Node build/tooling regression tests, generated-source checks, formatting, lint,
+builds and the chart lint. It does not run browser automation or visual/layout
+tests, and setup does not install browser binaries.
 
 `make smoke` copies only the server executable into a fresh temporary directory
 and runs it there with an empty executable search path. HTTP requests verify the
