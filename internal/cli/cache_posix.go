@@ -34,35 +34,9 @@ func openCache(ctx context.Context, origin string) (*credentialCache, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The home itself must be the user's, not merely a trusted ancestor.
-	unsafeHome := storageError{path: home, requirement: "a directory owned by you and not writable by group or others"}
-	fd, err := openConfigDirectory(home)
-	var unsafe storageError
-	if errors.As(err, &unsafe) && unsafe.path == home {
-		return nil, unsafeHome
-	}
+	fd, err := openSessions(home, true)
 	if err != nil {
 		return nil, err
-	}
-	if err = checkPrivate(fd, true, false); err != nil {
-		_ = unix.Close(fd)
-		return nil, unsafeHome
-	}
-	sessions := storageError{path: filepath.Join(home, "sessions"), requirement: "a directory with mode 0700"}
-	err = unix.Mkdirat(fd, "sessions", 0700)
-	if err != nil && !errors.Is(err, unix.EEXIST) {
-		_ = unix.Close(fd)
-		return nil, sessions
-	}
-	next, err := unix.Openat(fd, "sessions", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	_ = unix.Close(fd)
-	if err != nil {
-		return nil, sessions
-	}
-	fd = next
-	if err = checkPrivate(fd, true, true); err != nil {
-		_ = unix.Close(fd)
-		return nil, sessions
 	}
 	digest := sha256.Sum256([]byte(origin))
 	cache := &credentialCache{directory: fd, lock: -1, name: hex.EncodeToString(digest[:]), origin: origin}
@@ -76,21 +50,97 @@ func openCache(ctx context.Context, origin string) (*credentialCache, error) {
 		cache.close()
 		return nil, err
 	}
-	for {
-		if err = ctx.Err(); err != nil {
-			cache.close()
-			return nil, err
+	if err = flockWithin(ctx, lock); err != nil {
+		cache.close()
+		return nil, err
+	}
+	return cache, nil
+}
+
+// readStoredSession reads the session stored for an origin and creates
+// nothing: an absent home, sessions directory or session file is no session.
+// It takes no lock, because opening a lock that does not exist yet would create
+// it; a session file is only ever replaced by rename or unlinked, so a read
+// sees a whole file or none.
+func readStoredSession(home, origin string) (*cachedSession, error) {
+	fd, err := openSessions(home, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256([]byte(origin))
+	cache := &credentialCache{directory: fd, lock: -1, name: hex.EncodeToString(digest[:]), origin: origin}
+	defer cache.close()
+	return cache.read()
+}
+
+// openSessions opens the checked sessions directory in the home. Without
+// create, a missing home or sessions directory is os.ErrNotExist and nothing
+// is made.
+func openSessions(home string, create bool) (int, error) {
+	fd, err := openHome(home, create)
+	if err != nil {
+		return -1, err
+	}
+	sessions := storageError{path: filepath.Join(home, "sessions"), requirement: "a directory with mode 0700"}
+	if create {
+		err = unix.Mkdirat(fd, "sessions", 0700)
+		if err != nil && !errors.Is(err, unix.EEXIST) {
+			_ = unix.Close(fd)
+			return -1, sessions
 		}
-		err = unix.Flock(lock, unix.LOCK_EX|unix.LOCK_NB)
+	}
+	next, err := unix.Openat(fd, "sessions", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	_ = unix.Close(fd)
+	if !create && errors.Is(err, unix.ENOENT) {
+		return -1, os.ErrNotExist
+	}
+	if err != nil {
+		return -1, sessions
+	}
+	if err = checkPrivate(next, true, true); err != nil {
+		_ = unix.Close(next)
+		return -1, sessions
+	}
+	return next, nil
+}
+
+// openHome opens the checked Clavis home.
+func openHome(home string, create bool) (int, error) {
+	// The home itself must be the user's, not merely a trusted ancestor.
+	unsafeHome := storageError{path: home, requirement: "a directory owned by you and not writable by group or others"}
+	fd, err := openConfigDirectory(home, create)
+	var unsafe storageError
+	if errors.As(err, &unsafe) && unsafe.path == home {
+		return -1, unsafeHome
+	}
+	if err != nil {
+		return -1, err
+	}
+	if err = checkPrivate(fd, true, false); err != nil {
+		_ = unix.Close(fd)
+		return -1, unsafeHome
+	}
+	return fd, nil
+}
+
+// flockWithin takes an exclusive lock, waiting no longer than the context.
+func flockWithin(ctx context.Context, lock int) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := unix.Flock(lock, unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
-			return cache, nil
+			return nil
 		}
 		if errors.Is(err, unix.EINTR) {
 			continue
 		}
 		if !errors.Is(err, unix.EWOULDBLOCK) && !errors.Is(err, unix.EAGAIN) {
-			cache.close()
-			return nil, err
+			return err
 		}
 		select {
 		case <-ctx.Done():
@@ -123,7 +173,8 @@ func openLock(ctx context.Context, directory int, name string) (int, error) {
 // Traverse without following symlinks, including in the home's ancestry.
 // Root-owned system ancestors (including sticky temporary roots in isolated
 // tests) are trusted; user-owned ancestors must not be writable by others.
-func openConfigDirectory(path string) (int, error) {
+// Without create, a missing component is os.ErrNotExist.
+func openConfigDirectory(path string, create bool) (int, error) {
 	fd, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, err
@@ -132,13 +183,18 @@ func openConfigDirectory(path string) (int, error) {
 	for _, component := range strings.Split(strings.TrimPrefix(filepath.Clean(path), "/"), "/") {
 		current = filepath.Join(current, component)
 		unsafe := storageError{path: current, requirement: "a directory owned by you or root and not writable by group or others"}
-		err = unix.Mkdirat(fd, component, 0700)
-		if err != nil && !errors.Is(err, unix.EEXIST) {
-			_ = unix.Close(fd)
-			return -1, unsafe
+		if create {
+			err = unix.Mkdirat(fd, component, 0700)
+			if err != nil && !errors.Is(err, unix.EEXIST) {
+				_ = unix.Close(fd)
+				return -1, unsafe
+			}
 		}
 		next, err := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		_ = unix.Close(fd)
+		if !create && errors.Is(err, unix.ENOENT) {
+			return -1, os.ErrNotExist
+		}
 		if err != nil {
 			return -1, unsafe
 		}

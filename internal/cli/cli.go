@@ -20,16 +20,21 @@ func RunWithIO(ctx context.Context, args []string, streams IO) int {
 	var result *Result
 	format := "json"
 	invalid := errors.New("invalid invocation")
+	usageHint := ""
 	check := func(command *urfave.Command) error {
 		format = command.String("output")
-		if command.Args().Len() != 0 || (format != "json" && format != "text") {
+		if command.Args().Len() != positionalArguments(command) {
+			usageHint = profileUsage(command)
+			return invalid
+		}
+		if format != "json" && format != "text" {
 			return invalid
 		}
 		return nil
 	}
 	command := newRootCommand(streams, &help, invalid, check, func(value Result) { result = &value })
 	if err := command.Run(ctx, args); err != nil {
-		value := failure("INVALID_ARGUMENT", "Invalid arguments or configuration; run clavis help", nil)
+		value := failureWithHint("INVALID_ARGUMENT", "Invalid arguments or configuration; run clavis help", usageHint)
 		if secretValueFlag(args) {
 			// There is deliberately no flag that carries a secret value; say
 			// which channels exist instead of the generic usage message.
@@ -106,6 +111,6 @@ func newRootCommand(streams IO, help io.Writer, invalid error, check func(*urfav
 		},
 	}
 	command.Commands = append(command.Commands, authCommands(streams, check, set)...)
-	command.Commands = append(command.Commands, skillCommands(streams, check, set))
+	command.Commands = append(command.Commands, skillCommands(streams, check, set), profilesCommands(check, set))
 	return command
 }

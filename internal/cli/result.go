@@ -210,6 +210,42 @@ func render(w io.Writer, result Result, format string) error {
 	case Diagnosis:
 		_, err := fmt.Fprintf(w, "API: %s\nDatabase: %s\n", data.API, data.Database)
 		return err
+	case ProfileSet:
+		line := "Profile " + data.Name + " set to " + data.Server
+		if data.MadeCurrent {
+			line += ", now current"
+		}
+		_, err := fmt.Fprintln(w, line)
+		return err
+	case ProfileUse:
+		if err := renderProfile(w, data.Profile); err != nil {
+			return err
+		}
+		return renderOverride(w, data.Override, data.overrideKnown, data.Profile.Name)
+	case ProfileCurrent:
+		if err := renderProfile(w, data.Profile); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(w, "Source: %s\n", data.Source)
+		return err
+	case ProfileList:
+		for _, entry := range data.Profiles {
+			mark := " "
+			if entry.Current {
+				mark = "*"
+			}
+			if _, err := fmt.Fprintf(w, "%s %s %s %s\n", mark, entry.Name, entry.Server, profileSessionText(entry.Session)); err != nil {
+				return err
+			}
+		}
+		return renderOverride(w, data.Override, data.overrideKnown, data.Current)
+	case ProfileRemoval:
+		line := "Removed " + data.Name
+		if data.CurrentCleared {
+			line += "; no profile is current now"
+		}
+		_, err := fmt.Fprintln(w, line)
+		return err
 	case buildinfo.Info:
 		_, err := fmt.Fprintf(w, "clavis %s (commit %s, built %s)\n", data.Version, data.Commit, data.Date)
 		return err
@@ -229,6 +265,35 @@ func renderServer(w io.Writer, result Result) error {
 	}
 	_, err := fmt.Fprintln(w, line)
 	return err
+}
+
+// renderProfile prints one profile with what the local session store holds for
+// its server, which is never a verification: whoami is.
+func renderProfile(w io.Writer, entry ProfileEntry) error {
+	_, err := fmt.Fprintf(w, "Profile: %s\nServer: %s\n%s\n", entry.Name, entry.Server, profileSessionText(entry.Session))
+	return err
+}
+
+func profileSessionText(session *ProfileSession) string {
+	if session == nil {
+		return "not signed in"
+	}
+	return "stored session: " + session.Username + " until " + timestamp(session.ExpiresAt)
+}
+
+// renderOverride notes a CLAVIS_PROFILE that makes networked commands in this
+// environment use something other than the file's current profile.
+func renderOverride(w io.Writer, override string, known bool, current string) error {
+	switch {
+	case override == "" || override == current:
+		return nil
+	case !known:
+		_, err := fmt.Fprintf(w, "Note: CLAVIS_PROFILE=%s names no profile; networked commands in this environment exit 2\n", override)
+		return err
+	default:
+		_, err := fmt.Fprintf(w, "Note: CLAVIS_PROFILE=%s selects %s in this environment\n", override, override)
+		return err
+	}
 }
 
 // nullMark distinguishes SQL NULL from an empty string in text output, which
