@@ -362,10 +362,7 @@ func TestSkillInstallNeedsNoSessionOrServer(t *testing.T) {
 	code, result := install(t)
 	require.Equal(t, 0, code)
 	require.True(t, result.OK)
-	config, err := os.UserConfigDir()
-	require.NoError(t, err)
-	assert.NoDirExists(t, filepath.Join(config, "clavis"), "no session storage is opened")
-	assert.NoDirExists(t, filepath.Join(home, ".config", "clavis"))
+	assert.NoDirExists(t, filepath.Join(home, ".clavis"), "no session storage is opened")
 	// The offline commands take neither of the two networked flags.
 	for _, args := range [][]string{
 		{"skill", "install", "--server", "http://127.0.0.1:8080"},

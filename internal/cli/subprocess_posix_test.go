@@ -257,9 +257,7 @@ func TestCLIProcesses(t *testing.T) {
 		require.True(t, decode(t, output).OK)
 		server.Close()
 		// Offline commands must not even inspect a deliberately unsafe cache.
-		config, err := os.UserConfigDir()
-		require.NoError(t, err)
-		require.NoError(t, os.Chmod(filepath.Join(config, "clavis"), 0755))
+		require.NoError(t, os.Chmod(filepath.Join(home, ".clavis", "sessions"), 0755))
 		for _, args := range [][]string{
 			{"--help"}, {"login", "--help"}, {"sessions", "revoke", "--help"}, {"users", "--help"}, {"users"},
 			{"users", "list", "--help"}, {"users", "create", "--help"}, {"users", "block", "--help"}, {"users", "unblock", "--help"},

@@ -34,6 +34,13 @@ func cliHome(t *testing.T) string {
 	home, err := filepath.EvalSymlinks(dir)
 	require.NoError(t, err)
 	t.Setenv("HOME", home)
+	// A developer's own Clavis settings must never reach a test, including the
+	// subprocesses that inherit this environment.
+	for _, name := range []string{"CLAVIS_HOME", "CLAVIS_PROFILE", "CLAVIS_SERVER_URL"} {
+		t.Setenv(name, "")
+		require.NoError(t, os.Unsetenv(name))
+	}
+	// The former session location stays inside the temporary home too.
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("CLAVIS_SERVER_URL", "http://127.0.0.1:8080")
 	return home

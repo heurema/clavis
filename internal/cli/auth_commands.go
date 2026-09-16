@@ -68,8 +68,14 @@ func authCommands(streams IO, check func(*urfave.Command) error, set func(Result
 	}
 }
 
-func storageFailure() Result {
-	return failure("CREDENTIAL_STORAGE_FAILED", "Private credential storage is unavailable or unsafe; credentials were not displayed", nil)
+// storageFailure names the offending local path when a check identified one.
+func storageFailure(err error) Result {
+	message := "Private credential storage is unavailable or unsafe"
+	var unsafe storageError
+	if errors.As(err, &unsafe) {
+		message = unsafe.Error()
+	}
+	return failure("CREDENTIAL_STORAGE_FAILED", message+"; credentials were not displayed", nil)
 }
 
 // validateAuthArguments rejects invalid targets before any credential input,
@@ -179,12 +185,12 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 	cache, err := openCache(lockCtx, origin)
 	cancel()
 	if err != nil {
-		return storageFailure()
+		return storageFailure(err)
 	}
 	defer cache.close()
 	previous, err := cache.read()
 	if err != nil {
-		return storageFailure()
+		return storageFailure(err)
 	}
 	api := authTransport{origin: origin, timeout: timeout}
 	if operation == "login" {
@@ -195,7 +201,7 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 		}
 		if err := cache.write(cachedSession{Origin: origin, LoginResponse: issued}); err != nil {
 			api.cleanup(issued.Token)
-			return storageFailure()
+			return storageFailure(err)
 		}
 		if previous != nil && previous.Token != issued.Token {
 			api.cleanup(previous.Token)
@@ -224,7 +230,7 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 		var revoked auth.Revocation
 		failed := api.request(ctx, auth.LogoutPath, previous.Token, nil, &revoked)
 		if err := cache.remove(previous); err != nil {
-			return storageFailure()
+			return storageFailure(err)
 		}
 		if failed != nil && failed.Error.Code != auth.Unauthenticated {
 			return failure(failed.Error.Code, "Local credential removed; remote revocation was not confirmed", nil)

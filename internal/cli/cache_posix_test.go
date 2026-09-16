@@ -24,10 +24,10 @@ import (
 
 func cachePath(t *testing.T, origin string) string {
 	t.Helper()
-	config, err := os.UserConfigDir()
+	home, err := clavisHome()
 	require.NoError(t, err)
 	digest := sha256.Sum256([]byte(origin))
-	return filepath.Join(config, "clavis", "sessions", hex.EncodeToString(digest[:])+".json")
+	return filepath.Join(home, "sessions", hex.EncodeToString(digest[:])+".json")
 }
 
 func TestCacheProtectionAndAtomicReplacement(t *testing.T) {
@@ -135,8 +135,8 @@ func TestCacheRejectsUnsafeState(t *testing.T) {
 			case "symlink-directory", "symlink-ancestor":
 				dir := filepath.Dir(path)
 				if state == "symlink-ancestor" {
-					dir, err = os.UserConfigDir()
-					require.NoError(t, err)
+					dir = home
+					t.Cleanup(func() { require.NoError(t, os.RemoveAll(dir+"-moved")) })
 				}
 				require.NoError(t, os.Rename(dir, dir+"-moved"))
 				require.NoError(t, os.Symlink(dir+"-moved", dir))
@@ -284,4 +284,117 @@ func TestPersistenceFailurePreservesPreviousAndLogoutDeletionFails(t *testing.T)
 	require.Nil(t, result.Data)
 	_, err = os.Stat(cachePath(t, origin))
 	require.NoError(t, err)
+}
+
+func TestCacheHomeCreatedOwnerOnly(t *testing.T) {
+	home := cliHome(t)
+	t.Setenv("CLAVIS_HOME", filepath.Join(home, "missing", "nested", "clavis"))
+	cache, err := openCache(context.Background(), "https://cli.example.test")
+	require.NoError(t, err)
+	cache.close()
+	for _, path := range []string{"missing", "missing/nested", "missing/nested/clavis", "missing/nested/clavis/sessions"} {
+		info, err := os.Lstat(filepath.Join(home, path))
+		require.NoError(t, err)
+		require.True(t, info.IsDir())
+		require.Equal(t, os.FileMode(0700), info.Mode().Perm(), path)
+	}
+}
+
+func TestCacheHomeUnderNormalUmaskAndIndependentOrigins(t *testing.T) {
+	home := cliHome(t)
+	require.NoError(t, os.Mkdir(filepath.Join(home, ".clavis"), 0700))
+	require.NoError(t, os.Chmod(filepath.Join(home, ".clavis"), 0755))
+	tokens := map[string]auth.Secret{"https://one.example.test": testToken(), "https://two.example.test": testToken()}
+	for origin, token := range tokens {
+		cache, err := openCache(context.Background(), origin)
+		require.NoError(t, err)
+		require.NoError(t, cache.write(cachedSession{Origin: origin, LoginResponse: auth.LoginResponse{Token: token, Identity: testIdentity()}}))
+		cache.close()
+	}
+	for origin, token := range tokens {
+		cache, err := openCache(context.Background(), origin)
+		require.NoError(t, err)
+		current, err := cache.read()
+		cache.close()
+		require.NoError(t, err)
+		require.True(t, current.Token == token, origin)
+		require.Equal(t, filepath.Join(home, ".clavis", "sessions"), filepath.Dir(cachePath(t, origin)))
+	}
+}
+
+func TestCacheUnsafeHomeNamesPath(t *testing.T) {
+	const homeRule = "a directory owned by you and not writable by group or others"
+	for _, tc := range []struct {
+		name        string
+		prepare     func(t *testing.T, home string)
+		path        string
+		requirement string
+	}{
+		{"home-group-writable", func(t *testing.T, home string) {
+			require.NoError(t, os.Chmod(filepath.Join(home, ".clavis"), 0775))
+		}, ".clavis", homeRule},
+		{"home-symlink", func(t *testing.T, home string) {
+			require.NoError(t, os.Rename(filepath.Join(home, ".clavis"), filepath.Join(home, "elsewhere")))
+			require.NoError(t, os.Symlink(filepath.Join(home, "elsewhere"), filepath.Join(home, ".clavis")))
+		}, ".clavis", homeRule},
+		{"sessions-mode", func(t *testing.T, home string) {
+			require.NoError(t, os.Chmod(filepath.Join(home, ".clavis", "sessions"), 0755))
+		}, ".clavis/sessions", "a directory with mode 0700"},
+		{"sessions-symlink", func(t *testing.T, home string) {
+			sessions := filepath.Join(home, ".clavis", "sessions")
+			require.NoError(t, os.Rename(sessions, filepath.Join(home, "elsewhere")))
+			require.NoError(t, os.Symlink(filepath.Join(home, "elsewhere"), sessions))
+		}, ".clavis/sessions", "a directory with mode 0700"},
+		{"ancestor-writable", func(t *testing.T, home string) {
+			require.NoError(t, os.Mkdir(filepath.Join(home, "shared"), 0700))
+			require.NoError(t, os.Chmod(filepath.Join(home, "shared"), 0777))
+			t.Setenv("CLAVIS_HOME", filepath.Join(home, "shared", "clavis"))
+		}, "shared", "a directory owned by you or root and not writable by group or others"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := cliHome(t)
+			cache, err := openCache(context.Background(), "http://127.0.0.1:1")
+			require.NoError(t, err)
+			cache.close()
+			tc.prepare(t, home)
+			exit, result, output := cliInvoke(t, "", "whoami", "--server", "http://127.0.0.1:1")
+			require.Equal(t, 1, exit, output)
+			require.Equal(t, "CREDENTIAL_STORAGE_FAILED", result.Error.Code)
+			require.Equal(t, filepath.Join(home, tc.path)+" must be "+tc.requirement+"; credentials were not displayed", result.Error.Message)
+		})
+	}
+}
+
+func TestCacheRelativeHomeRefused(t *testing.T) {
+	cliHome(t)
+	t.Setenv("CLAVIS_HOME", "relative-clavis-home")
+	exit, result, _ := cliInvoke(t, "", "logout", "--server", "http://127.0.0.1:1")
+	require.Equal(t, 1, exit)
+	require.Equal(t, "CREDENTIAL_STORAGE_FAILED", result.Error.Code)
+	require.Equal(t, "CLAVIS_HOME must be an absolute path; credentials were not displayed", result.Error.Message)
+	require.NoDirExists(t, "relative-clavis-home")
+}
+
+func TestCacheFormerLocationIgnored(t *testing.T) {
+	cliHome(t)
+	origin := "http://127.0.0.1:1"
+	config, err := os.UserConfigDir()
+	require.NoError(t, err)
+	digest := sha256.Sum256([]byte(origin))
+	former := filepath.Join(config, "clavis", "sessions", hex.EncodeToString(digest[:])+".json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(former), 0700))
+	body, err := json.Marshal(cachedSession{Origin: origin, LoginResponse: auth.LoginResponse{Token: testToken(), Identity: testIdentity()}})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(former, body, 0600))
+	cache, err := openCache(context.Background(), origin)
+	require.NoError(t, err)
+	current, err := cache.read()
+	cache.close()
+	require.NoError(t, err)
+	require.Nil(t, current, "a session in the former location is not read")
+	exit, _, _ := cliInvoke(t, "", "logout", "--server", origin)
+	require.Equal(t, 0, exit)
+	after, err := os.ReadFile(former)
+	require.NoError(t, err)
+	require.True(t, string(body) == string(after), "the former session file is left untouched")
 }

@@ -30,34 +30,39 @@ type credentialCache struct {
 }
 
 func openCache(ctx context.Context, origin string) (*credentialCache, error) {
-	config, err := os.UserConfigDir()
-	if err != nil || !filepath.IsAbs(config) {
-		return nil, errors.New("private configuration directory unavailable")
-	}
-	fd, err := openConfigDirectory(config)
+	home, err := clavisHome()
 	if err != nil {
-		return nil, errors.Join(errors.New("open config"), err)
+		return nil, err
+	}
+	// The home itself must be the user's, not merely a trusted ancestor.
+	unsafeHome := storageError{path: home, requirement: "a directory owned by you and not writable by group or others"}
+	fd, err := openConfigDirectory(home)
+	var unsafe storageError
+	if errors.As(err, &unsafe) && unsafe.path == home {
+		return nil, unsafeHome
+	}
+	if err != nil {
+		return nil, err
 	}
 	if err = checkPrivate(fd, true, false); err != nil {
 		_ = unix.Close(fd)
-		return nil, err
+		return nil, unsafeHome
 	}
-	for _, component := range []string{"clavis", "sessions"} {
-		err = unix.Mkdirat(fd, component, 0700)
-		if err != nil && !errors.Is(err, unix.EEXIST) {
-			_ = unix.Close(fd)
-			return nil, err
-		}
-		next, openErr := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	sessions := storageError{path: filepath.Join(home, "sessions"), requirement: "a directory with mode 0700"}
+	err = unix.Mkdirat(fd, "sessions", 0700)
+	if err != nil && !errors.Is(err, unix.EEXIST) {
 		_ = unix.Close(fd)
-		if openErr != nil {
-			return nil, errors.Join(errors.New("open private directory"), openErr)
-		}
-		fd = next
-		if err = checkPrivate(fd, true, true); err != nil {
-			_ = unix.Close(fd)
-			return nil, err
-		}
+		return nil, sessions
+	}
+	next, err := unix.Openat(fd, "sessions", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	_ = unix.Close(fd)
+	if err != nil {
+		return nil, sessions
+	}
+	fd = next
+	if err = checkPrivate(fd, true, true); err != nil {
+		_ = unix.Close(fd)
+		return nil, sessions
 	}
 	digest := sha256.Sum256([]byte(origin))
 	cache := &credentialCache{directory: fd, lock: -1, name: hex.EncodeToString(digest[:]), origin: origin}
@@ -115,7 +120,7 @@ func openLock(ctx context.Context, directory int, name string) (int, error) {
 	return -1, errors.New("credential lock changed repeatedly")
 }
 
-// Traverse without following symlinks, including in the configuration ancestry.
+// Traverse without following symlinks, including in the home's ancestry.
 // Root-owned system ancestors (including sticky temporary roots in isolated
 // tests) are trusted; user-owned ancestors must not be writable by others.
 func openConfigDirectory(path string) (int, error) {
@@ -123,16 +128,19 @@ func openConfigDirectory(path string) (int, error) {
 	if err != nil {
 		return -1, err
 	}
+	current := "/"
 	for _, component := range strings.Split(strings.TrimPrefix(filepath.Clean(path), "/"), "/") {
+		current = filepath.Join(current, component)
+		unsafe := storageError{path: current, requirement: "a directory owned by you or root and not writable by group or others"}
 		err = unix.Mkdirat(fd, component, 0700)
 		if err != nil && !errors.Is(err, unix.EEXIST) {
 			_ = unix.Close(fd)
-			return -1, errors.Join(errors.New("mkdir config component"), err)
+			return -1, unsafe
 		}
 		next, err := unix.Openat(fd, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 		_ = unix.Close(fd)
 		if err != nil {
-			return -1, errors.Join(errors.New("open config component"), err)
+			return -1, unsafe
 		}
 		fd = next
 		var stat unix.Stat_t
@@ -143,7 +151,7 @@ func openConfigDirectory(path string) (int, error) {
 		if (stat.Uid != 0 && stat.Uid != uint32(os.Geteuid())) ||
 			(uint32(stat.Mode)&0022 != 0 && (stat.Uid != 0 || uint32(stat.Mode)&unix.S_ISVTX == 0)) {
 			_ = unix.Close(fd)
-			return -1, errors.New("unsafe configuration ancestor")
+			return -1, unsafe
 		}
 	}
 	return fd, nil
