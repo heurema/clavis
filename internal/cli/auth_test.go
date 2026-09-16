@@ -37,6 +37,7 @@ func cliHome(t *testing.T) string {
 	// A developer's own Clavis settings must never reach a test, including the
 	// subprocesses that inherit this environment.
 	for _, name := range []string{"CLAVIS_HOME", "CLAVIS_PROFILE", "CLAVIS_SERVER_URL"} {
+		// Setenv registers the restore; Unsetenv drops the empty value from subprocesses.
 		t.Setenv(name, "")
 		require.NoError(t, os.Unsetenv(name))
 	}

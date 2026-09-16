@@ -11,9 +11,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -365,6 +367,32 @@ func TestCacheUnsafeHomeNamesPath(t *testing.T) {
 	}
 }
 
+func TestCacheRootOwnedHomeRefused(t *testing.T) {
+	cliHome(t)
+	// A root-owned sticky directory passes the ancestor rule, so only the
+	// home's own ownership check refuses it.
+	home := "/tmp"
+	if runtime.GOOS == "darwin" {
+		home = "/private/tmp"
+	}
+	info, err := os.Lstat(home)
+	require.NoError(t, err)
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 || info.Mode()&os.ModeSticky == 0 || info.Mode()&os.ModeSymlink != 0 {
+		t.Skip(home + " is not a root-owned sticky directory")
+	}
+	_, err = os.Lstat(filepath.Join(home, "sessions"))
+	existed := err == nil
+	t.Setenv("CLAVIS_HOME", home)
+	exit, result, _ := cliInvoke(t, "", "whoami", "--server", "http://127.0.0.1:1")
+	require.Equal(t, 1, exit)
+	require.Equal(t, "CREDENTIAL_STORAGE_FAILED", result.Error.Code)
+	require.Equal(t, home+" must be a directory owned by you and not writable by group or others; credentials were not displayed", result.Error.Message)
+	if !existed {
+		require.NoDirExists(t, filepath.Join(home, "sessions"))
+	}
+}
+
 func TestCacheRelativeHomeRefused(t *testing.T) {
 	cliHome(t)
 	t.Setenv("CLAVIS_HOME", "relative-clavis-home")
@@ -373,6 +401,11 @@ func TestCacheRelativeHomeRefused(t *testing.T) {
 	require.Equal(t, "CREDENTIAL_STORAGE_FAILED", result.Error.Code)
 	require.Equal(t, "CLAVIS_HOME must be an absolute path; credentials were not displayed", result.Error.Message)
 	require.NoDirExists(t, "relative-clavis-home")
+	t.Setenv("CLAVIS_HOME", "")
+	t.Setenv("HOME", "")
+	exit, result, _ = cliInvoke(t, "", "logout", "--server", "http://127.0.0.1:1")
+	require.Equal(t, 1, exit)
+	require.Equal(t, "HOME must be set to an absolute path; credentials were not displayed", result.Error.Message)
 }
 
 func TestCacheFormerLocationIgnored(t *testing.T) {

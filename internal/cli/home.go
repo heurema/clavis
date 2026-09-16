@@ -28,7 +28,7 @@ func clavisHome() (string, error) {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || !filepath.IsAbs(home) {
-		return "", storageError{path: "HOME", requirement: "an absolute path"}
+		return "", storageError{path: "HOME", requirement: "set to an absolute path"}
 	}
 	return filepath.Join(home, ".clavis"), nil
 }
