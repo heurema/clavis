@@ -95,7 +95,7 @@ func newRootCommand(streams IO, help io.Writer, invalid error, check func(*urfav
 				if err := check(command); err != nil {
 					return err
 				}
-				resolved, failed := resolveTarget(command.String("server"), command.String("profile"))
+				resolved, failed := resolveCommandTarget(command)
 				if failed != nil {
 					set(*failed)
 					return nil

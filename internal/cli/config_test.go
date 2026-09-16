@@ -145,6 +145,9 @@ func TestLoadConfigRejectsInvalidFiles(t *testing.T) {
 		{name: "unknown top-level key", body: "output = \"text\"\n", key: "output is not a known key"},
 		{name: "unknown profile key", body: "[profiles.fce]\nserver = \"https://fce.example.com\"\nusername = \"alice\"\n", key: "profiles.fce.username is not a known key"},
 		{name: "wrong type", body: "current = 3\n", key: "current"},
+		{name: "case-folded current", body: "Current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", key: "Current is not a known key"},
+		{name: "case-folded profiles", body: "[Profiles.fce]\nserver = \"https://fce.example.com\"\n", key: "Profiles is not a known key"},
+		{name: "case-folded server", body: "[profiles.fce]\nSERVER = \"https://SECRET.example.com\"\n", key: "profiles.fce.SERVER is not a known key"},
 		{name: "profile not a table", body: "[profiles]\nfce = \"https://fce.example.com\"\n", key: "profiles.fce"},
 		{name: "invalid name", body: "[profiles.Prod]\nserver = \"https://fce.example.com\"\n", key: "profiles.Prod is not a valid profile name", hint: profileNameHint},
 		{name: "quoted invalid name", body: "[profiles.\"a b\"]\nserver = \"https://fce.example.com\"\n", key: `profiles."a b" is not a valid profile name`, hint: profileNameHint},
@@ -163,6 +166,7 @@ func TestLoadConfigRejectsInvalidFiles(t *testing.T) {
 			require.NotNil(t, failed)
 			assert.Equal(t, "INVALID_ARGUMENT", failed.Error.Code)
 			assert.True(t, strings.HasPrefix(failed.Error.Message, path+": "), failed.Error.Message)
+			assert.NotContains(t, failed.Error.Message, "SECRET", "values are never echoed")
 			assert.Contains(t, failed.Error.Message, tc.key)
 			assert.Equal(t, tc.hint, failed.Error.Hint)
 			// Nothing from a rejected file is used, even a valid profile in it.
@@ -217,7 +221,7 @@ func TestLoadConfigRefusesLinksAndSpecialFiles(t *testing.T) {
 				exit, result, unread := strictInvoke(t, "password-that-stays", args...)
 				require.Equal(t, 2, exit)
 				assert.Equal(t, "INVALID_ARGUMENT", result.Error.Code)
-				assert.Equal(t, path+": must be a regular file, not a symlink", result.Error.Message)
+				assert.Equal(t, path+": must be a regular file", result.Error.Message)
 				assert.Equal(t, len("password-that-stays"), unread)
 			}
 			requireNoStore(t)
@@ -262,6 +266,12 @@ func TestResolutionFailsBeforeInputAndStorage(t *testing.T) {
 			args: []string{"login", "--server", "https://clavis.example.com", "--username=cli-test", "--password-stdin"}, want: "CLAVIS_HOME must be an absolute path"},
 		{name: "relative home before argument checks", env: map[string]string{"CLAVIS_HOME": "relative/dir"},
 			args: []string{"login", "--server", "SECRET", "--password-stdin"}, want: "CLAVIS_HOME must be an absolute path"},
+		{name: "empty server flag", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"login", "--server=", "--username=cli-test", "--password-stdin"}, want: "--server must not be empty"},
+		{name: "empty quoted server flag", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"whoami", "--server", ""}, want: "--server must not be empty"},
+		{name: "empty profile flag", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"login", "--profile=", "--username=cli-test", "--password-stdin"}, want: "--profile must not be empty"},
+		{name: "empty server with a profile", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"login", "--server=", "--profile", "fce", "--username=cli-test", "--password-stdin"}, want: "--server must not be empty"},
+		{name: "empty doctor flags", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"doctor", "--server=", "--profile", "fce"}, want: "--server must not be empty"},
+		{name: "empty doctor profile", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"doctor", "--profile="}, want: "--profile must not be empty"},
 		{name: "server and profile", args: []string{"login", "--server", "https://clavis.example.com", "--profile", "fce", "--username=cli-test", "--password-stdin"}, want: "not both"},
 		{name: "unknown profile for a new user", file: "[profiles.fce]\nserver = \"https://fce.example.com\"\n",
 			args: []string{"users", "create", "--profile", "prod", "--username=alice", "--password-stdin"}, want: "No profile named prod"},

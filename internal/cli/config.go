@@ -5,15 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
 
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/pelletier/go-toml/v2"
+	urfave "github.com/urfave/cli/v3"
 )
 
 // maxConfigBytes bounds config.toml: it holds names and origins only.
@@ -42,6 +45,19 @@ type clientProfile struct {
 // live. Profile is empty when the server was given with --server.
 type target struct {
 	Origin, Profile, Home string
+}
+
+// resolveCommandTarget resolves a command's --server and --profile flags. A flag
+// given with an empty value is refused rather than treated as absent, so
+// --server= can never fall through to a profile.
+func resolveCommandTarget(command *urfave.Command) (target, *Result) {
+	for _, name := range []string{"server", "profile"} {
+		if command.IsSet(name) && command.String(name) == "" {
+			r := failure("INVALID_ARGUMENT", "--"+name+" must not be empty", nil)
+			return target{}, &r
+		}
+	}
+	return resolveTarget(command.String("server"), command.String("profile"))
 }
 
 // resolveTarget picks exactly one server before any input, storage or network
@@ -112,7 +128,7 @@ func loadConfig(home string) (clientConfig, *Result) {
 		return clientConfig{}, nil
 	}
 	if errors.Is(err, syscall.ELOOP) {
-		return invalid("must be a regular file, not a symlink", "")
+		return invalid("must be a regular file", "")
 	}
 	if err != nil {
 		return invalid("could not be read", "")
@@ -120,7 +136,7 @@ func loadConfig(home string) (clientConfig, *Result) {
 	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		return invalid("must be a regular file, not a symlink", "")
+		return invalid("must be a regular file", "")
 	}
 	body, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
 	if err != nil {
@@ -149,6 +165,15 @@ func loadConfig(home string) (clientConfig, *Result) {
 			return invalid("is not a valid configuration file", "")
 		}
 	}
+	// Struct decoding matches keys case-insensitively, so the exact spelling
+	// is checked on a generic decode of the same, already valid, document.
+	var raw map[string]any
+	if toml.Unmarshal(body, &raw) != nil {
+		return invalid("is not a valid configuration file", "")
+	}
+	if key := unknownConfigKey(raw); key != nil {
+		return invalid(configKey(key)+" is not a known key", "")
+	}
 	names := make([]string, 0, len(config.Profiles))
 	for name := range config.Profiles {
 		names = append(names, name)
@@ -169,6 +194,26 @@ func loadConfig(home string) (clientConfig, *Result) {
 		}
 	}
 	return config, nil
+}
+
+// unknownConfigKey returns the first key, in sorted order, that is not spelled
+// exactly as the schema names it.
+func unknownConfigKey(raw map[string]any) toml.Key {
+	for _, top := range slices.Sorted(maps.Keys(raw)) {
+		if top != "current" && top != "profiles" {
+			return toml.Key{top}
+		}
+	}
+	profiles, _ := raw["profiles"].(map[string]any)
+	for _, name := range slices.Sorted(maps.Keys(profiles)) {
+		entry, _ := profiles[name].(map[string]any)
+		for _, key := range slices.Sorted(maps.Keys(entry)) {
+			if key != "server" {
+				return toml.Key{"profiles", name, key}
+			}
+		}
+	}
+	return nil
 }
 
 var bareKey = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)

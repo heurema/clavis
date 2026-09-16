@@ -151,7 +151,7 @@ func readPassword(ctx context.Context, command *urfave.Command, streams IO) ([]b
 }
 
 func runAuth(ctx context.Context, operation string, command *urfave.Command, streams IO) Result {
-	resolved, failed := resolveTarget(command.String("server"), command.String("profile"))
+	resolved, failed := resolveCommandTarget(command)
 	if failed != nil {
 		return *failed
 	}
