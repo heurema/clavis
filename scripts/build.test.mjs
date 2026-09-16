@@ -159,8 +159,9 @@ async function checkCopiedServer(directory) {
     assert.ok(!output.includes("sentinel-private"))
     // A build without the linker flags reports whatever the toolchain embedded:
     // this fixture sits inside the repository, so Go finds its Git metadata and
-    // stamps the checkout; a tree with none reports the defaults. Neither is a
-    // release value, which is the property worth holding here.
+    // stamps the checkout; a tree with none reports the defaults. The shape of
+    // each is what is worth holding here, since the value itself depends on
+    // where the suite runs.
     const started = JSON.parse(
       output.split("\n").find((line) => line.includes('"server_started"')),
     )
