@@ -190,7 +190,7 @@ func queryText(t *testing.T, server *httptest.Server, stdin string, args ...stri
 		Stdin: strings.NewReader(stdin), Stdout: &out, Stderr: &prompt, ReadPassword: ReadTerminalPassword,
 	})
 	require.Empty(t, prompt.String())
-	return exit, out.String()
+	return exit, serverText(t, out.String(), server.URL, "")
 }
 
 // The inline statement is sent as one request and answered with the documented

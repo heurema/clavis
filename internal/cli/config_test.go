@@ -349,24 +349,28 @@ func TestProfilesSelectTheServer(t *testing.T) {
 	}
 	assert.Equal(t, []string{"config.toml", "sessions"}, names)
 
-	whoami := func(args ...string) (int, int) {
+	// Each result names the server it went to and the profile that chose it.
+	whoami := func(server, profile string, args ...string) (int, int) {
 		t.Helper()
-		exit, _, _ := cliInvoke(t, "", append([]string{"whoami"}, args...)...)
+		exit, result, _ := cliInvoke(t, "", append([]string{"whoami"}, args...)...)
 		require.Equal(t, 0, exit)
+		require.NotNil(t, result.Server)
+		require.NotNil(t, result.Profile)
+		assert.Equal(t, [2]string{server, profile}, [2]string{*result.Server, *result.Profile})
 		fce.mu.Lock()
 		defer fce.mu.Unlock()
 		local.mu.Lock()
 		defer local.mu.Unlock()
 		return fce.whoami, local.whoami
 	}
-	f, l := whoami()
+	f, l := whoami(fceServer.URL, "fce")
 	assert.Equal(t, [2]int{1, 0}, [2]int{f, l}, "current profile")
 	t.Setenv("CLAVIS_PROFILE", "local")
-	f, l = whoami()
+	f, l = whoami(localServer.URL, "local")
 	assert.Equal(t, [2]int{1, 1}, [2]int{f, l}, "environment beats current")
-	f, l = whoami("--profile", "fce")
+	f, l = whoami(fceServer.URL, "fce", "--profile", "fce")
 	assert.Equal(t, [2]int{2, 1}, [2]int{f, l}, "flag beats environment")
-	f, l = whoami("--server", localServer.URL)
+	f, l = whoami(localServer.URL, "", "--server", localServer.URL)
 	assert.Equal(t, [2]int{2, 2}, [2]int{f, l}, "a direct server")
 
 	ready := 0
@@ -380,6 +384,10 @@ func TestProfilesSelectTheServer(t *testing.T) {
 	writeConfig(t, "current = \"fce\"\n\n[profiles.fce]\nserver = \""+doctorServer.URL+"\"\n")
 	code, out := invoke(t, "doctor")
 	require.Equal(t, 0, code)
-	assert.True(t, decode(t, out).OK)
+	diagnosis := decode(t, out)
+	assert.True(t, diagnosis.OK)
+	require.NotNil(t, diagnosis.Server)
+	require.NotNil(t, diagnosis.Profile)
+	assert.Equal(t, [2]string{doctorServer.URL, "fce"}, [2]string{*diagnosis.Server, *diagnosis.Profile})
 	assert.Equal(t, 1, ready, "doctor checks the current profile's server")
 }

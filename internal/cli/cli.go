@@ -100,7 +100,7 @@ func newRootCommand(streams IO, help io.Writer, invalid error, check func(*urfav
 					set(*failed)
 					return nil
 				}
-				set(Doctor(ctx, resolved.Origin, command.Duration("timeout")))
+				set(resolved.named(Doctor(ctx, resolved.Origin, command.Duration("timeout"))))
 				return nil
 			}},
 		},

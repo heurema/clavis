@@ -28,10 +28,15 @@ type Error struct {
 }
 
 type Result struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	OK            bool   `json:"ok"`
-	Data          any    `json:"data"`
-	Error         *Error `json:"error"`
+	SchemaVersion int  `json:"schemaVersion"`
+	OK            bool `json:"ok"`
+	// Server and Profile name the resolved target. Only a command that
+	// resolved one sets them, so a pointer tells an absent profile from the
+	// empty one a --server command reports.
+	Server  *string `json:"server,omitempty"`
+	Profile *string `json:"profile,omitempty"`
+	Data    any     `json:"data"`
+	Error   *Error  `json:"error"`
 }
 
 type Diagnosis struct {
@@ -52,9 +57,19 @@ func failureWithHint(code, message, hint string) Result {
 	return result
 }
 
+// named records the resolved target on a result produced after resolution. A
+// --server target reports its empty profile rather than omitting it.
+func (t target) named(result Result) Result {
+	result.Server, result.Profile = &t.Origin, &t.Profile
+	return result
+}
+
 func render(w io.Writer, result Result, format string) error {
 	if format == "json" {
 		return json.NewEncoder(w).Encode(result)
+	}
+	if err := renderServer(w, result); err != nil {
+		return err
 	}
 	if result.Error != nil {
 		if _, err := fmt.Fprintf(w, "%s: %s\n", result.Error.Code, result.Error.Message); err != nil {
@@ -200,6 +215,20 @@ func render(w io.Writer, result Result, format string) error {
 		return err
 	}
 	return nil
+}
+
+// renderServer names the target first, so a reader knows which server the
+// rest of the output, a failure included, came from.
+func renderServer(w io.Writer, result Result) error {
+	if result.Server == nil {
+		return nil
+	}
+	line := "Server: " + *result.Server
+	if result.Profile != nil && *result.Profile != "" {
+		line += " (profile " + *result.Profile + ")"
+	}
+	_, err := fmt.Fprintln(w, line)
+	return err
 }
 
 // nullMark distinguishes SQL NULL from an empty string in text output, which

@@ -410,7 +410,7 @@ func TestConnectionsWorkflow(t *testing.T) {
 			Stdin: strings.NewReader(""), Stdout: &out, Stderr: &prompt, ReadPassword: ReadTerminalPassword,
 		})
 		require.Empty(t, prompt.String())
-		return exit, out.String()
+		return exit, serverText(t, out.String(), server.URL, "")
 	}
 	exit, result, output := run("connections", "create", "--name", "payments-prod-reporting",
 		"--provider", "postgresql", "--url", "postgres://reporting@db:5432/payments?sslmode=require",

@@ -155,7 +155,12 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 	if failed != nil {
 		return *failed
 	}
-	origin := resolved.Origin
+	return resolved.named(runResolved(ctx, operation, command, streams, resolved.Origin))
+}
+
+// runResolved runs an operation against a resolved origin. Every result it
+// returns, however early, is named by runAuth.
+func runResolved(ctx context.Context, operation string, command *urfave.Command, streams IO, origin string) Result {
 	timeout := command.Duration("timeout")
 	if timeout <= 0 {
 		return failure("INVALID_ARGUMENT", "Use a positive timeout", nil)
