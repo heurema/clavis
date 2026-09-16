@@ -74,10 +74,15 @@ test("isolated mutation inputs compile with embedded assets and exclude develope
       readFileSync(join(workspace, "internal/skill/clavis", name)),
       readFileSync(join(root, "internal/skill/clavis", name)),
     )
+  // The copy is a fresh module directory, so this compiles and tests the whole
+  // tree. On a machine with a warm build cache that is seconds; on a cold one,
+  // a release runner included, it is minutes. The bound is here to catch a
+  // hang, not to assert a build time, so it is generous enough for a cold
+  // cache and still ends a wedged compile.
   const result = spawnSync("go", ["test", "./..."], {
     cwd: workspace,
     encoding: "utf8",
-    timeout: 120_000,
+    timeout: 900_000,
   })
   assert.ifError(result.error)
   assert.equal(result.status, 0, result.stdout + result.stderr)
