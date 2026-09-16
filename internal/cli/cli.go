@@ -88,13 +88,19 @@ func newRootCommand(streams IO, help io.Writer, invalid error, check func(*urfav
 				return nil
 			}},
 			{Name: "doctor", Usage: "Check server and platform database readiness", Flags: []urfave.Flag{
-				&urfave.StringFlag{Name: "server", Value: "http://127.0.0.1:8080", Sources: urfave.EnvVars("CLAVIS_SERVER_URL"), Usage: "Server base URL"},
+				&urfave.StringFlag{Name: "server", Usage: "Server root origin for this command only"},
+				&urfave.StringFlag{Name: "profile", Usage: "Configured profile naming the server"},
 				&urfave.DurationFlag{Name: "timeout", Value: 5 * time.Second, Usage: "Entire readiness request deadline"},
 			}, Action: func(ctx context.Context, command *urfave.Command) error {
 				if err := check(command); err != nil {
 					return err
 				}
-				set(Doctor(ctx, command.String("server"), command.Duration("timeout")))
+				resolved, failed := resolveTarget(command.String("server"), command.String("profile"))
+				if failed != nil {
+					set(*failed)
+					return nil
+				}
+				set(Doctor(ctx, resolved.Origin, command.Duration("timeout")))
 				return nil
 			}},
 		},

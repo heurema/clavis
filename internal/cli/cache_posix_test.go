@@ -397,15 +397,15 @@ func TestCacheRelativeHomeRefused(t *testing.T) {
 	cliHome(t)
 	t.Setenv("CLAVIS_HOME", "relative-clavis-home")
 	exit, result, _ := cliInvoke(t, "", "logout", "--server", "http://127.0.0.1:1")
-	require.Equal(t, 1, exit)
-	require.Equal(t, "CREDENTIAL_STORAGE_FAILED", result.Error.Code)
-	require.Equal(t, "CLAVIS_HOME must be an absolute path; credentials were not displayed", result.Error.Message)
+	require.Equal(t, 2, exit)
+	require.Equal(t, "INVALID_ARGUMENT", result.Error.Code)
+	require.Equal(t, "CLAVIS_HOME must be an absolute path", result.Error.Message)
 	require.NoDirExists(t, "relative-clavis-home")
 	t.Setenv("CLAVIS_HOME", "")
 	t.Setenv("HOME", "")
 	exit, result, _ = cliInvoke(t, "", "logout", "--server", "http://127.0.0.1:1")
-	require.Equal(t, 1, exit)
-	require.Equal(t, "HOME must be set to an absolute path; credentials were not displayed", result.Error.Message)
+	require.Equal(t, 2, exit)
+	require.Equal(t, "HOME must be set to an absolute path", result.Error.Message)
 }
 
 func TestCacheFormerLocationIgnored(t *testing.T) {

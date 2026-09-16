@@ -67,7 +67,7 @@ func TestCLIProcesses(t *testing.T) {
 		home := cliHome(t)
 		password := testToken()
 		fixture, server := newCLIFixture(t, password)
-		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		cliProfile(t, server.URL)
 		exit, output, prompt := processCLI(t, binary, string(password)+"\n", "login", "--username=cli-test", "--password-stdin")
 		require.Equal(t, 0, exit)
 		require.True(t, decode(t, output).OK)
@@ -321,7 +321,7 @@ func TestCLIProcesses(t *testing.T) {
 		home := cliHome(t)
 		password := testToken()
 		fixture, server := newCLIFixture(t, password)
-		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		cliProfile(t, server.URL)
 		exit, _, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin")
 		require.Equal(t, 0, exit)
 		secretPath := filepath.Join(home, "connection-secret")
@@ -380,7 +380,7 @@ func TestCLIProcesses(t *testing.T) {
 		cliHome(t)
 		password := testToken()
 		_, server := newCLIFixture(t, password)
-		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		cliProfile(t, server.URL)
 		exit, _, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin")
 		require.Equal(t, 0, exit)
 		exit, output, _ := processCLI(t, binary, string(testToken()), "users", "create", "--username=alice", "--password-stdin")
@@ -436,7 +436,7 @@ func TestCLIProcesses(t *testing.T) {
 		cliHome(t)
 		password := testToken()
 		fixture, server := newCLIFixture(t, password)
-		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		cliProfile(t, server.URL)
 		var workers sync.WaitGroup
 		for range 6 {
 			workers.Go(func() {
@@ -476,7 +476,7 @@ func TestCLIProcesses(t *testing.T) {
 		defer func() { _ = input.Close(); _ = writer.Close() }()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		command := exec.CommandContext(ctx, binary, "login", "--username=cli-test", "--password-stdin")
+		command := exec.CommandContext(ctx, binary, "login", "--username=cli-test", "--password-stdin", "--server", "http://127.0.0.1:1")
 		command.Stdin = input
 		var out bytes.Buffer
 		command.Stdout = &out

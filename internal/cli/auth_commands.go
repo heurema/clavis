@@ -22,7 +22,8 @@ type cachedSession struct {
 func authCommands(streams IO, check func(*urfave.Command) error, set func(Result)) []*urfave.Command {
 	flags := func(timeout time.Duration, timeoutUsage string) []urfave.Flag {
 		return []urfave.Flag{
-			&urfave.StringFlag{Name: "server", Value: "http://127.0.0.1:8080", Sources: urfave.EnvVars("CLAVIS_SERVER_URL"), Usage: "Server root origin"},
+			&urfave.StringFlag{Name: "server", Usage: "Server root origin for this command only"},
+			&urfave.StringFlag{Name: "profile", Usage: "Configured profile naming the server"},
 			&urfave.DurationFlag{Name: "timeout", Value: timeout, Usage: timeoutUsage},
 		}
 	}
@@ -150,10 +151,14 @@ func readPassword(ctx context.Context, command *urfave.Command, streams IO) ([]b
 }
 
 func runAuth(ctx context.Context, operation string, command *urfave.Command, streams IO) Result {
-	origin, err := auth.CanonicalOrigin(command.String("server"))
+	resolved, failed := resolveTarget(command.String("server"), command.String("profile"))
+	if failed != nil {
+		return *failed
+	}
+	origin := resolved.Origin
 	timeout := command.Duration("timeout")
-	if err != nil || timeout <= 0 {
-		return failure("INVALID_ARGUMENT", "Use an HTTPS root origin (literal loopback HTTP is allowed) and a positive timeout", nil)
+	if timeout <= 0 {
+		return failure("INVALID_ARGUMENT", "Use a positive timeout", nil)
 	}
 	if invalid := validateAuthArguments(operation, command); invalid != nil {
 		return *invalid

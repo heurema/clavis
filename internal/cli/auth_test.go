@@ -43,8 +43,18 @@ func cliHome(t *testing.T) string {
 	}
 	// The former session location stays inside the temporary home too.
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("CLAVIS_SERVER_URL", "http://127.0.0.1:8080")
 	return home
+}
+
+// cliProfile makes a profile named test for the server and makes it current, so
+// commands run with no flag reach it the way a configured person's would.
+func cliProfile(t *testing.T, server string) {
+	t.Helper()
+	home, err := clavisHome()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(home, 0o700))
+	body := "current = \"test\"\n\n[profiles.test]\nserver = \"" + server + "\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(home, "config.toml"), []byte(body), 0o600))
 }
 
 func testToken() auth.Secret {
@@ -503,11 +513,11 @@ func TestAuthOriginIsolationAndOfflineLogout(t *testing.T) {
 func TestAuthArgumentsAndInput(t *testing.T) {
 	cliHome(t)
 	for _, args := range [][]string{
-		{"login"}, {"login", "--username=cli-test"}, {"login", "--username=UPPER", "--password-stdin"},
+		{"login", "--server=http://127.0.0.1:1"}, {"login", "--username=cli-test", "--server=http://127.0.0.1:1"}, {"login", "--username=UPPER", "--password-stdin", "--server=http://127.0.0.1:1"},
 		{"login", "--password=value"}, {"login", "--token=value"}, {"whoami", "extra"},
-		{"logout", "--timeout=0"}, {"whoami", "--timeout=-1s"}, {"whoami", "--timeout=invalid"},
+		{"logout", "--timeout=0", "--server=http://127.0.0.1:1"}, {"whoami", "--timeout=-1s", "--server=http://127.0.0.1:1"}, {"whoami", "--timeout=invalid"},
 		{"whoami", "--output=yaml"}, {"whoami", "--server=http://localhost:8080"},
-		{"sessions", "unknown"}, {"sessions", "revoke", "--user=INVALID"}, {"sessions", "revoke"},
+		{"sessions", "unknown"}, {"sessions", "revoke", "--user=INVALID", "--server=http://127.0.0.1:1"}, {"sessions", "revoke", "--server=http://127.0.0.1:1"},
 		{"sessions", "revoke", "--user", testIdentity().User.ID, "extra"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -553,7 +563,7 @@ func TestMaxEscapedPasswordAndInjectedPrompt(t *testing.T) {
 	require.Equal(t, "Password: ", stderr.String())
 	require.True(t, decode(t, stdout.String()).OK)
 	stdout.Reset()
-	exit = RunWithIO(context.Background(), []string{"clavis", "login", "--username=cli-test"}, IO{
+	exit = RunWithIO(context.Background(), []string{"clavis", "login", "--username=cli-test", "--server", server.URL}, IO{
 		Stdout: &stdout,
 		ReadPassword: func(context.Context, io.Reader, io.Writer) ([]byte, error) {
 			return nil, context.Canceled
@@ -772,11 +782,11 @@ func TestAuthTransportRedirectDeadlineTLSAndErrors(t *testing.T) {
 func TestDoctorInitializationAllowlist(t *testing.T) {
 	for _, code := range []string{platform.CodeInitializing, platform.CodeSetupRequired, platform.CodeBootstrapFailed, platform.CodeSchemaError} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "/prefix/readyz", r.URL.Path)
+			assert.Equal(t, "/readyz", r.URL.Path)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(platform.Response{Status: "not_ready", Error: &platform.Failure{Code: code, Message: "sentinel"}})
 		}))
-		result := Doctor(context.Background(), server.URL+"/prefix", time.Second)
+		result := Doctor(context.Background(), server.URL, time.Second)
 		server.Close()
 		require.Equal(t, code, result.Error.Code)
 		require.Equal(t, Diagnosis{"reachable", "ready"}, result.Data)

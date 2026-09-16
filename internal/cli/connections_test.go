@@ -657,7 +657,7 @@ func TestConnectionsArgumentsRejectedBeforeIO(t *testing.T) {
 		{"connections", "create", "--name", "logs", "--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none", "--account-id", "4294967296"},
 		{"connections", "create", "--name", "logs", "--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none", "--project-id", "x"},
 		{"connections", "update", "--connection", "payments"},
-		{"connections", "update", "--connection", "payments", "--title", "New", "--timeout=0"},
+		{"connections", "update", "--connection", "payments", "--title", "New", "--timeout=0", "--server=http://127.0.0.1:1"},
 		{"connections", "update", "--connection", "payments", "--title", "New", "--server=http://localhost:8080"},
 		{"connections", "delete", "--connection", "payments", "extra"},
 		{"connections", "disable"},

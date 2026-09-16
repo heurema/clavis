@@ -36,6 +36,7 @@ func decode(t *testing.T, output string) Result {
 }
 
 func TestOfflineAndInvalidCommands(t *testing.T) {
+	cliHome(t)
 	t.Setenv("CLAVIS_SERVER_URL", "http://SECRET.invalid")
 	for _, args := range [][]string{{"help"}, {"--help"}, {"doctor", "--help"}, {}} {
 		code, out := invoke(t, args...)
@@ -55,13 +56,15 @@ func TestOfflineAndInvalidCommands(t *testing.T) {
 	for _, args := range [][]string{
 		{"SECRET"}, {"--SECRET"}, {"version", "SECRET"}, {"doctor", "SECRET"},
 		{"version", "--output=SECRET"}, {"--output=text", "version", "--SECRET"},
-		{"doctor", "--timeout=SECRET"}, {"doctor", "--timeout=0"}, {"doctor", "--timeout=-1s"},
+		{"doctor", "--timeout=SECRET"}, {"doctor", "--timeout=0", "--server=http://127.0.0.1:1"}, {"doctor", "--timeout=-1s", "--server=http://127.0.0.1:1"},
 		{"doctor", "--server=postgres://SECRET"}, {"doctor", "--server=http://user:SECRET@host"},
 		{"doctor", "--output=text", "--server=postgres://SECRET"},
 		{"doctor", "--server=http://host?SECRET"}, {"doctor", "--server=http://host#SECRET"},
 		{"doctor", "--server=http://"}, {"doctor", "--server=http://host?"},
 		{"doctor", "--server=http://127.0.0.1:65536"},
 		{"doctor", "--output=text", "--server=http://127.0.0.1:999999999999999999999999"},
+		{"doctor", "--server=http://127.0.0.1:1/SECRET"}, {"doctor", "--server=http://SECRET.example.com"},
+		{"doctor"}, {"doctor", "--server=http://127.0.0.1:1", "--profile=secret"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			code, out := invoke(t, args...)
@@ -76,28 +79,30 @@ func TestOfflineAndInvalidCommands(t *testing.T) {
 	}
 }
 
-func TestDoctorPreservesNonAuthURLsAndBasePaths(t *testing.T) {
+// Doctor adopts login's canonical-origin rule: a server doctor accepts can
+// never be refused by login.
+func TestDoctorRefusesWhatLoginRefuses(t *testing.T) {
+	cliHome(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/readyz", r.URL.Path)
+		_, _ = io.WriteString(w, `{"status":"ready"}`)
+	}))
+	defer server.Close()
 	for _, raw := range []string{
-		"http://localhost/base", "http://example.com/base", "https://example.com/a%20b",
+		server.URL + "/base", server.URL + "/", "http://localhost/base", "http://example.com", "https://example.com/base",
 	} {
-		_, err := validateURL(raw)
-		require.NoError(t, err)
-		_, err = auth.CanonicalOrigin(raw)
-		require.Error(t, err, "doctor URLs are not authentication origins")
-	}
-	for base, want := range map[string]string{
-		"/base": "/base/readyz", "/base///": "/base/readyz",
-		"/a%20b": "/a b/readyz",
-	} {
-		t.Run(base, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, want, r.URL.Path)
-				_, _ = io.WriteString(w, `{"status":"ready"}`)
-			}))
-			defer server.Close()
-			result := Doctor(context.Background(), server.URL+base, time.Second)
-			require.True(t, result.OK)
-		})
+		_, err := auth.CanonicalOrigin(raw)
+		want := 2
+		if err == nil {
+			want = 0
+		}
+		code, out := invoke(t, "doctor", "--server", raw)
+		assert.Equal(t, want, code, raw)
+		if want == 2 {
+			assert.Equal(t, "INVALID_ARGUMENT", decode(t, out).Error.Code)
+			result := Doctor(context.Background(), raw, time.Second)
+			assert.Equal(t, "INVALID_ARGUMENT", result.Error.Code)
+		}
 	}
 }
 
@@ -185,17 +190,16 @@ func TestUnreachableAndURLPrecedence(t *testing.T) {
 	require.NotNil(t, result.Error)
 	assert.Equal(t, "SERVER_UNREACHABLE", result.Error.Code)
 	assert.Equal(t, Diagnosis{"unreachable", "unknown"}, result.Data)
+	// The former server variable is never read: doctor needs a flag or a
+	// profile, and a direct server wins without looking at the environment.
+	cliHome(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, `{"status":"ready"}`) }))
 	defer server.Close()
 	t.Setenv("CLAVIS_SERVER_URL", server.URL)
 	code, out := invoke(t, "doctor")
-	assert.Zero(t, code)
-	assert.True(t, decode(t, out).OK)
-	t.Setenv("CLAVIS_SERVER_URL", "SECRET")
+	assert.Equal(t, 2, code)
+	assert.Equal(t, profileSetupHint, decode(t, out).Error.Hint)
 	code, out = invoke(t, "doctor", "--server", server.URL)
 	assert.Zero(t, code)
 	assert.True(t, decode(t, out).OK)
-	code, out = invoke(t, "doctor")
-	assert.Equal(t, 2, code)
-	assert.NotContains(t, out, "SECRET")
 }
