@@ -98,8 +98,8 @@ func TestJSONIgnoresPresentationHeaders(t *testing.T) {
 		{"/livez", false, 200, `{"status":"alive"}`},
 		{"/readyz", true, 200, `{"status":"ready"}`},
 		{"/readyz", false, 503, `{"status":"not_ready","error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Database unavailable"}}`},
-		{"/healthz", true, 200, `{"status":"ok","version":"` + buildinfo.Version + `","checks":{"live":{"status":"alive"},"ready":{"status":"ready"}}}`},
-		{"/healthz", false, 503, `{"status":"unhealthy","version":"` + buildinfo.Version + `","checks":{"live":{"status":"alive"},"ready":{"status":"not_ready","error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Database unavailable"}}}}`},
+		{"/healthz", true, 200, `{"status":"ok","version":"` + buildinfo.Current().Version + `","checks":{"live":{"status":"alive"},"ready":{"status":"ready"}}}`},
+		{"/healthz", false, 503, `{"status":"unhealthy","version":"` + buildinfo.Current().Version + `","checks":{"live":{"status":"alive"},"ready":{"status":"not_ready","error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Database unavailable"}}}}`},
 	} {
 		t.Run(tc.path+tc.body, func(t *testing.T) {
 			db := &fakeDatabase{ping: func(context.Context) error {

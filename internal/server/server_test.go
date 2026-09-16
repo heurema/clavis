@@ -64,7 +64,7 @@ func TestHealthAndRedaction(t *testing.T) {
 	}}
 	handler := Handler(50*time.Millisecond, db, slog.New(slog.NewJSONHandler(&logs, nil)))
 	const notReady = `{"status":"not_ready","error":{"code":"DEPENDENCY_UNAVAILABLE","message":"Database unavailable"}}`
-	version := buildinfo.Version
+	version := buildinfo.Current().Version
 	for _, tc := range []struct {
 		path   string
 		ready  bool
