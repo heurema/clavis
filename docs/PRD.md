@@ -413,7 +413,7 @@ Decided on September 16, 2026, the day the first beta users arrived (delivery pl
 | Topic | Decision |
 |---|---|
 | Release tagging | A `vX.Y.Z` tag on GitHub is the production release: one workflow builds the CLI binaries with checksums into a GitHub Release, the server image and the chart; release candidates publish as pre-releases; `go install` at a tag reports that tag |
-| CLI profiles | A TOML file at `~/.clavis/config.toml` holds named profiles, each a server URL, and a default; sessions move beside it; the server is resolved from flag, environment, then the default profile, never from a silent loopback default; every networked result names the server it used |
+| CLI profiles | A TOML file at `~/.clavis/config.toml` (or under `CLAVIS_HOME`) holds named profiles, each a server origin, and a `current` one, managed like kubectl contexts with `profiles set`, `use`, `current`, `list` and `remove`; sessions move beside it; the server is resolved from `--server` or `--profile`, then `CLAVIS_PROFILE`, then `current`, never from a silent loopback default, and `CLAVIS_SERVER_URL` is removed; every networked result names the server and profile it used |
 | Browser sign-in from the CLI | `clavis login` opens the browser, the user signs in and explicitly approves the CLI on a loopback callback with PKCE, and the CLI receives an ordinary session; `--password-stdin` stays for agents and CI; refresh tokens and device flow rejected or deferred |
 | Session lifetime | One policy for browser and CLI sessions: an idle expiry of seven days and an absolute cap of thirty days, both configurable, renewed on use; replaces the fixed eight-hour lifetime |
 | Windows | Postponed; the CLI supports macOS and Linux |
