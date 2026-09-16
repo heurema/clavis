@@ -23,8 +23,8 @@ func RunWithIO(ctx context.Context, args []string, streams IO) int {
 	usageHint := ""
 	check := func(command *urfave.Command) error {
 		format = command.String("output")
-		if command.Args().Len() != positionalArguments(command) {
-			usageHint = profileUsage(command)
+		if arguments, usage := positionalArguments(command); command.Args().Len() != arguments {
+			usageHint = usage
 			return invalid
 		}
 		if format != "json" && format != "text" {

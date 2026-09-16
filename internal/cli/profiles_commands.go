@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/heurema/clavis/internal/auth"
@@ -76,24 +75,12 @@ var profileUsages = map[string]struct {
 	"clavis profiles list":    {0, "Usage: clavis profiles list, which takes no arguments"},
 }
 
-func lineageName(command *urfave.Command) string {
-	lineage := command.Lineage()
-	names := make([]string, len(lineage))
-	for i, ancestor := range lineage {
-		names[len(lineage)-1-i] = ancestor.Name
-	}
-	return strings.Join(names, " ")
-}
-
-// positionalArguments is how many positional arguments a command takes.
-func positionalArguments(command *urfave.Command) int {
-	return profileUsages[lineageName(command)].arguments
-}
-
-// profileUsage is the hint for a profiles command given the wrong arguments,
-// and empty for every other command.
-func profileUsage(command *urfave.Command) string {
-	return profileUsages[lineageName(command)].usage
+// positionalArguments is how many positional arguments a command takes, and
+// the usage hint for a profiles command given the wrong number, which is empty
+// for every other command.
+func positionalArguments(command *urfave.Command) (int, string) {
+	usage := profileUsages[command.FullName()]
+	return usage.arguments, usage.usage
 }
 
 func profilesCommands(check func(*urfave.Command) error, set func(Result)) *urfave.Command {
@@ -107,7 +94,7 @@ func profilesCommands(check func(*urfave.Command) error, set func(Result)) *urfa
 				set(failure("INVALID_ARGUMENT", err.Error(), nil))
 				return nil
 			}
-			if positionalArguments(command) == 1 && !auth.ValidUsername(command.Args().First()) {
+			if arguments, _ := positionalArguments(command); arguments == 1 && !auth.ValidUsername(command.Args().First()) {
 				set(failureWithHint("INVALID_ARGUMENT", "Provide a valid profile name", profileNameHint))
 				return nil
 			}

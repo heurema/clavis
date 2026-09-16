@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"os"
 	"path/filepath"
 
@@ -20,14 +19,12 @@ import (
 // lose each other's change, and replaced by rename, so a reader sees the old
 // file or the new one. A change that returns a failure writes nothing.
 func saveConfig(ctx context.Context, home string, change func(*clientConfig) *Result) *Result {
-	path := filepath.Join(home, "config.toml")
+	path, lockPath := filepath.Join(home, "config.toml"), filepath.Join(home, "config.lock")
 	fd, err := openHome(home, true)
-	var unsafe storageError
-	if errors.As(err, &unsafe) {
-		return argumentFailure(unsafe.Error(), "")
-	}
 	if err != nil {
-		return argumentFailure(home+" could not be opened", "")
+		// The home is the session store's too, and is reported the same way.
+		r := storageFailure(err)
+		return &r
 	}
 	defer func() { _ = unix.Close(fd) }()
 	lockCtx, cancel := context.WithTimeout(ctx, sharedTimeout)
@@ -39,12 +36,12 @@ func saveConfig(ctx context.Context, home string, change func(*clientConfig) *Re
 			err = flockWithin(lockCtx, lock)
 		}
 	}
-	if lockCtx.Err() != nil {
-		r := failure("TIMEOUT", "Another clavis process holds "+filepath.Join(home, "config.lock"), nil)
+	if err != nil && lockCtx.Err() != nil {
+		r := failure("TIMEOUT", lockPath+" was not locked in time; config.toml is unchanged", nil)
 		return &r
 	}
 	if err != nil {
-		return argumentFailure(filepath.Join(home, "config.lock")+" must be a regular file with mode 0600", "")
+		return writeFailure(lockPath + " must be a regular file with mode 0600")
 	}
 	config, failed := loadConfig(home)
 	if failed != nil {
@@ -55,12 +52,19 @@ func saveConfig(ctx context.Context, home string, change func(*clientConfig) *Re
 	}
 	var body bytes.Buffer
 	if err := toml.NewEncoder(&body).SetIndentTables(false).Encode(config); err != nil {
-		return argumentFailure(path+": could not be encoded", "")
+		return writeFailure(path + " could not be encoded")
 	}
 	if err := replaceConfig(fd, body.Bytes()); err != nil {
-		return argumentFailure(path+": could not be written", "")
+		return writeFailure(path + " could not be written")
 	}
 	return nil
+}
+
+// writeFailure is an operation failure, not an invalid argument: the request
+// was valid and the file is unchanged.
+func writeFailure(message string) *Result {
+	r := failure("CONFIGURATION_WRITE_FAILED", message+"; config.toml is unchanged", nil)
+	return &r
 }
 
 // replaceConfig writes a private temporary file beside config.toml and renames

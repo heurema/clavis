@@ -20,6 +20,7 @@ import (
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 // profilesRun runs a profiles command and returns the exit code, the top-level
@@ -411,6 +412,76 @@ func TestProfilesSymlinkedConfig(t *testing.T) {
 	info, err := os.Lstat(path)
 	require.NoError(t, err)
 	assert.NotZero(t, info.Mode()&os.ModeSymlink, "the link is not replaced")
+}
+
+func TestProfilesWriteFailures(t *testing.T) {
+	home := cliHome(t)
+	path := writeConfig(t, "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://clavis.example.com\"\n")
+	clavis := filepath.Dir(path)
+	lock := filepath.Join(clavis, "config.lock")
+	before := readConfigFile(t)
+
+	// Another writer holds config.lock: the write gives up at its deadline.
+	held, err := os.OpenFile(lock, os.O_RDWR|os.O_CREATE, 0o600)
+	require.NoError(t, err)
+	require.NoError(t, unix.Flock(int(held.Fd()), unix.LOCK_EX))
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	failed := saveConfig(ctx, clavis, func(*clientConfig) *Result {
+		t.Error("no change is applied without the lock")
+		return nil
+	})
+	cancel()
+	require.NotNil(t, failed)
+	assert.Equal(t, "TIMEOUT", failed.Error.Code)
+	assert.Contains(t, failed.Error.Message, lock)
+	require.NoError(t, held.Close())
+	assert.Equal(t, before, readConfigFile(t))
+
+	// An unsafe lock file is an operation failure naming it.
+	require.NoError(t, os.Chmod(lock, 0o644))
+	code, result, _ := profilesRun(t, "set", "local", "--server", "http://127.0.0.1:8080")
+	assert.Equal(t, 1, code)
+	require.NotNil(t, result.Error)
+	assert.Equal(t, "CONFIGURATION_WRITE_FAILED", result.Error.Code)
+	assert.Contains(t, result.Error.Message, lock)
+	assert.Equal(t, before, readConfigFile(t))
+	require.NoError(t, os.Chmod(lock, 0o600))
+
+	// An unsafe home is reported as the session store reports it.
+	require.NoError(t, os.Chmod(clavis, 0o775))
+	for _, args := range [][]string{{"set", "local", "--server", "http://127.0.0.1:8080"}, {"use", "fce"}, {"remove", "fce"}} {
+		code, result, _ := profilesRun(t, args...)
+		assert.Equal(t, 1, code, args)
+		require.NotNil(t, result.Error, args)
+		assert.Equal(t, "CREDENTIAL_STORAGE_FAILED", result.Error.Code, args)
+		assert.Contains(t, result.Error.Message, clavis+" must be", args)
+	}
+	require.NoError(t, os.Chmod(clavis, 0o700))
+	assert.Equal(t, before, readConfigFile(t))
+	assert.NoDirExists(t, filepath.Join(home, ".clavis", "sessions"))
+}
+
+func TestProfilesCorruptFiles(t *testing.T) {
+	cliHome(t)
+	path := writeConfig(t, "current = \"fce\"\noutput = \"text\"\n\n[profiles.fce]\nserver = \"https://clavis.example.com\"\n")
+	before := readConfigFile(t)
+	for _, args := range [][]string{
+		{"set", "local", "--server", "http://127.0.0.1:8080"}, {"use", "fce"}, {"current"}, {"list"}, {"remove", "fce"},
+	} {
+		code, result, _ := profilesRun(t, args...)
+		assert.Equal(t, 2, code, args)
+		require.NotNil(t, result.Error, args)
+		assert.Equal(t, path+": output is not a known key", result.Error.Message, args)
+	}
+	assert.Equal(t, before, readConfigFile(t), "a corrupt file is never rewritten")
+
+	writeConfig(t, "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://clavis.example.com\"\n")
+	storeSession(t, "https://clavis.example.com", "alice", time.Now().Add(time.Hour))
+	require.NoError(t, os.WriteFile(cachePath(t, "https://clavis.example.com"), []byte(`{`), 0o600))
+	code, result, _ := profilesRun(t, "list")
+	assert.Equal(t, 1, code)
+	require.NotNil(t, result.Error)
+	assert.Equal(t, "CREDENTIAL_STORAGE_FAILED", result.Error.Code)
 }
 
 func sortedKeys(values map[string]json.RawMessage) []string {
