@@ -1,7 +1,7 @@
 # PRD: Clavis — Unified Access to External Systems Through AI Agents
 
 Status: Draft product requirements for review and design.\
-Version: 0.2 (MVP scope decisions of September 11, 2026 applied; see section 12).\
+Version: 0.3 (MVP scope decisions of September 11, 2026 and the September 16, 2026 decisions applied; see section 12).\
 Date: September 11, 2026.\
 Product name: Clavis (`clavis`).
 
@@ -402,10 +402,22 @@ Decided on September 11, 2026 (applied throughout this document):
 | VictoriaMetrics authentication | None, basic, bearer, custom header; mutual TLS and OAuth2 deferred; the same methods for VictoriaLogs plus optional tenant settings |
 | Log source | VictoriaLogs pulled into the MVP on September 14, 2026 ahead of groups and the agent skill; rows pass through in the source's shape, the platform adds no limit and cuts the unbounded stream at the cap with explicit truncation; `hits`, stats endpoints and Loki deferred |
 | Pilot targets | Small teams; PostgreSQL 17 and 18; single-node VictoriaMetrics and VictoriaLogs; Claude Code and Codex agents |
-| Session lifetime | Fixed, eight hours by default, configurable between five minutes and 24 hours |
+| Session lifetime | Fixed, eight hours by default, configurable between five minutes and 24 hours; superseded on September 16, 2026 by the single sliding policy below |
 | Grants | One recipient per grant, a user or a group, and one connection; no expiry, idempotent; administrators use any connection without a grant; members see the connections they have effective access to, in a reduced projection, with disabled ones visible but unusable |
 | Groups | Delivered on September 14, 2026: administrator-managed membership, effective access as the union of direct and group grants evaluated on every request, provenance through `grants list --effective`, deletion guarded on zero grants and dropping memberships; identity-provider synchronization, nested groups, group-scoped administration and member-visible rosters remain later stages |
 | User references | Any `--user` accepts a UUID or a username; usernames are never UUID-shaped |
+
+Decided on September 16, 2026, the day the first beta users arrived (delivery plan in
+`docs/plans/2026-09-16-cli-sign-in-profiles-release.md`):
+
+| Topic | Decision |
+|---|---|
+| Release tagging | A `vX.Y.Z` tag on GitHub is the production release: one workflow builds the CLI binaries with checksums into a GitHub Release, the server image and the chart; release candidates publish as pre-releases; `go install` at a tag reports that tag |
+| CLI profiles | A TOML file at `~/.clavis/config.toml` holds named profiles, each a server URL, and a default; sessions move beside it; the server is resolved from flag, environment, then the default profile, never from a silent loopback default; every networked result names the server it used |
+| Browser sign-in from the CLI | `clavis login` opens the browser, the user signs in and explicitly approves the CLI on a loopback callback with PKCE, and the CLI receives an ordinary session; `--password-stdin` stays for agents and CI; refresh tokens and device flow rejected or deferred |
+| Session lifetime | One policy for browser and CLI sessions: an idle expiry of seven days and an absolute cap of thirty days, both configurable, renewed on use; replaces the fixed eight-hour lifetime |
+| Windows | Postponed; the CLI supports macOS and Linux |
+| TLS | Terminated at the reverse proxy in front of the server; Clavis handles no certificates |
 
 Still open, to be settled with the pilot team:
 
