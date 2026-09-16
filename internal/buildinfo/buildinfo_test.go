@@ -64,8 +64,9 @@ func TestResolve(t *testing.T) {
 			},
 		},
 		{
-			// A test binary. This is the case that keeps the CLI's own version
-			// test asserting dev.
+			// A test binary and a source export both land here: the toolchain
+			// answers, but has no version for the module and no VCS settings.
+			// This is what keeps the CLI's own version test asserting dev.
 			name:    "development build stays unknown",
 			version: "dev", commit: "unknown", date: "unknown",
 			read: reader(devel),
@@ -78,7 +79,8 @@ func TestResolve(t *testing.T) {
 			want: Info{Version: "dev", Commit: "unknown", Date: "unknown"},
 		},
 		{
-			// A source export: no module metadata to read at all.
+			// No build information at all, which the toolchain reports for a
+			// binary it did not stamp.
 			name:    "unreadable build information leaves the defaults",
 			version: "dev", commit: "unknown", date: "unknown",
 			read: func() (*debug.BuildInfo, bool) { return nil, false },
@@ -103,10 +105,39 @@ func TestResolve(t *testing.T) {
 			},
 		},
 		{
+			// The mirror of the case above: a stamped commit and date survive a
+			// checkout that would otherwise supply both, which is what makes
+			// the precedence rule hold for all three fields and not just one.
+			name:    "stamped commit and date beside a derived version",
+			version: "dev", commit: "abc", date: "2026-09-16T00:00:00Z",
+			read: reader(pseudo, checkout...),
+			want: Info{Version: pseudo, Commit: "abc", Date: "2026-09-16T00:00:00Z"},
+		},
+		{
 			// An empty setting value is no better than an absent one.
 			name:    "empty vcs settings leave the defaults",
 			version: "dev", commit: "unknown", date: "unknown",
 			read: reader(devel, setting("vcs.revision", ""), setting("vcs.time", "")),
+			want: Info{Version: "dev", Commit: "unknown", Date: "unknown"},
+		},
+		{
+			// `make build-cli VERSION=` stamps an empty string, which is no
+			// identity at all: it falls back rather than reporting nothing.
+			name:    "an empty linker value is not an identity",
+			version: "", commit: "", date: "",
+			read: reader(pseudo, checkout...),
+			want: Info{
+				Version: pseudo,
+				Commit:  "5121b0cd463e8fd86d898e0a8df5e628b7a62ce3",
+				Date:    "2026-09-16T14:31:19Z",
+			},
+		},
+		{
+			// And with nothing to fall back to it reports the default, so an
+			// empty field never reaches a startup log or an operator.
+			name:    "an empty linker value with no build information",
+			version: "", commit: "", date: "",
+			read: func() (*debug.BuildInfo, bool) { return nil, false },
 			want: Info{Version: "dev", Commit: "unknown", Date: "unknown"},
 		},
 	} {

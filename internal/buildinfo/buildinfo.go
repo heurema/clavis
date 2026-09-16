@@ -52,6 +52,19 @@ func Current() Info {
 // The reader is a parameter so a test never depends on how it was built itself.
 func resolve(version, commit, date string, read func() (*debug.BuildInfo, bool)) Info {
 	info := Info{Version: version, Commit: commit, Date: date}
+	// An explicit `VERSION=` on a build command stamps an empty string, which
+	// is no identity at all. Folding it onto the sentinel makes it fall back
+	// like an unstamped field, and report the default when nothing fills it,
+	// rather than leaving an empty version in a startup log.
+	if info.Version == "" {
+		info.Version = unknownVersion
+	}
+	if info.Commit == "" {
+		info.Commit = unknownValue
+	}
+	if info.Date == "" {
+		info.Date = unknownValue
+	}
 	if info.Version != unknownVersion && info.Commit != unknownValue && info.Date != unknownValue {
 		return info
 	}

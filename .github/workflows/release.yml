@@ -1,0 +1,130 @@
+name: release
+
+# The tag is the release. Pushing v<major>.<minor>.<patch>, optionally with an
+# -rc.<n> suffix, publishes the executables, the image and the chart from that
+# commit; nothing else triggers a publication.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      # The two forms every artifact carries: the tag as written for the
+      # executables and the image labels, because that is how a Go module
+      # version is spelled, and the tag without its v for the image tag, the
+      # chart and the archive names, because Helm takes a bare semantic
+      # version. A hyphen in the tag marks a pre-release.
+      - name: Resolve the release identity
+        id: identity
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          printf 'version=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+          printf 'bare=%s\n' "${TAG#v}" >> "$GITHUB_OUTPUT"
+          case "$TAG" in
+          *-*) printf 'prerelease=true\n' >> "$GITHUB_OUTPUT" ;;
+          *) printf 'prerelease=false\n' >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+      # The pin lives in the manifest the image build reads too, so the runner
+      # and the image install the same pnpm without a second place to update.
+      - name: Install pnpm
+        run: npm install -g "pnpm@$(node -p "require('./web/package.json').packageManager.split('@')[1]")"
+
+      - run: make setup
+      - run: make check
+
+      - name: Build the CLI for every release platform
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+          BARE: ${{ steps.identity.outputs.bare }}
+        run: |
+          set -eu
+          mkdir -p dist
+          date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for platform in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64; do
+            os="${platform%/*}"
+            arch="${platform#*/}"
+            GOOS="$os" GOARCH="$arch" make build-cli \
+              VERSION="$VERSION" COMMIT="$GITHUB_SHA" DATE="$date"
+            mv bin/clavis "dist/clavis_${BARE}_${os}_${arch}"
+          done
+          cd dist
+          sha256sum clavis_* > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Sign in to the registry
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          printf '%s' "$TOKEN" | .tools/helm/bin/helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      # One recipe builds the image, the same one a contributor runs; the extra
+      # flags only add the platforms and the push.
+      - name: Publish the image
+        id: image
+        env:
+          VERSION: ${{ steps.identity.outputs.version }}
+          BARE: ${{ steps.identity.outputs.bare }}
+        run: |
+          set -eu
+          reference="ghcr.io/heurema/clavis:$BARE"
+          make image IMAGE="$reference" \
+            VERSION="$VERSION" COMMIT="$GITHUB_SHA" \
+            DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            IMAGE_FLAGS="--platform linux/amd64,linux/arm64 --push"
+          digest="$(docker buildx imagetools inspect "$reference" --format '{{.Manifest.Digest}}')"
+          printf 'digest=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the chart
+        env:
+          BARE: ${{ steps.identity.outputs.bare }}
+        run: |
+          set -eu
+          .tools/helm/bin/helm package deploy/charts/clavis \
+            --version "$BARE" --app-version "$BARE"
+          .tools/helm/bin/helm push "clavis-${BARE}.tgz" oci://ghcr.io/heurema/charts
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.identity.outputs.version }}
+          BARE: ${{ steps.identity.outputs.bare }}
+          PRERELEASE: ${{ steps.identity.outputs.prerelease }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -eu
+          notes="$(printf 'Image: ghcr.io/heurema/clavis@%s\nChart: oci://ghcr.io/heurema/charts/clavis %s' "$DIGEST" "$BARE")"
+          if [ "$PRERELEASE" = true ]; then
+            set -- --prerelease
+          else
+            set --
+          fi
+          gh release create "$VERSION" "$@" \
+            --verify-tag --generate-notes --notes "$notes" dist/*

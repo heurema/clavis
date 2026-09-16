@@ -18,6 +18,22 @@ documented inline in `values.yaml` and constrained by `values.schema.json`.
   Gateway listener. The server speaks plain HTTP on port 8080 inside the pod
   and never infers its public origin from forwarded headers.
 
+## Installing
+
+Released charts are published as OCI artifacts beside the server image, at the
+release version without its leading `v`. The chart's `appVersion` is that same
+version and supplies the default image tag, so a version pins both halves:
+
+```sh
+helm install clavis oci://ghcr.io/heurema/charts/clavis --version 0.1.0 \
+  --set publicURL=https://clavis.example.com \
+  --set secrets.database.secretName=clavis \
+  --set secrets.encryptionKey.secretName=clavis
+```
+
+Use the checked-out `deploy/charts/clavis` path instead when you are testing an
+unreleased change to the chart itself.
+
 ## Secrets
 
 The chart takes the three secrets **by reference** and never accepts a secret
