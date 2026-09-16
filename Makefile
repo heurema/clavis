@@ -55,8 +55,10 @@ LDFLAGS = -X $(IDENTITY).Version=$(VERSION) -X $(IDENTITY).Commit=$(COMMIT) -X $
 
 # The tag `make image` produces; a release pipeline overrides it.
 IMAGE ?= clavis:local
-# Extra `docker build` arguments, so a release can ask one recipe for several
-# platforms and a push without a second definition of the build.
+# Extra `docker buildx build` arguments, so a release can ask one recipe for
+# several platforms and a push without a second definition of the build. The
+# recipe names buildx explicitly because a plain `docker build` may still reach
+# the docker driver, which cannot produce more than one platform.
 IMAGE_FLAGS ?=
 
 .PHONY: setup dev dev-db dev-api build build-server compile-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode install-helm install-kind install-kubeconform install-kube-schemas chart-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke image smoke-image verify-kind down reset-db
@@ -256,7 +258,7 @@ image:
 			test "$$commit" != unknown || commit=$$(git rev-parse HEAD); \
 			test "$$date" != unknown || date=$$(date -u +%Y-%m-%dT%H:%M:%SZ); \
 		fi; \
-		docker build \
+		docker buildx build \
 			--build-arg VERSION="$$version" \
 			--build-arg COMMIT="$$commit" \
 			--build-arg DATE="$$date" \
