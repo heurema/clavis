@@ -5,6 +5,7 @@
 # Installed tools, build output and reports: the builder produces its own.
 .tools/
 bin/
+dist/
 reports/
 # Local notes, scratch files and agent state.
 .local/

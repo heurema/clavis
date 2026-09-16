@@ -46,7 +46,7 @@ func TestInjectedReadinessIsBoundedAndPublicDocumentsBypassIt(t *testing.T) {
 	aggregate := httptest.NewRecorder()
 	handler.ServeHTTP(aggregate, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	require.Equal(t, http.StatusServiceUnavailable, aggregate.Code)
-	require.JSONEq(t, `{"status":"unhealthy","version":"`+buildinfo.Version+`","checks":{"live":{"status":"alive"},"ready":{"status":"not_ready","error":{"code":"SETUP_REQUIRED","message":"Initial administrator configuration is required"}}}}`, aggregate.Body.String())
+	require.JSONEq(t, `{"status":"unhealthy","version":"`+buildinfo.Current().Version+`","checks":{"live":{"status":"alive"},"ready":{"status":"not_ready","error":{"code":"SETUP_REQUIRED","message":"Initial administrator configuration is required"}}}}`, aggregate.Body.String())
 	require.Equal(t, 2, calls)
 }
 

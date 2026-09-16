@@ -270,6 +270,37 @@ the operator contract, including the bootstrap lifecycle, why an upgrade across
 a migration interrupts service and cannot be rolled back, and why the database
 and the encryption key must be backed up together.
 
+### Releases
+
+Pushing a `vX.Y.Z` tag, or a `vX.Y.Z-rc.N` candidate, is the whole release.
+The workflow in `.github/workflows/release.yml` runs `make check` on the tagged
+commit, then publishes the CLI for macOS and Linux on both architectures with a
+`SHA256SUMS` file on a GitHub Release, the server image at
+`ghcr.io/heurema/clavis`, and the chart at `oci://ghcr.io/heurema/charts/clavis`.
+A tag carrying a hyphen becomes a pre-release. The image tag, the chart version
+and its `appVersion` drop the leading `v`; the executables, `/healthz` and the
+image labels keep it, so a release reports `v1.2.3` while its image is
+`ghcr.io/heurema/clavis:1.2.3`. Nothing is tagged `latest`. After the first
+release an owner has to make both GHCR packages public once, which the workflow
+cannot do for itself.
+
+Install the CLI either way; both report the release version:
+
+```sh
+go install github.com/heurema/clavis/cmd/clavis@<tag>   # for example v0.1.0-rc.2
+```
+
+```sh
+curl -fsSLO https://github.com/heurema/clavis/releases/download/<tag>/clavis_<version>_darwin_arm64
+curl -fsSLO https://github.com/heurema/clavis/releases/download/<tag>/SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing
+install -m 755 clavis_<version>_darwin_arm64 /usr/local/bin/clavis
+```
+
+A build made any other way carries no stamped identity and falls back to what
+the Go toolchain recorded: a checkout build reports its own revision, and a
+source export reports `dev`.
+
 ## Agents
 
 Agents use the CLI plus a skill that teaches it. The skill ships inside the

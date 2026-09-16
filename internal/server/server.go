@@ -110,7 +110,7 @@ func handler(checkTimeout time.Duration, checker platform.Checker, logger *slog.
 		}
 		writeJSON(w, readyStatus(result), map[string]any{
 			"status":  status,
-			"version": buildinfo.Version,
+			"version": buildinfo.Current().Version,
 			"checks":  map[string]any{"live": live(), "ready": result.Response()},
 		})
 	})

@@ -44,14 +44,20 @@ KUBE_SCHEMA_FILES := \
 # coreutils on Linux, the perl shasum macOS ships; both read "sum  path" lines.
 SHA256SUM := $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo 'shasum -a 256')
 
-# Build identity stamped into internal/buildinfo. A local build reports the
-# defaults; release builds pass the real values on the command line.
+# Build identity stamped into internal/buildinfo. A build that passes none of
+# these falls back to the identity the Go toolchain embeds, so only a source
+# export reports the defaults; release builds pass the real values.
 VERSION ?= dev
 COMMIT ?= unknown
 DATE ?= unknown
+IDENTITY := github.com/heurema/clavis/internal/buildinfo
+LDFLAGS = -X $(IDENTITY).Version=$(VERSION) -X $(IDENTITY).Commit=$(COMMIT) -X $(IDENTITY).Date=$(DATE)
 
 # The tag `make image` produces; a release pipeline overrides it.
 IMAGE ?= clavis:local
+# Extra `docker build` arguments, so a release can ask one recipe for several
+# platforms and a push without a second definition of the build.
+IMAGE_FLAGS ?=
 
 .PHONY: setup dev dev-db dev-api build build-server compile-server build-cli build-web-assets install-templ install-golangci-lint install-deadcode install-helm install-kind install-kubeconform install-kube-schemas chart-lint generate-web check-web-generated install-sqlc generate-db check-db-generated check-sql-boundaries check check-go-format lint-go check-dead-code format test-mutation test-mutation-full smoke image smoke-image verify-kind down reset-db
 
@@ -89,8 +95,7 @@ compile-server:
 	@set -eu; output=$$(mktemp -d bin/.server-XXXXXX); \
 		trap 'rm -rf "$$output"' 0; \
 		trap 'exit 1' 1 2 15; \
-		CGO_ENABLED=0 go build -trimpath \
-			-ldflags '-X github.com/heurema/clavis/internal/buildinfo.Version=$(VERSION) -X github.com/heurema/clavis/internal/buildinfo.Commit=$(COMMIT) -X github.com/heurema/clavis/internal/buildinfo.Date=$(DATE)' \
+		CGO_ENABLED=0 go build -trimpath -ldflags '$(LDFLAGS)' \
 			-o "$$output/server" ./cmd/server; \
 		mv -f "$$output/server" bin/server
 
@@ -99,7 +104,7 @@ build-cli:
 	@set -eu; output=$$(mktemp -d bin/.clavis-XXXXXX); \
 		trap 'rm -rf "$$output"' 0; \
 		trap 'exit 1' 1 2 15; \
-		go build -trimpath -o "$$output/clavis" ./cmd/clavis; \
+		go build -trimpath -ldflags '$(LDFLAGS)' -o "$$output/clavis" ./cmd/clavis; \
 		mv -f "$$output/clavis" bin/clavis
 
 build: build-server build-cli
@@ -255,6 +260,7 @@ image:
 			--build-arg VERSION="$$version" \
 			--build-arg COMMIT="$$commit" \
 			--build-arg DATE="$$date" \
+			$(IMAGE_FLAGS) \
 			--tag '$(IMAGE)' .
 
 smoke-image: image

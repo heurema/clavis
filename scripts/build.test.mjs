@@ -157,10 +157,23 @@ async function checkCopiedServer(directory) {
     }
     assert.deepEqual(readdirSync(runtime), ["server"])
     assert.ok(!output.includes("sentinel-private"))
-    // A build without the linker flags reports the local identity.
-    assert.match(
-      output,
-      /"msg":"server_started","version":"dev","commit":"unknown","date":"unknown"/,
+    // A build without the linker flags reports whatever the toolchain embedded:
+    // this fixture sits inside the repository, so Go finds its Git metadata and
+    // stamps the checkout; a tree with none reports the defaults. The shape of
+    // each is what is worth holding here, since the value itself depends on
+    // where the suite runs.
+    const started = JSON.parse(
+      output.split("\n").find((line) => line.includes('"server_started"')),
+    )
+    assert.ok(
+      started.version === "dev" || /^v\d+\.\d+\.\d+/.test(started.version),
+      `unstamped build reported version ${started.version}`,
+    )
+    assert.ok(
+      (started.commit === "unknown" && started.date === "unknown") ||
+        (/^[0-9a-f]{40}$/.test(started.commit) &&
+          !Number.isNaN(Date.parse(started.date))),
+      `unstamped build reported ${started.commit} at ${started.date}`,
     )
   } finally {
     child.kill("SIGTERM")
@@ -480,6 +493,43 @@ test("CLI builds without web or SQL sources or tools and publishes only successf
   execute(directory, "make", ["build-cli", "NODE=false", "PNPM=false"], 2)
   assert.equal(digest(join(directory, "bin/clavis")), binary)
   assert.deepEqual(readdirSync(join(directory, "bin")), ["clavis"])
+})
+
+test("CLI stamps the build identity and cross-compiles", (t) => {
+  const directory = fixture(t, false)
+  // The fixture lives inside this repository, so an unstamped build there still
+  // finds its Git metadata and reports the checkout. Only the stamped values
+  // are this recipe's own contract; the fallback is covered by the unit tests.
+  execute(directory, "make", [
+    "build-cli",
+    "NODE=false",
+    "PNPM=false",
+    "VERSION=v1.2.3",
+    "COMMIT=abc",
+    "DATE=2026-09-16T00:00:00Z",
+  ])
+  assert.deepEqual(
+    JSON.parse(execute(directory, join(directory, "bin/clavis"), ["version"]))
+      .data,
+    { version: "v1.2.3", commit: "abc", date: "2026-09-16T00:00:00Z" },
+  )
+  // GOOS and GOARCH reach go build through the environment Make exports for a
+  // command-line variable, so one recipe produces every release platform. An
+  // ELF header is what a Linux executable opens with, and a host Mach-O or PE
+  // binary never does.
+  execute(directory, "make", [
+    "build-cli",
+    "NODE=false",
+    "PNPM=false",
+    "GOOS=linux",
+    "GOARCH=arm64",
+    "VERSION=v1.2.3",
+  ])
+  assert.equal(
+    readFileSync(join(directory, "bin/clavis")).subarray(0, 4).toString("hex"),
+    "7f454c46",
+    "a linux/arm64 build is not a host executable",
+  )
 })
 
 test("Make propagates missing tool failures without implicit installation", (t) => {
