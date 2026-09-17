@@ -73,6 +73,7 @@ func requireDocumentHeaders(t *testing.T, response *httptest.ResponseRecorder) {
 	t.Helper()
 	require.Equal(t, "frame-ancestors 'none'", response.Header().Get("Content-Security-Policy"))
 	require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
+	require.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
 }
 
 // Scenario: invalid link parameters, on the link and on Approve.

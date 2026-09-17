@@ -192,6 +192,7 @@ func (a *authHTTP) bounded(budget time.Duration, extendWrite bool, next http.Han
 			case "/login":
 				a.loginFailure(buffer, r, "", "", failure)
 			case auth.AuthorizePath:
+				buffer.Header().Set("Referrer-Policy", "no-referrer")
 				a.render(buffer, r, 503, a.views.Error(web.AuthErrorModel{ErrorCode: auth.ServiceUnavailable}))
 			case "/logout":
 				if keepCookie {
@@ -716,6 +717,8 @@ func loginLocation(link auth.CLIAuthorization) string {
 // valid browser session or the sign-in document returning to the link. It
 // writes nothing but the renewal Authenticate may perform.
 func (a *authHTTP) authorizePage(w http.ResponseWriter, r *http.Request) {
+	// The link carries the state; no document on this route passes it on.
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	values, err := url.ParseQuery(r.URL.RawQuery)
 	link, ok := auth.ParseCLIAuthorization(values)
 	if err != nil || !ok {
@@ -746,6 +749,7 @@ func (a *authHTTP) authorizePage(w http.ResponseWriter, r *http.Request) {
 // form content type are checked before anything else, and the redirect is
 // built only from the parsed port, the fresh code and the validated state.
 func (a *authHTTP) approveBrowser(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	fail := func(err error) {
 		status, failure := auth.FailureFor(err)
 		a.render(w, r, status, a.views.Error(web.AuthErrorModel{ErrorCode: failure.Error.Code}))
