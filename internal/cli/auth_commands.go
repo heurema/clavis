@@ -53,9 +53,8 @@ func authCommands(streams IO, check func(*urfave.Command) error, set func(Result
 		}, Commands: commands}
 	}
 	return []*urfave.Command{
-		makeCommand("login", "Sign in and store a private local session",
-			&urfave.StringFlag{Name: "username", Usage: "Personal username"},
-			&urfave.BoolFlag{Name: "password-stdin", Usage: "Read a bounded password from stdin instead of a hidden terminal prompt"}),
+		makeCommand("login", "Sign in through the browser and store a private local session",
+			&urfave.BoolFlag{Name: "no-browser", Usage: "Print the sign-in link without opening a browser"}),
 		makeCommand("logout", "Revoke and remove the local session"),
 		makeCommand("whoami", "Check current identity with the server"),
 		queryCommand(timedCommand(auth.QueryRequestBudget, queryTimeoutUsage)),
@@ -96,10 +95,6 @@ func validateAuthArguments(operation string, command *urfave.Command) *Result {
 	}
 	var message, hint string
 	switch operation {
-	case "login":
-		if !auth.ValidUsername(command.String("username")) {
-			message = "Provide a valid username"
-		}
 	case "users.create":
 		// Creation is the one place a username is chosen rather than resolved,
 		// so the rule, including the UUID-shape exclusion, is spelled out.
@@ -124,7 +119,7 @@ func validateAuthArguments(operation string, command *urfave.Command) *Result {
 }
 
 func needsPassword(operation string) bool {
-	return operation == "login" || operation == "users.create" || operation == "users.reset-password"
+	return operation == "users.create" || operation == "users.reset-password"
 }
 
 // readPassword is the single credential input path: hidden terminal input or
@@ -168,6 +163,9 @@ func runResolved(ctx context.Context, operation string, command *urfave.Command,
 	if invalid := validateAuthArguments(operation, command); invalid != nil {
 		return *invalid
 	}
+	if operation == "login" {
+		return browserLogin(ctx, command, streams, origin, timeout)
+	}
 	var password []byte
 	if needsPassword(operation) {
 		var failed *Result
@@ -203,28 +201,13 @@ func runResolved(ctx context.Context, operation string, command *urfave.Command,
 		return storageFailure(err)
 	}
 	api := authTransport{origin: origin, timeout: timeout}
-	if operation == "login" {
-		input := auth.LoginRequest{Username: command.String("username"), Password: auth.Secret(password)}
-		var issued auth.LoginResponse
-		if failed := api.request(ctx, auth.LoginPath, "", &input, &issued); failed != nil {
-			return *failed
-		}
-		if err := cache.write(cachedSession{Origin: origin, LoginResponse: issued}); err != nil {
-			api.cleanup(issued.Token)
-			return storageFailure(err)
-		}
-		if previous != nil && previous.Token != issued.Token {
-			api.cleanup(previous.Token)
-		}
-		return success(issued.Identity)
-	}
 	if operation == "whoami" {
 		var token auth.Secret
 		if previous != nil {
 			token = previous.Token
 		}
 		var identity auth.Identity
-		if failed := api.request(ctx, auth.WhoAmIPath, token, nil, &identity); failed != nil {
+		if failed := api.request(ctx, auth.WhoAmIPath, token, &identity); failed != nil {
 			return *failed
 		}
 		return success(identity)
@@ -238,7 +221,7 @@ func runResolved(ctx context.Context, operation string, command *urfave.Command,
 	switch operation {
 	case "logout":
 		var revoked auth.Revocation
-		failed := api.request(ctx, auth.LogoutPath, previous.Token, nil, &revoked)
+		failed := api.request(ctx, auth.LogoutPath, previous.Token, &revoked)
 		if err := cache.remove(previous); err != nil {
 			return storageFailure(err)
 		}
@@ -251,7 +234,7 @@ func runResolved(ctx context.Context, operation string, command *urfave.Command,
 	case "revoke":
 		var revoked auth.Revocation
 		path := userPath(auth.RevokePath, command.String("user"))
-		if failed := api.request(ctx, path, previous.Token, nil, &revoked); failed != nil {
+		if failed := api.request(ctx, path, previous.Token, &revoked); failed != nil {
 			return *failed
 		}
 		return success(revoked)
@@ -278,5 +261,5 @@ func (a authTransport) cleanup(token auth.Secret) {
 	// a newly issued but unpersisted credential. This is one attempt, never retry.
 	a.timeout = min(a.timeout, time.Second)
 	var revoked auth.Revocation
-	_ = a.request(context.Background(), auth.LogoutPath, token, nil, &revoked)
+	_ = a.request(context.Background(), auth.LogoutPath, token, &revoked)
 }

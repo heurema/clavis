@@ -15,6 +15,26 @@ type LoginModel struct {
 	Username          string
 	ErrorCode         string
 	RetryAfterSeconds int
+	// Next is a CLI authorization link to return to after sign-in. The
+	// document renders it only when it parses as one, and then rebuilt.
+	Next string
+}
+
+// AuthorizeModel is the approval document for one parsed authorization link:
+// the signed-in username and the link, whose port the document names.
+type AuthorizeModel struct {
+	Username string
+	Link     auth.CLIAuthorization
+}
+
+// returnTarget keeps a return target only as a rebuilt authorization link,
+// never as the submitted text.
+func returnTarget(next string) string {
+	link, ok := auth.ParseAuthorizeLink(next)
+	if !ok {
+		return ""
+	}
+	return link.Link()
 }
 
 // AdminPage names the administration page a request asked for. The shell needs

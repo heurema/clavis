@@ -22,6 +22,10 @@ export const expectedFailures = {
   // fail rule in _helpers.tpl repeats it for renders that skip the schema.
   "fail-no-public-url.yaml": "publicURL",
   "fail-both-routes.yaml": "mutually exclusive",
+  // Only the fail rule in _helpers.tpl can compare the two session durations.
+  "fail-session-idle-above-max.yaml": "server.sessionIdleTimeout must be",
+  // The strict schema refuses the removed fixed session lifetime by name.
+  "fail-session-ttl.yaml": "sessionTTL",
 }
 
 export function missingSchemasMessage(path = schemasPath) {

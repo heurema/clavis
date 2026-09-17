@@ -124,9 +124,12 @@ tests, and setup does not install browser binaries.
 `make smoke` copies only the server executable into a fresh temporary directory
 and runs it there with an empty executable search path. HTTP requests verify the
 login document and availability of its referenced embedded assets. JSON API
-requests and the CLI exercise concurrent initialization, authentication, expiry,
-multi-client revocation, user administration (creation, listing, blocking,
-password reset, role changes and self-protection) and connection management
+requests and the CLI exercise concurrent initialization, authentication (the CLI
+signs in with `login --no-browser` while the smoke submits the sign-in form and
+Approve with `fetch`, and a redeemed code replayed against `/api/auth/token` is
+refused), expiry, multi-client revocation, user administration (creation,
+listing, blocking, password reset, role changes and self-protection) and
+connection management
 (creation with an encrypted secret, connectivity checks against the real database
 and a local VictoriaMetrics health stub, updates, credential replacement, the delete
 guard, selector listing, dry runs and a restart with a different key), then
@@ -150,10 +153,12 @@ directory whose group the container joins. It waits for `/livez` then `/readyz`,
 checks `/healthz`, the sign-in document and an asset the document references,
 confirms the process runs as uid 65532 with a read-only root filesystem, and runs
 `clavis doctor`, `login` and `whoami` over the published loopback port. The
-container's public URL is HTTPS, as a deployment's is, so browser sign-in is out
-of scope here. Per-check results go to `reports/smoke-image-summary.json`, and the
-project, its volume and the temporary secrets are removed afterwards; the
-development database and its volume belong to a different project and are untouched.
+container's public URL is HTTPS, as a deployment's is, so the sign-in form and
+Approve are posted with that origin as `Origin`, the way a browser behind the
+proxy would send them. Per-check results go to
+`reports/smoke-image-summary.json`, and the project, its volume and the
+temporary secrets are removed afterwards; the development database and its
+volume belong to a different project and are untouched.
 On macOS Docker hosts the bind-mounted secret files appear owned by the container
 user, so the group-read branch is exercised on Linux hosts and by the kind
 verification, while the refusal of a world-readable file holds everywhere.
@@ -328,14 +333,16 @@ remove it. Both commands work offline and never touch the server or the
 session. Install through the CLI only: a second copy of the skill leaves it
 undefined which one an agent loads.
 
-Once a person has configured a profile (see [CLI profiles](#cli-profiles)),
-the agent logs in like any other user and follows the skill. The skill tells it
-to name the server every result reports, to target another configured server
-with `--profile` or `CLAVIS_PROFILE`, and never to create, switch or remove a
-profile itself:
+Once a person has configured a profile (see [CLI profiles](#cli-profiles)) and
+signed in with `clavis login`, the agent uses that session and follows the
+skill. The skill tells it never to run `login` itself and to ask the person to
+run `clavis login` when a command fails with `UNAUTHENTICATED`, to name the
+server every result reports, to target another configured server with
+`--profile` or `CLAVIS_PROFILE`, and never to create, switch or remove a profile
+itself:
 
 ```sh
-clavis login --username <name> --password-stdin < /path/to/secret
+clavis whoami
 clavis connections list
 clavis query --connection <ref> --logsql 'error | sort by (_time) desc' --start -1h --limit 20
 ```
@@ -347,16 +354,28 @@ After building and initializing the server, name it once as a profile:
 ```sh
 ./bin/clavis profiles set local --server http://127.0.0.1:8080
 ./bin/clavis doctor
-./bin/clavis login --username alice
+./bin/clavis login
 ./bin/clavis whoami
 ./bin/clavis logout
 ```
 
-Login prompts without echo; automation can use `--password-stdin` with
-redirected protected input. Passwords and tokens are never command-line values
-or normal output. Results default to one JSON document; `--output text` is also
-available. Sessions are stored privately under `~/.clavis/sessions` and keyed by
-server origin, so two profiles naming one server share its session. `whoami`
+`login` signs in only through the browser. It listens on `127.0.0.1` on a port
+the system picks, prints `Open this link to sign in:` and the link to stderr,
+and opens the link with `open` on macOS or `xdg-open` on Linux. The browser
+shows the sign-in form if you are not signed in, then an "Approve CLI sign-in"
+page naming the account and the CLI's port; after Approve the browser returns
+to the CLI, which exchanges the one-time code for its own session. Nothing is
+created until Approve is clicked, so closing the tab declines. `login` waits up
+to five minutes and ends with `TIMEOUT` otherwise. `--no-browser` prints the
+link without opening anything, for a browser of your choice. On a remote shell
+without a browser, run `clavis login --no-browser` there, forward the port from
+the printed link with `ssh -L <port>:127.0.0.1:<port> <host>` from your own
+machine, and open the link locally; the server must be reachable from that
+browser. `login` reads no password: a password is entered only on the sign-in
+page. Tokens are never command-line values or normal output. Results default to
+one JSON document; `--output text` is also available. Sessions are stored
+privately under `~/.clavis/sessions` and keyed by server origin, so two profiles
+naming one server share its session. `whoami`
 verifies the session with the server rather than trusting cached identity, and
 for members it lists the names of the connections they can use (`connections`,
 with `connectionsTruncated` when the list is cut), direct grants and group
@@ -366,10 +385,26 @@ agent's first call already says which groups it belongs to; the two lists are
 bounded independently.
 
 An administrator can run `./bin/clavis sessions revoke --user <uuid-or-username>`
-to revoke that user's existing browser and CLI sessions. Sessions have a fixed eight-hour
-default lifetime (`CLAVIS_SESSION_TTL`, 5 minutes through 24 hours), with no
-automatic refresh. Logout revokes the current session; offline CLI logout removes
-the local credential but returns failure because remote revocation is unconfirmed.
+to revoke that user's existing browser and CLI sessions. Browser and CLI
+sessions follow one policy: a session ends after `CLAVIS_SESSION_IDLE_TIMEOUT`
+without use (default `168h`) or `CLAVIS_SESSION_MAX_LIFETIME` after sign-in
+(default `720h`), whichever comes first, with `5m ≤ idle ≤ max ≤ 2160h`. A
+request made with a valid session renews the idle expiry once less than half of
+the idle window remains, never past the maximum lifetime. `login` and `whoami`
+report both as `expiresAt` (the maximum) and `idleExpiresAt`. Logout revokes the
+current session; offline CLI logout removes the local credential but returns
+failure because remote revocation is unconfirmed.
+
+Upgrading to `v0.1.0`: the migration revokes every session, so everyone signs in
+again with `clavis login`. `login` no longer takes `--username` or
+`--password-stdin`, and the server no longer serves `POST /api/auth/login`, so
+an older CLI cannot sign in: upgrade it. `CLAVIS_SESSION_TTL` is replaced by
+`CLAVIS_SESSION_IDLE_TIMEOUT` and `CLAVIS_SESSION_MAX_LIFETIME`; the server
+ignores a leftover `CLAVIS_SESSION_TTL`, so remove it. The chart value
+`server.sessionTTL` is replaced by `server.sessionIdleTimeout` and
+`server.sessionMaxLifetime`, and a leftover `sessionTTL` fails rendering.
+Reinstall the agent skill with `clavis skill install` so agents learn to use the
+person's session.
 
 ## CLI profiles
 
@@ -451,9 +486,9 @@ lists them:
 
 `--user` accepts a user UUID or a username everywhere; usernames are never
 UUID-shaped, so the two cannot be confused, and results always return both.
-`create` and `reset-password` read the password without echo, or from
-`--password-stdin`, exactly like `login`; the administrator chooses every
-password. New users are members. Blocking and password reset revoke all of the
+`create` and `reset-password` read the password they set without echo, or from
+`--password-stdin`; the administrator chooses every password. New users are
+members. Blocking and password reset revoke all of the
 target's sessions; unblocking does not restore them. Administrators are peers:
 any administrator can manage any other, an administrator cannot block or demote
 their own account (`SELF_TARGET`), and the installation always keeps at least

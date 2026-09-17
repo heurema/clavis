@@ -66,7 +66,7 @@ func realHandler(t *testing.T, pool *pgxpool.Pool, secretPath string) http.Handl
 	t.Helper()
 	checker := store.NewInitializer(pool, "personal-admin", secretPath)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	service := local.WithKeyring(serverTestKeyring(t))
 	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, service,
@@ -84,16 +84,52 @@ func jsonBody(t *testing.T, value any) string {
 	return string(data)
 }
 
-// bearerLogin signs one account in and returns the headers a CLI session
-// carries from then on.
-func bearerLogin(t *testing.T, handler http.Handler, username string, secret auth.Secret) http.Header {
+// approvedCode signs one account in through the browser form with an
+// authorization link as the return target and clicks Approve, returning the
+// code the loopback callback would receive and the verifier that redeems it.
+func approvedCode(t *testing.T, handler http.Handler, username string, secret auth.Secret) (auth.Secret, auth.Secret) {
 	t.Helper()
-	response := requestAuth(handler, "POST", auth.LoginPath,
-		jsonBody(t, auth.LoginRequest{Username: username, Password: secret}),
+	verifier, link := randomPKCE(t)
+	form := http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}
+	response := requestAuth(handler, "POST", "/login",
+		url.Values{"username": {username}, "password": {string(secret)}, "next": {link.Link()}}.Encode(), form)
+	require.Equal(t, 303, response.Code)
+	require.Equal(t, link.Link(), response.Header().Get("Location"))
+	cookies := response.Result().Cookies()
+	require.Len(t, cookies, 1)
+	form.Set("Cookie", cookies[0].Name+"="+cookies[0].Value)
+	response = requestAuth(handler, "POST", auth.AuthorizePath,
+		url.Values{"port": {"49152"}, "challenge": {link.Challenge}, "state": {link.State}}.Encode(), form)
+	require.Equal(t, 303, response.Code)
+	callback, err := url.Parse(response.Header().Get("Location"))
+	require.NoError(t, err)
+	return auth.Secret(callback.Query().Get("code")), verifier
+}
+
+// redeemCode exchanges an approved code for a CLI session.
+func redeemCode(t *testing.T, handler http.Handler, code, verifier auth.Secret) auth.LoginResponse {
+	t.Helper()
+	response := requestAuth(handler, "POST", auth.TokenPath, jsonBody(t, auth.TokenRequest{Code: code, Verifier: verifier}),
 		http.Header{"Content-Type": {"application/json"}})
 	require.Equal(t, 200, response.Code)
 	var issued auth.LoginResponse
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &issued))
+	return issued
+}
+
+// cliSignIn signs one account in the way the CLI does: browser form, Approve
+// and the code exchange.
+func cliSignIn(t *testing.T, handler http.Handler, username string, secret auth.Secret) auth.LoginResponse {
+	t.Helper()
+	code, verifier := approvedCode(t, handler, username, secret)
+	return redeemCode(t, handler, code, verifier)
+}
+
+// bearerLogin signs one account in and returns the headers a CLI session
+// carries from then on.
+func bearerLogin(t *testing.T, handler http.Handler, username string, secret auth.Secret) http.Header {
+	t.Helper()
+	issued := cliSignIn(t, handler, username, secret)
 	return http.Header{"Authorization": {"Bearer " + string(issued.Token)}, "Accept": {"application/json"}}
 }
 
@@ -114,7 +150,7 @@ func sendJSON(t *testing.T, handler http.Handler, headers http.Header,
 func TestRealHTTPLoginFailsClosedBeforeInitializationAndAfterPoolClose(t *testing.T) {
 	pool, _, _ := serverDatabase(t)
 	checker := store.NewInitializer(pool, "", "")
-	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	checks := 0
 	// Health has a separate counter: authentication must use the service's
@@ -132,7 +168,7 @@ func TestRealHTTPLoginFailsClosedBeforeInitializationAndAfterPoolClose(t *testin
 			path, body string
 			headers    http.Header
 		}{
-			{auth.LoginPath, `{"username":"personal-admin","password":"valid test password"}`, http.Header{"Content-Type": {"application/json"}}},
+			{auth.TokenPath, `{"code":"` + string(fixtureToken) + `","verifier":"` + string(fixtureToken) + `"}`, http.Header{"Content-Type": {"application/json"}}},
 			{"/login", "username=personal-admin&password=valid+test+password", http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}},
 		} {
 			response := requestAuth(handler, "POST", tc.path, tc.body, tc.headers)
@@ -160,19 +196,15 @@ func TestRealHTTPAuthenticationAndLockDeadlines(t *testing.T) {
 		readinessCalls++
 		return checker.Check(ctx)
 	})
-	service, err := store.NewLocalAuth(pool, readiness, auth.DefaultSessionTTL)
+	service, err := store.NewLocalAuth(pool, readiness, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	handler, err := HandlerWithAuth(time.Second, readiness, service, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
-	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
-	require.NoError(t, err)
 	signIn := func() auth.LoginResponse {
+		code, verifier := approvedCode(t, handler, "personal-admin", password)
 		before := readinessCalls
-		response := requestAuth(handler, "POST", auth.LoginPath, string(encoded), http.Header{"Content-Type": {"application/json"}})
-		require.Equal(t, 200, response.Code)
+		issued := redeemCode(t, handler, code, verifier)
 		require.Equal(t, before+1, readinessCalls, "the real service checks readiness once; the adapter must not duplicate it")
-		var issued auth.LoginResponse
-		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &issued))
 		return issued
 	}
 	issued := signIn()
@@ -180,12 +212,21 @@ func TestRealHTTPAuthenticationAndLockDeadlines(t *testing.T) {
 	response := requestAuth(handler, "GET", auth.WhoAmIPath, "", headers)
 	require.Equal(t, 200, response.Code)
 	require.NotContains(t, response.Body.String(), string(issued.Token))
-	response = requestAuth(handler, "POST", auth.LoginPath, `{"SENTINEL_PRIVATE_BODY":"x"}`, http.Header{"Content-Type": {"application/json"}})
+	response = requestAuth(handler, "POST", auth.TokenPath, `{"SENTINEL_PRIVATE_BODY":"x"}`, http.Header{"Content-Type": {"application/json"}})
 	require.Equal(t, 400, response.Code)
 	require.NotContains(t, response.Body.String(), "SENTINEL")
-	var count int
-	for _, operation := range []string{"login", "logout", "revoke"} {
+	sessions := func() int {
+		var count int
+		require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM sessions`).Scan(&count))
+		return count
+	}
+	for _, operation := range []string{"login", "exchange", "logout", "revoke"} {
 		t.Run(operation, func(t *testing.T) {
+			var code, verifier auth.Secret
+			if operation == "exchange" {
+				code, verifier = approvedCode(t, handler, "personal-admin", password)
+			}
+			before := sessions()
 			tx, err := pool.Begin(t.Context())
 			require.NoError(t, err)
 			_, err = tx.Exec(t.Context(), `SELECT id FROM users WHERE id=$1 FOR UPDATE`, issued.User.ID)
@@ -193,7 +234,11 @@ func TestRealHTTPAuthenticationAndLockDeadlines(t *testing.T) {
 			start := time.Now()
 			switch operation {
 			case "login":
-				response = requestAuth(handler, "POST", auth.LoginPath, string(encoded), http.Header{"Content-Type": {"application/json"}})
+				response = requestAuth(handler, "POST", "/login", "username=personal-admin&password="+url.QueryEscape(string(password)),
+					http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}})
+			case "exchange":
+				response = requestAuth(handler, "POST", auth.TokenPath, jsonBody(t, auth.TokenRequest{Code: code, Verifier: verifier}),
+					http.Header{"Content-Type": {"application/json"}})
 			case "logout":
 				response = requestAuth(handler, "POST", auth.LogoutPath, "", headers)
 			case "revoke":
@@ -204,12 +249,11 @@ func TestRealHTTPAuthenticationAndLockDeadlines(t *testing.T) {
 			require.Less(t, time.Since(start), 6*time.Second)
 			require.Greater(t, time.Since(start), 4*time.Second)
 			require.NoError(t, tx.Rollback(t.Context()))
+			require.Equal(t, before, sessions(), "no session is issued under the lock")
 			response = requestAuth(handler, "GET", auth.WhoAmIPath, "", headers)
 			require.Equal(t, 200, response.Code)
 		})
 	}
-	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM sessions`).Scan(&count))
-	require.Equal(t, 1, count)
 	response = requestAuth(handler, "POST", "/api/admin/users/"+issued.User.ID+"/sessions/revoke", "", headers)
 	require.Equal(t, 200, response.Code)
 	response = requestAuth(handler, "GET", auth.WhoAmIPath, "", headers)
@@ -224,7 +268,7 @@ func TestNormalServeInitializesAndResolvesPortZero(t *testing.T) {
 	require.NoError(t, err)
 	origin := "http://" + listener.Addr().String()
 	cfg := config.Config{HTTPAddr: "127.0.0.1:0", DBCheckTimeout: time.Second, ShutdownTimeout: time.Second,
-		BootstrapUsername: "personal-admin", BootstrapPasswordFile: path, SessionTTL: auth.DefaultSessionTTL}
+		BootstrapUsername: "personal-admin", BootstrapPasswordFile: path, SessionIdleTimeout: auth.DefaultSessionIdleTimeout, SessionMaxLifetime: auth.DefaultSessionMaxLifetime}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, listener, cfg, pool, slog.New(slog.NewJSONHandler(io.Discard, nil))) }()
@@ -257,7 +301,7 @@ func TestBrowserLoginNeverRetargetsAnExistingSession(t *testing.T) {
 	pool, path, password := serverDatabase(t)
 	checker := store.NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	// An isolated member fixture shares this test's generated password so only
 	// the username changes between the two browser sign-ins.

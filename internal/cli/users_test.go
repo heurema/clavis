@@ -29,12 +29,6 @@ func usersInvoke(t *testing.T, reader HiddenPasswordReader, stdin string, args .
 	return exit, decode(t, out.String()), out.String(), prompt.String()
 }
 
-func loginCLI(t *testing.T, server *httptest.Server, password auth.Secret) {
-	t.Helper()
-	exit, _, _ := cliInvoke(t, string(password), "login", "--username=cli-test", "--password-stdin", "--server", server.URL)
-	require.Equal(t, 0, exit)
-}
-
 func testRecord(username string) auth.UserRecord {
 	return auth.UserRecord{ID: testUserID(), Username: username, Role: auth.Member, CreatedAt: time.Now().UTC().Truncate(time.Second)}
 }
@@ -42,8 +36,8 @@ func testRecord(username string) auth.UserRecord {
 func TestUsersWorkflow(t *testing.T) {
 	cliHome(t)
 	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	self := testIdentity().User.ID
 	// Characters that need JSON escaping must survive the wire unchanged.
 	secret := `pw"\/` + "\x01<>&" + string(testToken())
@@ -174,9 +168,8 @@ func keys(value map[string]any) []string {
 
 func TestUsersArgumentsRejectedBeforeIO(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	id := testIdentity().User.ID
 	forbidden := HiddenPasswordReader(func(context.Context, io.Reader, io.Writer) ([]byte, error) {
 		t.Fatal("invalid arguments must be rejected before reading a password")
@@ -224,7 +217,7 @@ func TestUsersArgumentsRejectedBeforeIO(t *testing.T) {
 
 func TestUsersRequireCachedSession(t *testing.T) {
 	cliHome(t)
-	fixture, server := newCLIFixture(t, testToken())
+	fixture, server := newCLIFixture(t)
 	id := testIdentity().User.ID
 	for _, args := range [][]string{
 		{"users", "list"}, {"users", "create", "--username=alice", "--password-stdin"},

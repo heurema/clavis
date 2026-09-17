@@ -135,8 +135,7 @@ func TestRunWithIOOutputFailure(t *testing.T) {
 // before resolution does.
 func TestResultNamesServerAndProfile(t *testing.T) {
 	home := cliHome(t)
-	password := testToken()
-	_, server := newCLIFixture(t, password)
+	_, server := newCLIFixture(t)
 	fields := func(t *testing.T, output string) map[string]json.RawMessage {
 		t.Helper()
 		var value map[string]json.RawMessage
@@ -173,7 +172,7 @@ func TestResultNamesServerAndProfile(t *testing.T) {
 	unnamed(t, output)
 
 	// A one-off server reports its empty profile, and the fields follow ok.
-	exit, _, output = cliInvoke(t, string(password), "login", "--username=cli-test", "--password-stdin", "--server", server.URL)
+	exit, _, output, _ = loginInvoke(t, "--server", server.URL)
 	require.Equal(t, 0, exit)
 	require.True(t, strings.HasPrefix(output,
 		`{"schemaVersion":1,"ok":true,"server":"`+server.URL+`","profile":"","data":`), output)

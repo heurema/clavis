@@ -222,8 +222,9 @@ timeout from `server.dbCheckTimeout` (plus one second, rounded up) and
 seconds), so raising either value raises the probe bound with it. Durations use
 Go syntax with the units `ms`, `s`, `m` and `h`, optionally combined: `2s`,
 `500ms`, `1m30s`. Every duration must be greater than zero, and
-`server.sessionTTL` must be between `5m` and `24h`; the chart refuses to render
-values the server would reject at startup.
+`server.sessionIdleTimeout` must be at least `5m` and at most
+`server.sessionMaxLifetime`, which must be at most `2160h`; the chart refuses to
+render values the server would reject at startup.
 
 ## Verifying a change to this chart
 

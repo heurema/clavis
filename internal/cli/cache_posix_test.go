@@ -192,8 +192,11 @@ func TestCacheLockBoundAndPersistenceCleanup(t *testing.T) {
 			issued := testToken()
 			var cleanup atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if serveApproval(w, r) {
+					return
+				}
 				w.Header().Set("Content-Type", "application/json")
-				if r.URL.Path == auth.LoginPath {
+				if r.URL.Path == auth.TokenPath {
 					// Change permissions after issuance starts to force a real
 					// persistence failure, without a production fault-injection hook.
 					path := cachePath(t, origin)
@@ -213,7 +216,7 @@ func TestCacheLockBoundAndPersistenceCleanup(t *testing.T) {
 			defer server.Close()
 			origin = server.URL
 			start := time.Now()
-			exit, result, output := cliInvoke(t, string(testToken()), "login", "--username=cli-test", "--password-stdin", "--timeout=80ms", "--server", origin)
+			exit, result, output, _ := loginInvoke(t, "--timeout=80ms", "--server", origin)
 			require.Equal(t, 1, exit)
 			require.Equal(t, "CREDENTIAL_STORAGE_FAILED", result.Error.Code)
 			require.False(t, strings.Contains(output, string(issued)))
@@ -223,6 +226,50 @@ func TestCacheLockBoundAndPersistenceCleanup(t *testing.T) {
 			require.True(t, os.IsNotExist(err))
 		})
 	}
+}
+
+// A stored session that turns unsafe while the person approves fails the
+// locked write: the new session is revoked and the stored one is left alone.
+func TestUnsafeStoredSessionAtWriteRevokesTheNewSession(t *testing.T) {
+	cliHome(t)
+	var origin string
+	old, issued := testToken(), testToken()
+	var revokedNew, revokedOld atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveApproval(w, r) {
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == auth.TokenPath {
+			require.NoError(t, os.Chmod(cachePath(t, origin), 0o644))
+			_ = json.NewEncoder(w).Encode(auth.LoginResponse{Token: issued, Identity: testIdentity()})
+			return
+		}
+		switch r.Header.Get("Authorization") {
+		case "Bearer " + string(issued):
+			revokedNew.Add(1)
+		case "Bearer " + string(old):
+			revokedOld.Add(1)
+		}
+		_ = json.NewEncoder(w).Encode(auth.Revocation{Revoked: true})
+	}))
+	defer server.Close()
+	origin = server.URL
+	cache, err := openCache(context.Background(), origin)
+	require.NoError(t, err)
+	require.NoError(t, cache.write(cachedSession{Origin: origin, LoginResponse: auth.LoginResponse{Token: old, Identity: testIdentity()}}))
+	cache.close()
+	before, err := os.ReadFile(cachePath(t, origin))
+	require.NoError(t, err)
+	exit, result, output, _ := loginInvoke(t, "--server", origin)
+	require.Equal(t, 1, exit)
+	require.Equal(t, "CREDENTIAL_STORAGE_FAILED", result.Error.Code)
+	require.NotContains(t, output, string(issued))
+	require.Equal(t, int32(1), revokedNew.Load())
+	require.Zero(t, revokedOld.Load())
+	after, err := os.ReadFile(cachePath(t, origin))
+	require.NoError(t, err)
+	require.Equal(t, before, after)
 }
 
 func TestCacheOwnership(t *testing.T) {
@@ -244,9 +291,12 @@ func TestPersistenceFailurePreservesPreviousAndLogoutDeletionFails(t *testing.T)
 	var revokedNew atomic.Int32
 	var breakDeletion atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveApproval(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		path := cachePath(t, origin)
-		if r.URL.Path == auth.LoginPath {
+		if r.URL.Path == auth.TokenPath {
 			require.NoError(t, os.Chmod(filepath.Dir(path), 0755))
 			_ = json.NewEncoder(w).Encode(auth.LoginResponse{Token: issued, Identity: testIdentity()})
 			return
@@ -271,7 +321,7 @@ func TestPersistenceFailurePreservesPreviousAndLogoutDeletionFails(t *testing.T)
 	cache.close()
 	before, err := os.ReadFile(cachePath(t, origin))
 	require.NoError(t, err)
-	exit, result, _ := cliInvoke(t, string(testToken()), "login", "--username=cli-test", "--password-stdin", "--server", origin)
+	exit, result, _, _ := loginInvoke(t, "--server", origin)
 	require.Equal(t, 1, exit)
 	require.Equal(t, "CREDENTIAL_STORAGE_FAILED", result.Error.Code)
 	require.Equal(t, int32(1), revokedNew.Load())

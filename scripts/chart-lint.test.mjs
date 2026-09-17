@@ -57,10 +57,12 @@ test("every ci value set is either rendered or an expected failure", () => {
     assert(message.length >= 6, `${set} expects a specific message`)
 })
 
-test("both documented failure conditions are covered", () => {
+test("every documented failure condition is covered", () => {
   assert.deepEqual(Object.values(expectedFailures).sort(), [
     "mutually exclusive",
     "publicURL",
+    "server.sessionIdleTimeout must be",
+    "sessionTTL",
   ])
 })
 

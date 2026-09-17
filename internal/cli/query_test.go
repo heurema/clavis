@@ -160,9 +160,8 @@ func queryRows() auth.QueryResponse {
 func queryFixture(t *testing.T) (*cliAuthFixture, *httptest.Server) {
 	t.Helper()
 	cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	fixture.mu.Lock()
 	granted := testConnection("payments-prod-reporting")
 	disabled := testConnection("warehouse-primary")
@@ -407,7 +406,7 @@ func TestQueryBoundsStdinLocally(t *testing.T) {
 
 func TestQueryRequiresACachedSession(t *testing.T) {
 	cliHome(t)
-	fixture, server := newCLIFixture(t, testToken())
+	fixture, server := newCLIFixture(t)
 	exit, result, _ := queryRun(t, server, "query", "--connection", "payments-prod-reporting", "--sql", "select 1")
 	require.Equal(t, 1, exit)
 	require.Equal(t, auth.Unauthenticated, result.Error.Code)

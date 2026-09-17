@@ -36,10 +36,11 @@ type backendFixture struct {
 	fakeGrants
 	fakeGroups
 	fakeExecutor
+	fakeCLIAuthorization
 }
 
 var fixtureToken = auth.Secret(strings.Repeat("A", 43))
-var fixtureIdentity = auth.Identity{User: auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}, ExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+var fixtureIdentity = auth.Identity{User: auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}, ExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), IdleExpiresAt: time.Date(2029, 12, 1, 0, 0, 0, 0, time.UTC)}
 
 func (f *backendFixture) Login(ctx context.Context, input auth.LoginInput) (auth.LoginResponse, error) {
 	f.loginCalls++
@@ -91,9 +92,11 @@ func fixtureViews() AuthViews {
 		})
 	}
 	return AuthViews{
-		Login: func(m web.LoginModel) templ.Component { return component(m) },
-		Admin: func(m web.AdminModel) templ.Component { return component(m) },
-		Error: func(m web.AuthErrorModel) templ.Component { return component(m) },
+		Login:            func(m web.LoginModel) templ.Component { return component(m) },
+		Admin:            func(m web.AdminModel) templ.Component { return component(m) },
+		Error:            func(m web.AuthErrorModel) templ.Component { return component(m) },
+		Authorize:        func(m web.AuthorizeModel) templ.Component { return component(m) },
+		AuthorizeInvalid: func() templ.Component { return component("AUTHORIZE_INVALID") },
 	}
 }
 
@@ -132,7 +135,7 @@ func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
 				return platform.Readiness{State: state}
 			})
 			// An unready real service must never reach its pool, even directly.
-			service, err := store.NewLocalAuth(nil, checker, auth.DefaultSessionTTL)
+			service, err := store.NewLocalAuth(nil, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 			require.NoError(t, err)
 			fixture := &backendFixture{}
 			healthCalls := 0
@@ -150,15 +153,15 @@ func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
 				code               string
 				checks             int
 			}{
-				{"POST", auth.LoginPath, `{"username":"personal-admin","password":"valid test password"}`, http.Header{"Content-Type": {"application/json"}}, 503, code, 1},
+				{"POST", auth.TokenPath, `{"code":"` + string(fixtureToken) + `","verifier":"` + string(fixtureToken) + `"}`, http.Header{"Content-Type": {"application/json"}}, 503, code, 1},
 				{"GET", auth.WhoAmIPath, "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}, 503, code, 1},
 				{"POST", auth.LogoutPath, "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}, 503, code, 1},
 				{"POST", "/api/admin/users/not-a-user/sessions/revoke", "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}, 503, code, 1},
 				{"POST", "/login", "username=personal-admin&password=valid+test+password", http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}, 503, code, 1},
 				{"GET", "/admin/users", "", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 503, code, 1},
 				{"POST", "/logout", "", http.Header{"Origin": {"http://127.0.0.1"}, "Cookie": {developmentCookie + "=" + string(fixtureToken)}}, 503, auth.ServiceUnavailable, 1},
-				{"POST", auth.LoginPath, "{}", http.Header{"Origin": {"https://attacker.invalid"}, "Content-Type": {"application/json"}}, 403, auth.Forbidden, 0},
-				{"POST", auth.LoginPath, "{}", http.Header{"Content-Type": {"application/json"}}, 400, auth.InvalidArgument, 0},
+				{"POST", auth.TokenPath, "{}", http.Header{"Origin": {"https://attacker.invalid"}, "Content-Type": {"application/json"}}, 403, auth.Forbidden, 0},
+				{"POST", auth.TokenPath, "{}", http.Header{"Content-Type": {"application/json"}}, 400, auth.InvalidArgument, 0},
 				{"POST", auth.LogoutPath, "unexpected", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}, 400, auth.InvalidArgument, 0},
 				{"GET", auth.WhoAmIPath, "", http.Header{}, 401, auth.Unauthenticated, 0},
 			} {
@@ -174,7 +177,7 @@ func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
 			}
 			for _, call := range []func() error{
 				func() error {
-					_, err := service.Login(t.Context(), auth.LoginInput{Username: "personal-admin", Password: "valid test password", Kind: auth.CLI, Peer: netip.MustParseAddr("127.0.0.1")})
+					_, err := service.Login(t.Context(), auth.LoginInput{Username: "personal-admin", Password: "valid test password", Peer: netip.MustParseAddr("127.0.0.1")})
 					return err
 				},
 				func() error { _, err := service.Authenticate(t.Context(), fixtureToken, auth.CLI); return err },
@@ -242,7 +245,7 @@ func TestNilServiceFixturesFailClosed(t *testing.T) {
 		method, path, body string
 		headers            http.Header
 	}{
-		{"POST", auth.LoginPath, `{"username":"personal-admin","password":"valid test password"}`, http.Header{"Content-Type": {"application/json"}}},
+		{"POST", auth.TokenPath, `{"code":"` + string(fixtureToken) + `","verifier":"` + string(fixtureToken) + `"}`, http.Header{"Content-Type": {"application/json"}}},
 		{"GET", auth.WhoAmIPath, "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}},
 		{"POST", auth.LogoutPath, "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}},
 		{"POST", "/api/admin/users/" + fixtureIdentity.User.ID + "/sessions/revoke", "", http.Header{"Authorization": {"Bearer " + string(fixtureToken)}}},
@@ -262,50 +265,44 @@ func TestNilServiceFixturesFailClosed(t *testing.T) {
 	}
 }
 
-func TestStrictJSONCredentialsAndAnonymousRejections(t *testing.T) {
+// Scenario: JSON password login is gone. Whatever a client posts to the old
+// route, the router answers 404 and no password reaches the service.
+func TestJSONPasswordLoginIsGone(t *testing.T) {
 	valid := `{"username":"personal-admin","password":"SENTINEL_PRIVATE_PASSWORD"}`
 	for _, tc := range []struct {
-		name, body, content string
-		status              int
+		name, method, body, content string
 	}{
-		{"valid", valid, "application/json", 200},
-		{"form", "username=personal-admin&password=SENTINEL_PRIVATE_PASSWORD", "application/x-www-form-urlencoded", 400},
-		{"unknown", strings.TrimSuffix(valid, "}") + `,"secret":"SENTINEL"}`, "application/json", 400},
-		{"trailing", valid + ` {}`, "application/json", 400},
-		{"duplicate", strings.TrimSuffix(valid, "}") + `,"username":"another"}`, "application/json", 400},
-		{"case-alias", strings.Replace(valid, "username", "Username", 1), "application/json", 400},
-		{"null", `{"username":"personal-admin","password":null}`, "application/json", 400},
-		{"array", `[]`, "application/json", 400},
-		{"huge", strings.Repeat(" ", 8193), "application/json", 400},
-		{"decoded-huge", `{"username":"personal-admin","password":"` + strings.Repeat("x", 1025) + `"}`, "application/json", 400},
-		{"bad-utf8", valid + "\xff", "application/json", 400},
+		{"valid", "POST", valid, "application/json"},
+		{"form", "POST", "username=personal-admin&password=SENTINEL_PRIVATE_PASSWORD", "application/x-www-form-urlencoded"},
+		{"empty", "POST", "", "application/json"},
+		{"get", "GET", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &backendFixture{}
 			handler := authHandler(t, f, nil, "http://127.0.0.1")
-			response := requestAuth(handler, "POST", auth.LoginPath, tc.body, http.Header{"Content-Type": {tc.content}, "Accept": {"text/html"}, "Hx-Request": {"true"}})
-			require.Equal(t, tc.status, response.Code)
-			require.Equal(t, "application/json", response.Header().Get("Content-Type"))
-			require.Empty(t, response.Header().Get("Location"))
+			response := requestAuth(handler, tc.method, "/api/auth/login", tc.body, http.Header{"Content-Type": {tc.content}})
+			require.Equal(t, 404, response.Code)
 			require.Empty(t, response.Header().Get("Set-Cookie"))
-			require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
 			require.NotContains(t, response.Body.String(), "SENTINEL")
-			if tc.status == 200 {
-				require.Equal(t, 1, f.loginCalls)
-				require.Equal(t, auth.CLI, f.lastInput.Kind)
-			} else {
-				require.Zero(t, f.loginCalls)
-			}
+			require.Zero(t, f.loginCalls+f.authCalls)
 		})
 	}
+}
+
+// The browser form is the one place a password is submitted: the widest
+// valid password arrives unchanged and the peer comes from the connection,
+// never from a forwarded header.
+func TestBrowserFormPassesPasswordAndPeer(t *testing.T) {
 	f := &backendFixture{}
 	handler := authHandler(t, f, nil, "http://127.0.0.1")
 	password := auth.Secret(strings.Repeat("\x01", 1024))
-	body, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
-	require.NoError(t, err)
-	require.Greater(t, len(body), 4096)
-	response := requestAuth(handler, "POST", auth.LoginPath, string(body), http.Header{"Content-Type": {"application/json"}, "X-Forwarded-For": {"8.8.8.8"}})
-	require.Equal(t, 200, response.Code)
+	body := url.Values{"username": {"personal-admin"}, "password": {string(password)}}.Encode()
+	require.Greater(t, len(body), 3072)
+	response := requestAuth(handler, "POST", "/login", body, http.Header{
+		"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}, "X-Forwarded-For": {"8.8.8.8"},
+	})
+	require.Equal(t, 303, response.Code)
+	require.Equal(t, 1, f.loginCalls)
 	require.Equal(t, password, f.lastInput.Password)
 	require.Equal(t, netip.MustParseAddr("127.0.0.1"), f.lastInput.Peer)
 }
@@ -380,7 +377,7 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 		require.Equal(t, 303, response.Code)
 		require.Equal(t, "/admin/users", response.Header().Get("Location"))
 		require.NotContains(t, response.Body.String(), string(fixtureToken))
-		require.Equal(t, auth.Browser, f.lastInput.Kind)
+		require.Equal(t, 1, f.loginCalls)
 		cookies := response.Result().Cookies()
 		require.Len(t, cookies, 1)
 		cookie := cookies[0]
@@ -389,7 +386,8 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 		require.Empty(t, cookie.Domain)
 		require.Equal(t, "/", cookie.Path)
 		require.Equal(t, strings.HasPrefix(origin, "https:"), cookie.Secure)
-		require.False(t, cookie.Expires.After(fixtureIdentity.ExpiresAt))
+		// The cookie lives until the absolute expiry, never only the idle one.
+		require.True(t, cookie.Expires.Equal(fixtureIdentity.ExpiresAt), "%v", cookie.Expires)
 		for _, tc := range []struct {
 			err    error
 			status int
@@ -461,7 +459,8 @@ func TestLogoutDeadlineReturnsSafeFailure(t *testing.T) {
 	f := &backendFixture{}
 	handler := authHandler(t, f, nil, "http://127.0.0.1")
 	f.loginErr = &auth.Error{Code: auth.InvalidCredentials}
-	response := requestAuth(handler, "POST", auth.LoginPath, `{"username":"personal-admin","password":"valid test password"}`, http.Header{"Content-Type": {"application/json"}})
+	response := requestAuth(handler, "POST", "/login", "username=personal-admin&password=valid+test+password",
+		http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}})
 	require.Equal(t, 401, response.Code)
 	f.block = func(ctx context.Context) { <-ctx.Done() }
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
@@ -502,7 +501,7 @@ func TestRealSocketBodyDeadlineReturnsSafeJSON(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = connection.Close() }()
 	require.NoError(t, connection.SetDeadline(time.Now().Add(7*time.Second)))
-	_, err = fmt.Fprint(connection, "POST /api/auth/login HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{")
+	_, err = fmt.Fprint(connection, "POST /api/auth/token HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{")
 	require.NoError(t, err)
 	start := time.Now()
 	response, err := http.ReadResponse(bufio.NewReader(connection), nil)

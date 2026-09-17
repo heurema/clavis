@@ -26,7 +26,7 @@ func TestRealHTTPQueryRouteRoundTrip(t *testing.T) {
 	pool, path, password := serverDatabase(t)
 	checker := store.NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	service := local.WithKeyring(serverTestKeyring(t))
 	_, isExecutor := any(service).(auth.QueryExecutor)
@@ -42,11 +42,7 @@ func TestRealHTTPQueryRouteRoundTrip(t *testing.T) {
 	}
 	login := func(username string, secret auth.Secret) http.Header {
 		t.Helper()
-		response := requestAuth(handler, "POST", auth.LoginPath, body(auth.LoginRequest{Username: username, Password: secret}),
-			http.Header{"Content-Type": {"application/json"}})
-		require.Equal(t, 200, response.Code)
-		var issued auth.LoginResponse
-		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &issued))
+		issued := cliSignIn(t, handler, username, secret)
 		return http.Header{"Authorization": {"Bearer " + string(issued.Token)}, "Accept": {"application/json"}}
 	}
 	send := func(headers http.Header, method, route, payload string) *httptest.ResponseRecorder {

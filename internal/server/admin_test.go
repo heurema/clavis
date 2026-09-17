@@ -394,17 +394,12 @@ func TestRealHTTPAdministrationRoutesMutateAndFailClosed(t *testing.T) {
 	pool, path, password := serverDatabase(t)
 	checker := store.NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, service,
 		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
-	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
-	require.NoError(t, err)
-	response := requestAuth(handler, "POST", auth.LoginPath, string(encoded), http.Header{"Content-Type": {"application/json"}})
-	require.Equal(t, 200, response.Code)
-	var issued auth.LoginResponse
-	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &issued))
+	issued := cliSignIn(t, handler, "personal-admin", password)
 	headers := http.Header{"Authorization": {"Bearer " + string(issued.Token)}}
 	jsonHeaders := func(body string) http.Header {
 		result := headers.Clone()
@@ -413,7 +408,7 @@ func TestRealHTTPAdministrationRoutesMutateAndFailClosed(t *testing.T) {
 		}
 		return result
 	}
-	response = requestAuth(handler, "POST", auth.UsersPath, `{"username":"member-user","password":"valid member password"}`, jsonHeaders("x"))
+	response := requestAuth(handler, "POST", auth.UsersPath, `{"username":"member-user","password":"valid member password"}`, jsonHeaders("x"))
 	require.Equal(t, 201, response.Code)
 	var created auth.UserRecord
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &created))

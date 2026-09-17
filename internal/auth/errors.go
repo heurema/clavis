@@ -107,7 +107,7 @@ func LookupFailure(code string) (int, platform.Failure, bool) {
 	case InvalidArgument:
 		status, message = http.StatusBadRequest, "Invalid arguments or request"
 	case InvalidCredentials:
-		status, message = http.StatusUnauthorized, "Invalid username or password"
+		status, message = http.StatusUnauthorized, "The sign-in was not accepted"
 	case Unauthenticated:
 		status, message = http.StatusUnauthorized, "Sign-in is required"
 	case Forbidden:

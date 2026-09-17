@@ -74,7 +74,7 @@ func TestRealRoutesNeverExposeAuthenticationFixtures(t *testing.T) {
 		require.NotContains(t, response.Body.String(), "fixture")
 	}
 	for path, status := range map[string]int{
-		"/api/auth/login":  http.StatusMethodNotAllowed,
+		"/api/auth/login":  http.StatusNotFound,
 		"/api/auth/whoami": http.StatusUnauthorized,
 	} {
 		response := httptest.NewRecorder()

@@ -688,18 +688,13 @@ func TestRealHTTPConnectionRoutesRoundTrip(t *testing.T) {
 	pool, path, password := serverDatabase(t)
 	checker := store.NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	service := local.WithKeyring(serverTestKeyring(t))
 	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, service,
 		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
-	encoded, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
-	require.NoError(t, err)
-	response := requestAuth(handler, "POST", auth.LoginPath, string(encoded), http.Header{"Content-Type": {"application/json"}})
-	require.Equal(t, 200, response.Code)
-	var issued auth.LoginResponse
-	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &issued))
+	issued := cliSignIn(t, handler, "personal-admin", password)
 	headers := http.Header{"Authorization": {"Bearer " + string(issued.Token)}, "Accept": {"application/json"}}
 	send := func(method, route, body string) *httptest.ResponseRecorder {
 		t.Helper()
@@ -726,7 +721,7 @@ func TestRealHTTPConnectionRoutesRoundTrip(t *testing.T) {
 		Labels: map[string]string{"env": "prod", "team": "data"}, Secret: secret,
 	}
 	// A dry run answers with the record it would have made and leaves nothing.
-	response = send("POST", auth.ConnectionsPath+"?dryRun=true", body(create))
+	response := send("POST", auth.ConnectionsPath+"?dryRun=true", body(create))
 	require.Equal(t, 200, response.Code)
 	var mutation auth.ConnectionMutation
 	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &mutation))

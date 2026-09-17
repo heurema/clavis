@@ -314,9 +314,8 @@ func (f *cliAuthFixture) listEffective(actor auth.Identity, role auth.Role, quer
 // one of two connections, which is the shape every member scenario needs.
 func memberFixture(t *testing.T) (*cliAuthFixture, *httptest.Server, string, auth.Secret) {
 	t.Helper()
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	fixture.mu.Lock()
 	granted, other := testConnection("payments-prod-reporting"), testConnection("warehouse-primary")
 	other.ID, other.Labels, other.Enabled = testUserID(), map[string]string{"env": "staging"}, false
@@ -489,9 +488,8 @@ func TestGrantsTextRendering(t *testing.T) {
 // Every refused reference exits 2 with a hint and reaches no request at all.
 func TestGrantsArgumentsRejectedBeforeIO(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	fixture.mu.Lock()
 	before := fixture.grantCalls
 	fixture.mu.Unlock()
@@ -558,9 +556,8 @@ func TestGrantsArgumentsRejectedBeforeIO(t *testing.T) {
 
 func TestGrantsDocumentedFailures(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	_, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	_, server := newCLIFixture(t)
+	loginCLI(t, server)
 	// An unknown user and an unknown connection are the two documented
 	// not-found results, each with the fixture's own hint.
 	exit, result, _ := grantsRun(t, server, "grants", "create", "--user", "nobody-here", "--connection", "payments-prod-reporting")
@@ -906,7 +903,7 @@ func groupFixtureWithMember(t *testing.T) (*cliAuthFixture, *httptest.Server, st
 
 func TestGrantsRequireCachedSession(t *testing.T) {
 	cliHome(t)
-	fixture, server := newCLIFixture(t, testToken())
+	fixture, server := newCLIFixture(t)
 	for _, args := range [][]string{
 		{"grants", "list"},
 		{"grants", "create", "--user", "alice", "--connection", "payments-prod-reporting"},
@@ -1014,9 +1011,8 @@ func TestWhoamiConnectionsAreMemberOnly(t *testing.T) {
 	require.NotContains(t, output, "token")
 
 	// The administrator's own session reports no connections at all.
-	password := testToken()
-	_, adminServer := newCLIFixture(t, password)
-	loginCLI(t, adminServer, password)
+	_, adminServer := newCLIFixture(t)
+	loginCLI(t, adminServer)
 	exit, output = grantsText(t, adminServer, "whoami")
 	require.Equal(t, 0, exit)
 	require.Contains(t, output, "Role: admin\n")
@@ -1078,9 +1074,8 @@ func TestConnectionReadsRefuseMixedShapes(t *testing.T) {
 // readily as a UUID and never rewrites it.
 func TestUserReferencesAreSentUnchanged(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	secret := testToken()
 	exit, result, _ := cliInvoke(t, string(secret)+"\n", "users", "create", "--username=alice", "--password-stdin", "--server", server.URL)
 	require.Equal(t, 0, exit, "%+v", result.Error)
@@ -1101,8 +1096,8 @@ func TestUserReferencesAreSentUnchanged(t *testing.T) {
 	require.Equal(t, 1, fixture.revoke)
 
 	// A username that no account carries is the documented not-found result.
-	_, server = newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	_, server = newCLIFixture(t)
+	loginCLI(t, server)
 	exit, result, _ = grantsRun(t, server, "users", "block", "--user", "nobody-here")
 	require.Equal(t, 1, exit)
 	require.Equal(t, auth.UserNotFound, result.Error.Code)
@@ -1112,9 +1107,8 @@ func TestUserReferencesAreSentUnchanged(t *testing.T) {
 // so an agent does not retry the same name.
 func TestUserCreationRefusesUUIDShapedNames(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	before := fixture.admin
 	exit, result, _ := cliInvoke(t, string(testToken())+"\n", "users", "create",
 		"--username="+testIdentity().User.ID, "--password-stdin", "--server", server.URL)

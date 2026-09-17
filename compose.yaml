@@ -58,8 +58,8 @@ services:
     environment:
       CLAVIS_DATABASE_URL: postgres://clavis:clavis-local-only@db:5432/clavis?sslmode=disable
       # A deployment terminates TLS in front of the container, so the public
-      # origin is HTTPS. Browser sign-in therefore needs a proxy the image
-      # smoke has no use for; it checks health, documents and the CLI instead.
+      # origin is HTTPS. The image smoke signs in through the real browser
+      # flow with that origin, the way a request through the proxy arrives.
       CLAVIS_PUBLIC_URL: https://clavis.local
       CLAVIS_ENCRYPTION_KEY_FILE: /run/secrets/clavis/encryption-key
       CLAVIS_BOOTSTRAP_USERNAME: ${CLAVIS_APP_BOOTSTRAP_USERNAME:-smoke-admin}

@@ -59,6 +59,11 @@ func TestLoginFailureDocuments(t *testing.T) {
 			// The username format is enforced by the input, not explained in prose.
 			assert.NotContains(t, body, "username-help")
 			assert.NotContains(t, body, "lowercase letters")
+			// The wire message also answers a refused code exchange; the form
+			// names the credentials it asked for.
+			if code == auth.InvalidCredentials {
+				assert.Contains(t, body, "Invalid username or password")
+			}
 		})
 	}
 }

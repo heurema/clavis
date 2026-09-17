@@ -100,6 +100,31 @@ func TestSkillStaysWithinItsLineBounds(t *testing.T) {
 
 // TestSkillDriftGuardCatchesDrift feeds the checker documents that have
 // drifted, so the guard itself is known to work rather than assumed to.
+// The sign-in rules are content, not an invocation the drift guard can parse:
+// the entry must keep telling the agent that the person signs in and that an
+// ended session is a question for them, because an agent that signs in itself
+// or retries is exactly what this change removed.
+func TestSkillTeachesTheAgentNotToSignIn(t *testing.T) {
+	body, err := skill.Render(skill.Entry)
+	require.NoError(t, err)
+	entry := string(body)
+	for _, sentence := range []string{
+		"The person signs in by running `clavis login`",
+		"You never run `login` yourself",
+		"ask the person to run `clavis login`",
+	} {
+		assert.Contains(t, entry, sentence)
+	}
+	assert.NotContains(t, entry, "login --username")
+	for _, flag := range []string{"--password-stdin", "--password-file", "--password-env"} {
+		for _, line := range strings.Split(entry, "\n") {
+			if strings.Contains(line, flag) {
+				assert.NotContains(t, line, "login ", "sign-in must offer no password channel: %s", line)
+			}
+		}
+	}
+}
+
 func TestSkillDriftGuardCatchesDrift(t *testing.T) {
 	root := driftRoot()
 	for name, tc := range map[string]struct{ document, token string }{

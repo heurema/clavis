@@ -119,6 +119,12 @@ from every envelope, state it in their answer, target a server with `--profile` 
 
 ## Change 3: browser sign-in and session policy
 
+Revised on September 17, 2026 by the owner and delivered as `add-browser-sign-in-and-session-renewal`:
+sign-in happens only in the browser, so `login` lost `--password-stdin` and the JSON password
+route was removed, the authorization row is created when the person clicks Approve rather than
+through a start route, and `--no-browser` was added. Read that change for the delivered design;
+the text below is the agreed plan as of September 16.
+
 Specs touched: local-authentication, cli-authentication; PRD session lifetime row.
 Ships as v0.1.0 or a further candidate.
 

@@ -152,7 +152,7 @@ func Serve(ctx context.Context, listener net.Listener, cfg config.Config, databa
 	var httpHandler http.Handler
 	if pool, ok := database.(*pgxpool.Pool); ok {
 		initializer := store.NewInitializer(pool, cfg.BootstrapUsername, cfg.BootstrapPasswordFile)
-		local, err := store.NewLocalAuth(pool, initializer, cfg.SessionTTL)
+		local, err := store.NewLocalAuth(pool, initializer, cfg.SessionIdleTimeout, cfg.SessionMaxLifetime)
 		if err != nil {
 			_ = listener.Close()
 			database.Close()

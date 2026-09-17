@@ -3,6 +3,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -61,12 +63,59 @@ func processCLI(t *testing.T, binary, input string, args ...string) (int, string
 	return command.ProcessState.ExitCode(), out.String(), errout.String()
 }
 
+// startLogin starts login --no-browser with stdin, stdout and stderr all
+// pipes, as a script runs it, and returns once the link is printed.
+func startLogin(t *testing.T, binary string, args ...string) (*exec.Cmd, *bytes.Buffer, string, func() string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	command := exec.CommandContext(ctx, binary, append([]string{"login", "--no-browser"}, args...)...)
+	command.Stdin = strings.NewReader("")
+	command.Env = append(os.Environ(), "PATH=")
+	out := &bytes.Buffer{}
+	command.Stdout = out
+	stderr, err := command.StderrPipe()
+	require.NoError(t, err)
+	require.NoError(t, command.Start())
+	reader := bufio.NewReader(stderr)
+	var printed strings.Builder
+	link := ""
+	for link == "" {
+		line, err := reader.ReadString('\n')
+		printed.WriteString(line)
+		if strings.HasPrefix(line, "http") {
+			link = strings.TrimSuffix(line, "\n")
+		}
+		if err != nil {
+			break
+		}
+	}
+	require.NotEmpty(t, link, "login printed no link: %q", printed.String())
+	rest := func() string {
+		remaining, _ := io.ReadAll(reader)
+		return printed.String() + string(remaining)
+	}
+	return command, out, link, rest
+}
+
+// processLogin signs a subprocess in the way the scripts do: it reads the
+// link from stderr and completes the browser's part over HTTP.
+func processLogin(t *testing.T, binary string, args ...string) (int, string, string) {
+	t.Helper()
+	command, out, link, rest := startLogin(t, binary, args...)
+	approved := approveLink(link)
+	stderr := rest()
+	_ = command.Wait()
+	require.NoError(t, approved)
+	return command.ProcessState.ExitCode(), out.String(), stderr
+}
+
 func TestCLIProcesses(t *testing.T) {
 	binary := buildCLI(t)
 	t.Run("workflow-and-offline", func(t *testing.T) {
 		home := cliHome(t)
 		password := testToken()
-		fixture, server := newCLIFixture(t, password)
+		fixture, server := newCLIFixture(t)
 		cliProfile(t, server.URL)
 		// Text output names the profile's server first; the rest is what the
 		// command rendered.
@@ -75,11 +124,12 @@ func TestCLIProcesses(t *testing.T) {
 			exit, output, _ := processCLI(t, binary, "", args...)
 			return exit, serverText(t, output, server.URL, "test")
 		}
-		exit, output, prompt := processCLI(t, binary, string(password)+"\n", "login", "--username=cli-test", "--password-stdin")
+		// Scripted login without a terminal: stdin, stdout and stderr are pipes.
+		exit, output, prompt := processLogin(t, binary)
 		require.Equal(t, 0, exit)
 		require.True(t, decode(t, output).OK)
-		require.Empty(t, prompt)
-		require.False(t, strings.Contains(output, string(password)))
+		require.Regexp(t, `^Open this link to sign in:\n`+regexp.QuoteMeta(server.URL+auth.AuthorizePath)+`\?\S+\n$`, prompt)
+		require.NotContains(t, output, auth.AuthorizePath)
 		exit, output = processText("whoami", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Contains(t, output, "User: cli-test")
@@ -292,6 +342,7 @@ func TestCLIProcesses(t *testing.T) {
 		require.NoError(t, os.WriteFile(configPath, config, 0600))
 		for _, args := range [][]string{
 			{"login", "--username=cli-test", "--output=text"},
+			{"login", "--password-stdin", "--output=text"},
 			{"users", "create", "--username=alice", "--output=text"},
 			{"users", "reset-password", "--user", alice, "--output=text"},
 			// A noninteractive create with no secret channel must not prompt.
@@ -332,10 +383,9 @@ func TestCLIProcesses(t *testing.T) {
 	})
 	t.Run("terminal-connections-credentials", func(t *testing.T) {
 		home := cliHome(t)
-		password := testToken()
-		fixture, server := newCLIFixture(t, password)
+		fixture, server := newCLIFixture(t)
 		cliProfile(t, server.URL)
-		exit, _, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin")
+		exit, _, _ := processLogin(t, binary)
 		require.Equal(t, 0, exit)
 		secretPath := filepath.Join(home, "connection-secret")
 		require.NoError(t, os.WriteFile(secretPath, []byte(string(testToken())), 0o600))
@@ -391,10 +441,9 @@ func TestCLIProcesses(t *testing.T) {
 	})
 	t.Run("terminal-users-reset", func(t *testing.T) {
 		cliHome(t)
-		password := testToken()
-		_, server := newCLIFixture(t, password)
+		_, server := newCLIFixture(t)
 		cliProfile(t, server.URL)
-		exit, _, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin")
+		exit, _, _ := processLogin(t, binary)
 		require.Equal(t, 0, exit)
 		exit, output, _ := processCLI(t, binary, string(testToken()), "users", "create", "--username=alice", "--password-stdin")
 		require.Equal(t, 0, exit)
@@ -447,13 +496,12 @@ func TestCLIProcesses(t *testing.T) {
 	})
 	t.Run("concurrent-login-logout", func(t *testing.T) {
 		cliHome(t)
-		password := testToken()
-		fixture, server := newCLIFixture(t, password)
+		fixture, server := newCLIFixture(t)
 		cliProfile(t, server.URL)
 		var workers sync.WaitGroup
 		for range 6 {
 			workers.Go(func() {
-				exit, output, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin", "--timeout=3s")
+				exit, output, _ := processLogin(t, binary, "--timeout=3s")
 				require.Equal(t, 0, exit, "login result error: %+v", decode(t, output).Error)
 				exit, output, _ = processCLI(t, binary, "", "logout", "--timeout=3s")
 				require.Equal(t, 0, exit, "logout result error: %+v", decode(t, output).Error)
@@ -469,17 +517,17 @@ func TestCLIProcesses(t *testing.T) {
 	})
 	t.Run("lock-contention-and-process-exit", func(t *testing.T) {
 		cliHome(t)
-		password := testToken()
-		_, server := newCLIFixture(t, password)
+		_, server := newCLIFixture(t)
 		cache, err := openCache(context.Background(), server.URL)
 		require.NoError(t, err)
 		start := time.Now()
-		exit, output, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin", "--server", server.URL, "--timeout=60ms")
+		exit, output, prompt := processCLI(t, binary, "", "login", "--no-browser", "--server", server.URL, "--timeout=60ms")
 		require.Equal(t, 1, exit)
 		require.Equal(t, "CREDENTIAL_STORAGE_FAILED", decode(t, output).Error.Code)
+		require.Empty(t, prompt, "storage is checked before a link is printed")
 		require.Less(t, time.Since(start), time.Second)
 		cache.close()
-		exit, _, _ = processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin", "--server", server.URL)
+		exit, _, _ = processLogin(t, binary, "--server", server.URL)
 		require.Equal(t, 0, exit, "exited process must not retain a lock")
 	})
 	t.Run("stdin-cancellation", func(t *testing.T) {
@@ -489,7 +537,7 @@ func TestCLIProcesses(t *testing.T) {
 		defer func() { _ = input.Close(); _ = writer.Close() }()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		command := exec.CommandContext(ctx, binary, "login", "--username=cli-test", "--password-stdin", "--server", "http://127.0.0.1:1")
+		command := exec.CommandContext(ctx, binary, "users", "create", "--username=alice", "--password-stdin", "--server", "http://127.0.0.1:1")
 		command.Stdin = input
 		var out bytes.Buffer
 		command.Stdout = &out
@@ -501,6 +549,23 @@ func TestCLIProcesses(t *testing.T) {
 		require.NoError(t, ctx.Err())
 		require.Equal(t, 1, command.ProcessState.ExitCode())
 		require.Equal(t, "TIMEOUT", decode(t, out.String()).Error.Code)
+	})
+	t.Run("login-interrupted", func(t *testing.T) {
+		cliHome(t)
+		fixture, server := newCLIFixture(t)
+		command, out, link, rest := startLogin(t, binary, "--server", server.URL)
+		port := callbackPort(t, link)
+		require.NoError(t, command.Process.Signal(syscall.SIGTERM))
+		_ = rest()
+		require.Error(t, command.Wait())
+		require.Equal(t, 1, command.ProcessState.ExitCode())
+		require.Equal(t, "TIMEOUT", decode(t, out.String()).Error.Code)
+		requireListenerClosed(t, port)
+		_, err := os.Stat(cachePath(t, server.URL))
+		require.True(t, os.IsNotExist(err), "an interrupted login stores nothing")
+		fixture.mu.Lock()
+		defer fixture.mu.Unlock()
+		require.Zero(t, fixture.login)
 	})
 	t.Run("killed-lock-holder", func(t *testing.T) {
 		cliHome(t)
@@ -515,8 +580,8 @@ func TestCLIProcesses(t *testing.T) {
 		defer server.Close()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		command := exec.CommandContext(ctx, binary, "login", "--username=cli-test", "--password-stdin", "--server", server.URL)
-		command.Stdin = strings.NewReader(string(testToken()))
+		// whoami holds the origin's lock while its request is in flight.
+		command := exec.CommandContext(ctx, binary, "whoami", "--server", server.URL)
 		require.NoError(t, command.Start())
 		select {
 		case <-entered:
@@ -535,13 +600,15 @@ func TestCLIProcesses(t *testing.T) {
 		t.Run("terminal-"+mode, func(t *testing.T) {
 			cliHome(t)
 			password := testToken()
-			_, server := newCLIFixture(t, password)
+			_, server := newCLIFixture(t)
+			// The hidden prompt belongs to the commands that set a password.
+			loginCLI(t, server)
 			master, slave := testPTY(t)
 			original, err := term.GetState(int(slave.Fd()))
 			require.NoError(t, err)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			command := exec.CommandContext(ctx, binary, "login", "--username=cli-test", "--server", server.URL)
+			command := exec.CommandContext(ctx, binary, "users", "create", "--username=alice", "--server", server.URL)
 			command.Stdin, command.Stderr = slave, slave
 			var out bytes.Buffer
 			command.Stdout = &out

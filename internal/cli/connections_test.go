@@ -391,9 +391,8 @@ func testConnection(name string) auth.Connection {
 // pins the exact create body, the secret-free output and the dry-run behavior.
 func TestConnectionsWorkflow(t *testing.T) {
 	home := cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	secret := `pw"\/` + "\x01<>&" + string(testToken())
 	path := secretFile(t, home, "reporting", secret+"\n", 0o600)
 
@@ -547,9 +546,8 @@ func TestConnectionsWorkflow(t *testing.T) {
 // with a hint and reaches neither the credential cache nor the server.
 func TestConnectionsSecretInputsRejected(t *testing.T) {
 	home := cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	valid := secretFile(t, home, "valid", string(testToken()), 0o600)
 	unsafe := secretFile(t, home, "unsafe", string(testToken()), 0o644)
 	oversized := secretFile(t, home, "oversized", strings.Repeat("x", auth.MaxSecretBytes+3), 0o600)
@@ -623,9 +621,8 @@ func TestConnectionsSecretInputsRejected(t *testing.T) {
 // TestConnectionsArgumentsRejectedBeforeIO covers the non-secret arguments.
 func TestConnectionsArgumentsRejectedBeforeIO(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	identifier := testIdentity().User.ID
 	for _, args := range [][]string{
 		{"connections", "unknown"},
@@ -683,7 +680,7 @@ func TestConnectionsArgumentsRejectedBeforeIO(t *testing.T) {
 
 func TestConnectionsRequireCachedSession(t *testing.T) {
 	cliHome(t)
-	fixture, server := newCLIFixture(t, testToken())
+	fixture, server := newCLIFixture(t)
 	for _, args := range [][]string{
 		{"connections", "list"}, {"connections", "get", "--connection", "payments"},
 		{"connections", "enable", "--connection", "payments"},
@@ -987,9 +984,8 @@ func TestConnectionsListingBodyLimit(t *testing.T) {
 
 func TestConnectionsUpdateRequiresURLWithTargetFlags(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	fixture.mu.Lock()
 	before := fixture.connCalls
 	fixture.mu.Unlock()
@@ -1015,9 +1011,8 @@ func TestConnectionsUpdateRequiresURLWithTargetFlags(t *testing.T) {
 // the one the method needs: none carries no credential at all.
 func TestConnectionsCreateSendsTheTenantSettings(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	loginCLI(t, server, password)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
 	exit, result, output := cliInvoke(t, "", "connections", "create", "--name", "payments-logs",
 		"--provider", "victorialogs", "--url", "http://vlogs:9428", "--auth", "none",
 		"--account-id", "12", "--project-id", "3", "--server", server.URL)

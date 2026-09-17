@@ -749,7 +749,7 @@ func TestGroupsAreAdministratorOnly(t *testing.T) {
 
 func TestGroupsRequireCachedSession(t *testing.T) {
 	cliHome(t)
-	fixture, server := newCLIFixture(t, testToken())
+	fixture, server := newCLIFixture(t)
 	for _, args := range [][]string{
 		{"groups", "list"},
 		{"groups", "get", "--group", "finance-managers"},

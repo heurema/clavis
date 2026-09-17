@@ -26,6 +26,15 @@ func (q *Queries) BootstrapState(ctx context.Context) (BootstrapStateRow, error)
 	return i, err
 }
 
+const checkCLIAuthorizationsColumns = `-- name: CheckCLIAuthorizationsColumns :exec
+SELECT code_digest, user_id, challenge, expires_at FROM cli_authorizations LIMIT 0
+`
+
+func (q *Queries) CheckCLIAuthorizationsColumns(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, checkCLIAuthorizationsColumns)
+	return err
+}
+
 const checkLoginLimitsColumns = `-- name: CheckLoginLimitsColumns :exec
 SELECT key, failures, expires_at FROM login_limits LIMIT 0
 `
@@ -36,7 +45,7 @@ func (q *Queries) CheckLoginLimitsColumns(ctx context.Context) error {
 }
 
 const checkSessionsColumns = `-- name: CheckSessionsColumns :exec
-SELECT id, token_digest, user_id, kind, created_at, expires_at, revoked_at FROM sessions LIMIT 0
+SELECT id, token_digest, user_id, kind, created_at, expires_at, max_expires_at, revoked_at FROM sessions LIMIT 0
 `
 
 func (q *Queries) CheckSessionsColumns(ctx context.Context) error {

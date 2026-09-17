@@ -59,8 +59,10 @@ spec:
               value: {{ .Values.publicURL | quote }}
             - name: CLAVIS_LOG_LEVEL
               value: {{ .Values.server.logLevel | quote }}
-            - name: CLAVIS_SESSION_TTL
-              value: {{ .Values.server.sessionTTL | quote }}
+            - name: CLAVIS_SESSION_IDLE_TIMEOUT
+              value: {{ .Values.server.sessionIdleTimeout | quote }}
+            - name: CLAVIS_SESSION_MAX_LIFETIME
+              value: {{ .Values.server.sessionMaxLifetime | quote }}
             - name: CLAVIS_DB_CHECK_TIMEOUT
               value: {{ .Values.server.dbCheckTimeout | quote }}
             - name: CLAVIS_SHUTDOWN_TIMEOUT

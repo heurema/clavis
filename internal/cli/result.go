@@ -88,7 +88,8 @@ func render(w io.Writer, result Result, format string) error {
 	case auth.QueryResponse:
 		return renderQueryResponse(w, data)
 	case auth.Identity:
-		if _, err := fmt.Fprintf(w, "User: %s (%s)\nRole: %s\nExpires: %s\n", data.User.Username, data.User.ID, data.User.Role, timestamp(data.ExpiresAt)); err != nil {
+		if _, err := fmt.Fprintf(w, "User: %s (%s)\nRole: %s\nExpires: %s\nIdle until: %s\n",
+			data.User.Username, data.User.ID, data.User.Role, timestamp(data.ExpiresAt), timestamp(data.IdleExpiresAt)); err != nil {
 			return err
 		}
 		return renderIdentityNames(w, data)

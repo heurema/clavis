@@ -18,8 +18,9 @@ func TestSafeIdentityProjection(t *testing.T) {
 	issued := auth.LoginResponse{
 		Token: auth.Secret("fixture-token-not-a-credential"),
 		Identity: auth.Identity{
-			User:      auth.User{ID: "fixture-user", Username: "alice", Role: auth.Admin},
-			ExpiresAt: time.Date(2026, 9, 10, 20, 0, 0, 0, time.UTC),
+			User:          auth.User{ID: "fixture-user", Username: "alice", Role: auth.Admin},
+			ExpiresAt:     time.Date(2026, 10, 10, 20, 0, 0, 0, time.UTC),
+			IdleExpiresAt: time.Date(2026, 9, 17, 20, 0, 0, 0, time.UTC),
 		},
 	}
 	transport, err := json.Marshal(issued)
@@ -27,18 +28,34 @@ func TestSafeIdentityProjection(t *testing.T) {
 	require.Contains(t, string(transport), string(issued.Token))
 	safe, err := json.Marshal(issued.Identity)
 	require.NoError(t, err)
-	require.JSONEq(t, `{"user":{"id":"fixture-user","username":"alice","role":"admin"},"expiresAt":"2026-09-10T20:00:00Z"}`, string(safe))
+	require.JSONEq(t, `{"user":{"id":"fixture-user","username":"alice","role":"admin"},"expiresAt":"2026-10-10T20:00:00Z","idleExpiresAt":"2026-09-17T20:00:00Z"}`, string(safe))
 	require.NotContains(t, string(safe), string(issued.Token))
 	require.NotContains(t, fmt.Sprintf("%v %+v %#v", issued, issued, issued), string(issued.Token))
 }
 
+func TestSessionDurationRule(t *testing.T) {
+	for _, tc := range []struct {
+		idle, lifetime time.Duration
+		valid          bool
+	}{
+		{auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime, true},
+		{auth.MinSessionDuration, auth.MinSessionDuration, true},
+		{auth.MaxSessionDuration, auth.MaxSessionDuration, true},
+		{auth.MinSessionDuration - time.Second, time.Hour, false},
+		{240 * time.Hour, 168 * time.Hour, false},
+		{time.Hour, auth.MaxSessionDuration + time.Second, false},
+	} {
+		require.Equal(t, tc.valid, auth.ValidSessionDurations(tc.idle, tc.lifetime), "%v %v", tc.idle, tc.lifetime)
+	}
+}
+
 func TestCredentialEncodingBudget(t *testing.T) {
-	request := auth.LoginRequest{Username: strings.Repeat("a", 64), Password: auth.Secret(strings.Repeat("\x01", auth.MaxPasswordBytes))}
+	request := auth.CreateUserRequest{Username: strings.Repeat("a", 64), Password: auth.Secret(strings.Repeat("\x01", auth.MaxPasswordBytes))}
 	encoded, err := json.Marshal(request)
 	require.NoError(t, err)
 	require.Greater(t, len(encoded), 4*1024)
 	require.LessOrEqual(t, len(encoded), auth.MaxCredentialBody)
-	var decoded auth.LoginRequest
+	var decoded auth.CreateUserRequest
 	require.NoError(t, json.Unmarshal(encoded, &decoded))
 	require.Equal(t, request, decoded)
 }

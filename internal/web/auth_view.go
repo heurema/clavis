@@ -19,6 +19,11 @@ func authMessage(code string) string {
 	if !ok {
 		_, failure, _ = auth.LookupFailure(auth.ServiceUnavailable)
 	}
+	// The wire message also covers a refused code exchange; on the sign-in
+	// form the only credentials are a username and a password.
+	if code == auth.InvalidCredentials {
+		return "Invalid username or password"
+	}
 	// FORBIDDEN also describes rejected Origin checks, not just role checks.
 	if code == auth.Forbidden {
 		return "This request is not permitted. Use this site's sign-in page; administrator access is required for administration."

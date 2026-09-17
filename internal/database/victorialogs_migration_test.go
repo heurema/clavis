@@ -18,6 +18,7 @@ func TestVictoriaLogsProviderMigrationKeepsExistingConnections(t *testing.T) {
 	// A later migration must not be applied ahead of the one under test: the
 	// ledger would then be ahead of the manifest and fail closed.
 	delete(previous, "007_groups.sql")
+	delete(previous, "008_session_renewal_and_cli_authorization.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	insert := `INSERT INTO connections (id, name, title, provider, target, secret_envelope)
 		VALUES ($1::uuid, $2, $2, $3, '{"url":"http://source:9428","auth":"none"}'::jsonb, 'sealed')`

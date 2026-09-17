@@ -244,6 +244,7 @@ func TestGroupMigrationAppliesToInitializedInstallation(t *testing.T) {
 	pool := testPool(t)
 	previous := embeddedMapFS(t)
 	delete(previous, "007_groups.sql")
+	delete(previous, "008_session_renewal_and_cli_authorization.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	queries := sqlc.New(pool)
 	var present bool

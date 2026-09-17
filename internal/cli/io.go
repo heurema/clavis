@@ -18,12 +18,15 @@ type HiddenPasswordReader func(ctx context.Context, stdin io.Reader, stderr io.W
 // to fall back to echoed input. The executable explicitly supplies the terminal
 // adapter. Blocking stdin should be an *os.File so reads can observe cancellation;
 // other injected readers must return promptly.
+// OpenBrowser is optional too; nil means login only prints its link, which is
+// what --no-browser asks for. The executable supplies the platform opener.
 // The caller owns the streams; commands do not close them.
 type IO struct {
 	Stdin        io.Reader
 	Stdout       io.Writer
 	Stderr       io.Writer
 	ReadPassword HiddenPasswordReader
+	OpenBrowser  BrowserOpener
 }
 
 func (streams IO) withDefaults() IO {

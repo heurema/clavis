@@ -2,6 +2,7 @@ package config
 
 import (
 	"log/slog"
+	"maps"
 	"net"
 	"testing"
 	"time"
@@ -77,20 +78,55 @@ func TestAuthenticationConfigurationAndLazyBootstrap(t *testing.T) {
 		"CLAVIS_BOOTSTRAP_PASSWORD_FILE": "/obsolete/unreadable"}
 	cfg, err := Load(base)
 	require.NoError(t, err)
-	require.Equal(t, 8*time.Hour, cfg.SessionTTL)
+	require.Equal(t, 168*time.Hour, cfg.SessionIdleTimeout)
+	require.Equal(t, 720*time.Hour, cfg.SessionMaxLifetime)
 	require.Equal(t, base["CLAVIS_BOOTSTRAP_USERNAME"], cfg.BootstrapUsername)
-	for _, value := range []string{"4m", "25h", "secret", "0"} {
-		base["CLAVIS_SESSION_TTL"] = value
-		_, err := Load(base)
-		require.Error(t, err)
+	const idle, lifetime = "CLAVIS_SESSION_IDLE_TIMEOUT", "CLAVIS_SESSION_MAX_LIFETIME"
+	for _, tc := range []struct{ idle, lifetime, field string }{
+		{"240h", "168h", idle},       // idle above the lifetime
+		{"4m", "", idle},             // idle below 5m
+		{"4m59s", "4m59s", idle},     // both below 5m: the idle value is named first
+		{"2161h", "", idle},          // idle above 2160h
+		{"secret", "", idle},         // unparseable, never echoed
+		{"0", "", idle},              // zero
+		{"", "2161h", lifetime},      // lifetime above 2160h
+		{"5m", "4m", lifetime},       // lifetime below 5m
+		{"", "secret", lifetime},     // unparseable, never echoed
+		{"721h", "", idle},           // above the default lifetime
+		{"", "167h", idle},           // below the default idle timeout
+		{"2160h", "2159h", idle},     // both within bounds, idle above lifetime
+		{"-5m", "", idle},            // negative
+		{"", "-720h", lifetime},      // negative
+		{"1h", "2160h1ms", lifetime}, // just above the bound
+	} {
+		input := maps.Clone(base)
+		if tc.idle != "" {
+			input[idle] = tc.idle
+		}
+		if tc.lifetime != "" {
+			input[lifetime] = tc.lifetime
+		}
+		_, err := Load(input)
+		var failure *Error
+		require.ErrorAs(t, err, &failure, "%+v", tc)
+		require.Equal(t, Error{tc.field, "INVALID_DURATION"}, *failure, "%+v", tc)
 		require.NotContains(t, err.Error(), "secret")
 	}
-	delete(base, "CLAVIS_SESSION_TTL")
-	for _, value := range []string{"5m", "24h"} {
-		base["CLAVIS_SESSION_TTL"] = value
-		_, err := Load(base)
-		require.NoError(t, err)
+	for _, tc := range []struct{ idle, lifetime string }{{"5m", "5m"}, {"2160h", "2160h"}, {"1h", "1h"}, {"168h", "720h"}} {
+		input := maps.Clone(base)
+		input[idle], input[lifetime] = tc.idle, tc.lifetime
+		loaded, err := Load(input)
+		require.NoError(t, err, "%+v", tc)
+		want, _ := time.ParseDuration(tc.idle)
+		require.Equal(t, want, loaded.SessionIdleTimeout)
+		want, _ = time.ParseDuration(tc.lifetime)
+		require.Equal(t, want, loaded.SessionMaxLifetime)
 	}
+	// The removed fixed lifetime is not read: any value is ignored.
+	base["CLAVIS_SESSION_TTL"] = "not a duration"
+	cfg, err = Load(base)
+	require.NoError(t, err)
+	require.Equal(t, 168*time.Hour, cfg.SessionIdleTimeout)
 	delete(base, "CLAVIS_SESSION_TTL")
 	base["CLAVIS_HTTP_ADDR"] = "0.0.0.0:8080"
 	_, err = Load(base)

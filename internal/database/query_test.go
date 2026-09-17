@@ -211,7 +211,7 @@ func TestExecuteQueryFailsClosedWithoutTheKey(t *testing.T) {
 	pool, s, admin, _ := connectionFixture(t)
 	record := queryConnection(t, s, admin, "ledger-query")
 
-	other, err := NewLocalAuth(pool, s.checker, auth.DefaultSessionTTL)
+	other, err := NewLocalAuth(pool, s.checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	failure := queryError(other.WithKeyring(newTestKeyring(t)).ExecuteQuery(t.Context(), admin,
 		auth.QueryRequest{Connection: record.Name, SQL: "select 1"}))
@@ -219,7 +219,7 @@ func TestExecuteQueryFailsClosedWithoutTheKey(t *testing.T) {
 	require.Equal(t, hintCredentials, hintOf(t, failure))
 
 	// Without a keyring at all the service fails the same way.
-	bare, err := NewLocalAuth(pool, s.checker, auth.DefaultSessionTTL)
+	bare, err := NewLocalAuth(pool, s.checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	code(t, queryError(bare.ExecuteQuery(t.Context(), admin,
 		auth.QueryRequest{Connection: record.Name, SQL: "select 1"})), auth.CredentialsUnavailable)

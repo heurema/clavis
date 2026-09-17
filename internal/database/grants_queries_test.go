@@ -288,6 +288,7 @@ func TestGrantMigrationAppliesToInitializedInstallation(t *testing.T) {
 	delete(previous, "005_drop_audit_events.sql")
 	delete(previous, "006_victorialogs_provider.sql")
 	delete(previous, "007_groups.sql")
+	delete(previous, "008_session_renewal_and_cli_authorization.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	queries := sqlc.New(pool)
 	// The previous release still had the journal and stored rows in it.
@@ -319,6 +320,7 @@ func TestGrantMigrationFailsClosedOnUUIDShapedUsername(t *testing.T) {
 	delete(previous, "005_drop_audit_events.sql")
 	delete(previous, "006_victorialogs_provider.sql")
 	delete(previous, "007_groups.sql")
+	delete(previous, "008_session_renewal_and_cli_authorization.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	// The previous release's pattern admitted a lowercase UUID as a username;
 	// the constraint replacement must refuse to apply while one exists, and
@@ -338,7 +340,7 @@ func TestGrantMigrationFailsClosedOnUUIDShapedUsername(t *testing.T) {
 
 	execSQL(t, pool, `UPDATE users SET username = 'renamed-operator'`)
 	require.NoError(t, Migrate(t.Context(), pool))
-	require.Equal(t, ledger+4, countRows(t, pool, "goose_db_version"))
+	require.Equal(t, ledger+5, countRows(t, pool, "goose_db_version"))
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT to_regclass('grants') IS NOT NULL`).Scan(&present))
 	require.True(t, present)
 }
