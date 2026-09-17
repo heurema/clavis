@@ -48,10 +48,10 @@ type clientProfile struct {
 	Server string `toml:"server"`
 }
 
-// target is the server a networked command talks to and where its sessions
-// live. Profile is empty when the server was given with --server.
+// target is the server a networked command talks to. Profile is empty when
+// the server was given with --server.
 type target struct {
-	Origin, Profile, Home string
+	Origin, Profile string
 }
 
 // resolveCommandTarget resolves a command's --server and --profile flags. A flag
@@ -87,7 +87,7 @@ func resolveTarget(server, profile string) (target, *Result) {
 			r := failure("INVALID_ARGUMENT", "Use an HTTPS root origin (literal loopback HTTP is allowed) for --server", nil)
 			return target{}, &r
 		}
-		return target{Origin: origin, Home: home}, nil
+		return target{Origin: origin}, nil
 	}
 	source := "--profile"
 	if profile == "" {
@@ -117,7 +117,7 @@ func resolveTarget(server, profile string) (target, *Result) {
 	}
 	// loadConfig already checked the server; this only canonicalizes it.
 	origin, _ := auth.CanonicalOrigin(entry.Server)
-	return target{Origin: origin, Profile: profile, Home: home}, nil
+	return target{Origin: origin, Profile: profile}, nil
 }
 
 // loadConfig reads config.toml whole or not at all. An absent file is an empty

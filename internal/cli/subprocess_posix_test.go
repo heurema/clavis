@@ -263,8 +263,13 @@ func TestCLIProcesses(t *testing.T) {
 		require.Equal(t, 0, exit)
 		require.True(t, decode(t, output).OK)
 		server.Close()
-		// Offline commands must not even inspect a deliberately unsafe cache.
+		// Offline commands must not even inspect a deliberately unsafe cache or
+		// read a corrupt configuration.
 		require.NoError(t, os.Chmod(filepath.Join(home, ".clavis", "sessions"), 0755))
+		configPath := filepath.Join(home, ".clavis", "config.toml")
+		config, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(configPath, []byte("output = \"text\"\n"), 0600))
 		for _, args := range [][]string{
 			{"--help"}, {"login", "--help"}, {"sessions", "revoke", "--help"}, {"users", "--help"}, {"users"},
 			{"users", "list", "--help"}, {"users", "create", "--help"}, {"users", "block", "--help"}, {"users", "unblock", "--help"},
@@ -278,12 +283,13 @@ func TestCLIProcesses(t *testing.T) {
 			{"groups", "--help"}, {"groups"}, {"groups", "list", "--help"}, {"groups", "get", "--help"},
 			{"groups", "create", "--help"}, {"groups", "update", "--help"}, {"groups", "delete", "--help"},
 			{"groups", "members", "--help"}, {"groups", "add-member", "--help"}, {"groups", "remove-member", "--help"},
-			{"query", "--help"},
+			{"query", "--help"}, {"profiles", "--help"}, {"skill", "show"}, {"skill", "show", "--file", "postgresql.md"},
 		} {
 			exit, output, prompt = processCLI(t, binary, "", args...)
 			require.Equal(t, 0, exit, "%v: %s", args, output)
 			require.Empty(t, prompt)
 		}
+		require.NoError(t, os.WriteFile(configPath, config, 0600))
 		for _, args := range [][]string{
 			{"login", "--username=cli-test", "--output=text"},
 			{"users", "create", "--username=alice", "--output=text"},

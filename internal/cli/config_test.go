@@ -95,7 +95,7 @@ server = "http://127.0.0.1:8080"
 		{name: "invalid server", file: withCurrent, server: "http://SECRET.example.com", env: unset},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			home := cliHome(t)
+			cliHome(t)
 			if tc.env != unset {
 				t.Setenv("CLAVIS_PROFILE", tc.env)
 			}
@@ -105,7 +105,7 @@ server = "http://127.0.0.1:8080"
 			got, failed := resolveTarget(tc.server, tc.profile)
 			if tc.origin != "" {
 				require.Nil(t, failed)
-				assert.Equal(t, target{Origin: tc.origin, Profile: tc.selected, Home: filepath.Join(home, ".clavis")}, got)
+				assert.Equal(t, target{Origin: tc.origin, Profile: tc.selected}, got)
 				return
 			}
 			require.NotNil(t, failed)
@@ -395,4 +395,24 @@ func TestProfilesSelectTheServer(t *testing.T) {
 	require.NotNil(t, diagnosis.Profile)
 	assert.Equal(t, [2]string{doctorServer.URL, "fce"}, [2]string{*diagnosis.Server, *diagnosis.Profile})
 	assert.Equal(t, 1, ready, "doctor checks the current profile's server")
+}
+
+func TestProfilesNamingOneServerShareASession(t *testing.T) {
+	cliHome(t)
+	password := testToken()
+	_, server := newCLIFixture(t, password)
+	writeConfig(t, "current = \"prod\"\n\n[profiles.prod]\nserver = \""+server.URL+"\"\n\n[profiles.prod-admin]\nserver = \""+server.URL+"/\"\n")
+
+	exit, _, _ := cliInvoke(t, string(password), "login", "--username=cli-test", "--password-stdin")
+	require.Equal(t, 0, exit)
+	// Sessions are keyed by origin, so the other profile needs no sign-in.
+	exit, result, _ := cliInvoke(t, "", "whoami", "--profile", "prod-admin")
+	require.Equal(t, 0, exit)
+	assert.Equal(t, "prod-admin", *result.Profile)
+	// Signing out through one profile signs out the other.
+	exit, _, _ = cliInvoke(t, "", "logout", "--profile", "prod-admin")
+	require.Equal(t, 0, exit)
+	exit, result, _ = cliInvoke(t, "", "whoami")
+	require.Equal(t, 1, exit)
+	assert.Equal(t, auth.Unauthenticated, result.Error.Code)
 }
