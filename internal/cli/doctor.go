@@ -3,41 +3,24 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
-	"net/url"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/heurema/clavis/internal/auth"
 	"github.com/heurema/clavis/internal/platform"
 )
 
-func validateURL(raw string) (*url.URL, error) {
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
-		return nil, errors.New("invalid server URL")
-	}
-	if port := u.Port(); port != "" {
-		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
-			return nil, errors.New("invalid server URL")
-		}
-	}
-	return u, nil
-}
-
-func Doctor(ctx context.Context, baseURL string, timeout time.Duration) Result {
-	u, err := validateURL(baseURL)
+// Doctor checks readiness at an origin that passes the same canonical-origin
+// rule as login, so a server doctor accepts is never refused by login.
+func Doctor(ctx context.Context, server string, timeout time.Duration) Result {
+	origin, err := auth.CanonicalOrigin(server)
 	if err != nil || timeout <= 0 {
-		return failure("INVALID_ARGUMENT", "Use an HTTP(S) server URL without credentials, query, or fragment and a positive timeout", nil)
+		return failure("INVALID_ARGUMENT", "Use an HTTPS root origin (literal loopback HTTP is allowed) and a positive timeout", nil)
 	}
-	u.Path = strings.TrimRight(u.Path, "/") + "/readyz"
-	u.RawPath = ""
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/readyz", nil)
 	if err != nil {
 		return failure("INVALID_ARGUMENT", "Invalid server URL", nil)
 	}

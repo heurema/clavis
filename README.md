@@ -328,7 +328,11 @@ remove it. Both commands work offline and never touch the server or the
 session. Install through the CLI only: a second copy of the skill leaves it
 undefined which one an agent loads.
 
-Then the agent logs in like any other user and follows the skill:
+Once a person has configured a profile (see [CLI profiles](#cli-profiles)),
+the agent logs in like any other user and follows the skill. The skill tells it
+to name the server every result reports, to target another configured server
+with `--profile` or `CLAVIS_PROFILE`, and never to create, switch or remove a
+profile itself:
 
 ```sh
 clavis login --username <name> --password-stdin < /path/to/secret
@@ -338,32 +342,98 @@ clavis query --connection <ref> --logsql 'error | sort by (_time) desc' --start 
 
 ## CLI authentication
 
-After building and initializing the server:
+After building and initializing the server, name it once as a profile:
 
 ```sh
+./bin/clavis profiles set local --server http://127.0.0.1:8080
 ./bin/clavis doctor
 ./bin/clavis login --username alice
 ./bin/clavis whoami
 ./bin/clavis logout
 ```
 
-Login prompts without echo; automation can use `--password-stdin` with redirected
-protected input. Passwords and tokens are never command-line values or normal
-output. Results default to one JSON document; `--output text` is also available.
-Sessions are stored privately under the user's configuration directory and keyed
-by server origin. `whoami` verifies the session with the server rather than
-trusting cached identity, and for members it lists the names of the connections
-they can use (`connections`, with `connectionsTruncated` when the list is
-cut), direct grants and group grants together; administrators see no list
-because they need no grants. Every caller's group names come back as `groups`
-(with `groupsTruncated`), so an agent's first call already says which groups it
-belongs to; the two lists are bounded independently.
+Login prompts without echo; automation can use `--password-stdin` with
+redirected protected input. Passwords and tokens are never command-line values
+or normal output. Results default to one JSON document; `--output text` is also
+available. Sessions are stored privately under `~/.clavis/sessions` and keyed by
+server origin, so two profiles naming one server share its session. `whoami`
+verifies the session with the server rather than trusting cached identity, and
+for members it lists the names of the connections they can use (`connections`,
+with `connectionsTruncated` when the list is cut), direct grants and group
+grants together; administrators see no list because they need no grants. Every
+caller's group names come back as `groups` (with `groupsTruncated`), so an
+agent's first call already says which groups it belongs to; the two lists are
+bounded independently.
 
 An administrator can run `./bin/clavis sessions revoke --user <uuid-or-username>`
 to revoke that user's existing browser and CLI sessions. Sessions have a fixed eight-hour
 default lifetime (`CLAVIS_SESSION_TTL`, 5 minutes through 24 hours), with no
 automatic refresh. Logout revokes the current session; offline CLI logout removes
 the local credential but returns failure because remote revocation is unconfirmed.
+
+## CLI profiles
+
+The CLI keeps its state in one directory, `~/.clavis`, or wherever the absolute
+path in `CLAVIS_HOME` points: `config.toml` holds named profiles and `sessions/`
+the stored sessions. A profile is a name and a server root origin, and
+`current` names the profile used when nothing else is chosen. A name is 1 to 64
+characters: a lowercase letter, then lowercase letters, digits, `.`, `_` or `-`:
+
+```toml
+current = "local"
+
+[profiles.local]
+server = "http://127.0.0.1:8080"
+
+[profiles.fce]
+server = "https://clavis.example.com"
+```
+
+The file holds no secrets and may be written by hand; it is read strictly, so
+an unknown key, an invalid name or server, or a `current` naming no profile
+fails every command that reads the file (a one-off `--server` does not) with
+`INVALID_ARGUMENT` naming the file and key, and nothing from it is used. The
+home must be owned by you and not group- or world-writable, `sessions` must be
+mode 0700, and no component of either path may be a symlink. The `profiles`
+commands manage the file the way `kubectl config` manages contexts, and never
+contact a server:
+
+| Command | kubectl counterpart | Effect |
+|---|---|---|
+| `clavis profiles set <name> --server <url>` | `config set-context` | Creates the profile or changes its server; it becomes current when no profile is current, as after `profiles remove` cleared `current` |
+| `clavis profiles use <name>` | `config use-context` | Makes the profile current; an unknown name fails |
+| `clavis profiles current` | `config current-context` | Shows the profile in effect and whether `CLAVIS_PROFILE` or the file chose it |
+| `clavis profiles list` | `config get-contexts` | Lists profiles, marks the current one, shows each stored session's user and expiry |
+| `clavis profiles remove <name>` | `config delete-context` | Removes the profile, clearing `current` if it named it; stored sessions stay |
+
+A write takes a lock beside the file and replaces it atomically, and it drops
+hand-written comments and sorts the profiles by name. A write that fails exits
+1: `CREDENTIAL_STORAGE_FAILED` for an unsafe home, `TIMEOUT` when the lock is not
+taken within five seconds, and `CONFIGURATION_WRITE_FAILED` otherwise.
+
+Every networked command, `doctor` and `login` included, resolves its server in
+this order: `--server <url>` for a one-off server or `--profile <name>` (not
+both), then the profile named by `CLAVIS_PROFILE`, then `current`. There is no
+default server: with none of them the command exits 2 with the hint
+`clavis profiles set <name> --server <url>` before reading any input or
+contacting anything, and an unknown profile name exits 2 as well. `login` only
+signs in to the resolved server; it never writes the file. `CLAVIS_PROFILE` pins
+one terminal or agent without changing the machine's current profile. The CLI
+does not load `.env`, and a server must be a root-origin HTTPS URL except for
+literal loopback HTTP. Help, version, `skill` and CLI-only builds work offline
+and read no configuration.
+
+Every networked result names the server it used in top-level `server` and
+`profile` fields (`profile` is empty for a one-off `--server`), and
+`--output text` prints `Server: <origin> (profile <name>)` as its first line,
+before any failure.
+
+Upgrading from an earlier release: `CLAVIS_SERVER_URL` and the loopback default
+are gone, so replace an exported `CLAVIS_SERVER_URL` with a profile
+(`clavis profiles set <name> --server <url>`) or with `CLAVIS_PROFILE`. Sessions
+moved to `~/.clavis/sessions`, so sign in again; the former directory
+(`~/Library/Application Support/clavis` on macOS, `~/.config/clavis` on Linux)
+may be deleted.
 
 ## User administration
 
@@ -679,6 +749,5 @@ Each request opens one connection to the source and closes it afterwards; the
 platform keeps no pool and imposes no concurrency limit, so a runaway agent is
 throttled where it belongs: give the role a `CONNECTION LIMIT` in PostgreSQL.
 
-For a custom API address, add `--server <url>` or export `CLAVIS_SERVER_URL`; the
-CLI does not load `.env`. Authentication requires a root-origin HTTPS URL except
-for literal loopback HTTP. Help/version and CLI-only builds work offline.
+Queries reach the server the CLI resolves from its profiles; see
+[CLI profiles](#cli-profiles).

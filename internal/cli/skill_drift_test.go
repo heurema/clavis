@@ -41,6 +41,7 @@ func skillHints() []string {
 		sqlBoundHint, queryFilterHint, maxRowsHint,
 		skillForceHint, skillAgentHint, skillScopeHint, skillDirHint,
 		skillProjectHint, skillOutputHint,
+		profileSetupHint,
 	}
 }
 
@@ -111,6 +112,11 @@ func TestSkillDriftGuardCatchesDrift(t *testing.T) {
 		"flag with an inline value": {"```\nclavis query --connection=<ref> --sqlx=1\n```\n", "--sqlx"},
 		"unterminated quote":        {"```\nclavis query --sql \"select 1\n```\n", "clavis query"},
 		"unquoted hint":             {"```\nHint: use --force sometimes\n```\n", "Hint: use --force sometimes"},
+		"misspelled profiles verb":  {"```\nclavis profiles sett <name> --server <url>\n```\n", "sett"},
+		"renamed profile flag":      {"Run `clavis whoami --profile-name <name>` first.\n", "--profile-name"},
+		"profile name missing":      {"```\nclavis profiles use\n```\n", "clavis profiles use"},
+		"two profile names":         {"```\nclavis profiles remove fce <name>\n```\n", "clavis profiles remove"},
+		"name on a nameless verb":   {"```\nclavis profiles list fce\n```\n", "fce"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			found := checkSkillDocument("victorialogs.md", tc.document, root, skillHints())
@@ -128,6 +134,9 @@ func TestSkillDriftGuardCatchesDrift(t *testing.T) {
 		"```\n$ clavis query --connection <ref> --logsql '*' \\\n    --limit 10\n```\n",
 		"```\nclavis query --connection <ref> --sql-stdin <<'SQL'\nselect --not-a-flag\nSQL\n```\n",
 		"```\nHint: " + skillForceHint + "\n```\n",
+		"```\nclavis profiles set <name> --server <url>\nclavis profiles use fce\nclavis profiles remove <name>\n```\n",
+		"Run `clavis profiles current` or `clavis whoami --profile <name>`.\n",
+		"```\nHint: " + profileSetupHint + "\n```\n",
 		"Prose naming --nonexistent outside a fence and outside backticks.\n",
 	} {
 		assert.Empty(t, checkSkillDocument("SKILL.md", document, driftRoot(), skillHints()), document)
@@ -245,7 +254,9 @@ func checkInvocation(root *urfave.Command, text string) error {
 		if endsCommand(token) {
 			return nil
 		}
-		if strings.HasPrefix(token, "-") || placeholder(token) {
+		// A command that takes a positional argument ends the path: the word
+		// after it is the argument, counted below, not a command name.
+		if strings.HasPrefix(token, "-") || placeholder(token) || takesArguments(root, command) > 0 {
 			break
 		}
 		next := subcommand(command, token)
@@ -254,18 +265,20 @@ func checkInvocation(root *urfave.Command, text string) error {
 			if token == "help" {
 				return nil
 			}
-			// No command takes a positional argument, so a word here is a
-			// command name and nothing else it could be.
+			// A command that takes no positional argument has only command
+			// names below it, so a word here is one and nothing else.
 			return fmt.Errorf("names a command %s does not have: %s", commandPath(root, command), token)
 		}
 		command = next
 	}
+	positional := 0
 	for ; index < len(tokens); index++ {
 		token := tokens[index]
 		if endsCommand(token) {
-			return nil
+			break
 		}
 		if !strings.HasPrefix(token, "-") || token == "-" || token == "--" {
+			positional++
 			continue
 		}
 		name, _, attached := strings.Cut(strings.TrimLeft(token, "-"), "=")
@@ -285,7 +298,20 @@ func checkInvocation(root *urfave.Command, text string) error {
 			index++
 		}
 	}
+	// Only a command that takes positional arguments has its words counted:
+	// elsewhere a stray word is a heredoc marker or prose the guard leaves be.
+	if wanted := takesArguments(root, command); wanted > 0 && positional != wanted {
+		return fmt.Errorf("%s takes exactly %d positional argument, found %d",
+			commandPath(root, command), wanted, positional)
+	}
 	return nil
+}
+
+// takesArguments reads the same table the binary enforces, keyed on the path a
+// reader types, so a command gaining or losing a positional argument moves the
+// guard with it.
+func takesArguments(root, command *urfave.Command) int {
+	return profileUsages[commandPath(root, command)].arguments
 }
 
 // flagOf finds a declared flag by any of its names.

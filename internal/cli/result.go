@@ -28,10 +28,15 @@ type Error struct {
 }
 
 type Result struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	OK            bool   `json:"ok"`
-	Data          any    `json:"data"`
-	Error         *Error `json:"error"`
+	SchemaVersion int  `json:"schemaVersion"`
+	OK            bool `json:"ok"`
+	// Server and Profile name the resolved target. Only a command that
+	// resolved one sets them, so a pointer tells an absent profile from the
+	// empty one a --server command reports.
+	Server  *string `json:"server,omitempty"`
+	Profile *string `json:"profile,omitempty"`
+	Data    any     `json:"data"`
+	Error   *Error  `json:"error"`
 }
 
 type Diagnosis struct {
@@ -52,9 +57,19 @@ func failureWithHint(code, message, hint string) Result {
 	return result
 }
 
+// named records the resolved target on a result produced after resolution. A
+// --server target reports its empty profile rather than omitting it.
+func (t target) named(result Result) Result {
+	result.Server, result.Profile = &t.Origin, &t.Profile
+	return result
+}
+
 func render(w io.Writer, result Result, format string) error {
 	if format == "json" {
 		return json.NewEncoder(w).Encode(result)
+	}
+	if err := renderServer(w, result); err != nil {
+		return err
 	}
 	if result.Error != nil {
 		if _, err := fmt.Fprintf(w, "%s: %s\n", result.Error.Code, result.Error.Message); err != nil {
@@ -195,11 +210,94 @@ func render(w io.Writer, result Result, format string) error {
 	case Diagnosis:
 		_, err := fmt.Fprintf(w, "API: %s\nDatabase: %s\n", data.API, data.Database)
 		return err
+	case ProfileSet:
+		line := "Profile " + data.Name + " set to " + data.Server
+		if data.MadeCurrent {
+			line += ", now current"
+		}
+		_, err := fmt.Fprintln(w, line)
+		return err
+	case ProfileUse:
+		if err := renderProfile(w, data.Profile); err != nil {
+			return err
+		}
+		return renderOverride(w, data.Override, data.overrideKnown, data.Profile.Name)
+	case ProfileCurrent:
+		if err := renderProfile(w, data.Profile); err != nil {
+			return err
+		}
+		_, err := fmt.Fprintf(w, "Source: %s\n", data.Source)
+		return err
+	case ProfileList:
+		for _, entry := range data.Profiles {
+			mark := " "
+			if entry.Current {
+				mark = "*"
+			}
+			if _, err := fmt.Fprintf(w, "%s %s %s %s\n", mark, entry.Name, entry.Server, profileSessionText(entry.Session)); err != nil {
+				return err
+			}
+		}
+		return renderOverride(w, data.Override, data.overrideKnown, data.Current)
+	case ProfileRemoval:
+		line := "Removed " + data.Name
+		if data.CurrentCleared {
+			line += "; no profile is current now"
+		}
+		_, err := fmt.Fprintln(w, line)
+		return err
 	case buildinfo.Info:
 		_, err := fmt.Fprintf(w, "clavis %s (commit %s, built %s)\n", data.Version, data.Commit, data.Date)
 		return err
 	}
 	return nil
+}
+
+// renderServer names the target first, so a reader knows which server the
+// rest of the output, a failure included, came from.
+func renderServer(w io.Writer, result Result) error {
+	if result.Server == nil {
+		return nil
+	}
+	line := "Server: " + *result.Server
+	if result.Profile != nil && *result.Profile != "" {
+		line += " (profile " + *result.Profile + ")"
+	}
+	_, err := fmt.Fprintln(w, line)
+	return err
+}
+
+// renderProfile prints one profile with what the local session store holds for
+// its server, which is never a verification: whoami is.
+func renderProfile(w io.Writer, entry ProfileEntry) error {
+	session := "none (not signed in)"
+	if entry.Session != nil {
+		session = entry.Session.Username + " until " + timestamp(entry.Session.ExpiresAt)
+	}
+	_, err := fmt.Fprintf(w, "Profile: %s\nServer: %s\nStored session: %s\n", entry.Name, entry.Server, session)
+	return err
+}
+
+func profileSessionText(session *ProfileSession) string {
+	if session == nil {
+		return "not signed in"
+	}
+	return "stored session: " + session.Username + " until " + timestamp(session.ExpiresAt)
+}
+
+// renderOverride notes a CLAVIS_PROFILE that makes networked commands in this
+// environment use something other than the file's current profile.
+func renderOverride(w io.Writer, override string, known bool, current string) error {
+	switch {
+	case override == "" || override == current:
+		return nil
+	case !known:
+		_, err := fmt.Fprintf(w, "Note: CLAVIS_PROFILE=%s names no profile; networked commands in this environment exit 2\n", override)
+		return err
+	default:
+		_, err := fmt.Fprintf(w, "Note: CLAVIS_PROFILE=%s selects %s in this environment\n", override, override)
+		return err
+	}
 }
 
 // nullMark distinguishes SQL NULL from an empty string in text output, which

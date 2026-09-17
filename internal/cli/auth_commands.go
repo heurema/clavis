@@ -22,7 +22,8 @@ type cachedSession struct {
 func authCommands(streams IO, check func(*urfave.Command) error, set func(Result)) []*urfave.Command {
 	flags := func(timeout time.Duration, timeoutUsage string) []urfave.Flag {
 		return []urfave.Flag{
-			&urfave.StringFlag{Name: "server", Value: "http://127.0.0.1:8080", Sources: urfave.EnvVars("CLAVIS_SERVER_URL"), Usage: "Server root origin"},
+			&urfave.StringFlag{Name: "server", Usage: "Server root origin for this command only"},
+			&urfave.StringFlag{Name: "profile", Usage: "Configured profile naming the server"},
 			&urfave.DurationFlag{Name: "timeout", Value: timeout, Usage: timeoutUsage},
 		}
 	}
@@ -68,8 +69,14 @@ func authCommands(streams IO, check func(*urfave.Command) error, set func(Result
 	}
 }
 
-func storageFailure() Result {
-	return failure("CREDENTIAL_STORAGE_FAILED", "Private credential storage is unavailable or unsafe; credentials were not displayed", nil)
+// storageFailure names the offending local path when a check identified one.
+func storageFailure(err error) Result {
+	message := "Private credential storage is unavailable or unsafe"
+	var unsafe storageError
+	if errors.As(err, &unsafe) {
+		message = unsafe.Error()
+	}
+	return failure("CREDENTIAL_STORAGE_FAILED", message+"; credentials were not displayed", nil)
 }
 
 // validateAuthArguments rejects invalid targets before any credential input,
@@ -144,10 +151,19 @@ func readPassword(ctx context.Context, command *urfave.Command, streams IO) ([]b
 }
 
 func runAuth(ctx context.Context, operation string, command *urfave.Command, streams IO) Result {
-	origin, err := auth.CanonicalOrigin(command.String("server"))
+	resolved, failed := resolveCommandTarget(command)
+	if failed != nil {
+		return *failed
+	}
+	return resolved.named(runResolved(ctx, operation, command, streams, resolved.Origin))
+}
+
+// runResolved runs an operation against a resolved origin. Every result it
+// returns, however early, is named by runAuth.
+func runResolved(ctx context.Context, operation string, command *urfave.Command, streams IO, origin string) Result {
 	timeout := command.Duration("timeout")
-	if err != nil || timeout <= 0 {
-		return failure("INVALID_ARGUMENT", "Use an HTTPS root origin (literal loopback HTTP is allowed) and a positive timeout", nil)
+	if timeout <= 0 {
+		return failure("INVALID_ARGUMENT", "Use a positive timeout", nil)
 	}
 	if invalid := validateAuthArguments(operation, command); invalid != nil {
 		return *invalid
@@ -179,12 +195,12 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 	cache, err := openCache(lockCtx, origin)
 	cancel()
 	if err != nil {
-		return storageFailure()
+		return storageFailure(err)
 	}
 	defer cache.close()
 	previous, err := cache.read()
 	if err != nil {
-		return storageFailure()
+		return storageFailure(err)
 	}
 	api := authTransport{origin: origin, timeout: timeout}
 	if operation == "login" {
@@ -195,7 +211,7 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 		}
 		if err := cache.write(cachedSession{Origin: origin, LoginResponse: issued}); err != nil {
 			api.cleanup(issued.Token)
-			return storageFailure()
+			return storageFailure(err)
 		}
 		if previous != nil && previous.Token != issued.Token {
 			api.cleanup(previous.Token)
@@ -224,7 +240,7 @@ func runAuth(ctx context.Context, operation string, command *urfave.Command, str
 		var revoked auth.Revocation
 		failed := api.request(ctx, auth.LogoutPath, previous.Token, nil, &revoked)
 		if err := cache.remove(previous); err != nil {
-			return storageFailure()
+			return storageFailure(err)
 		}
 		if failed != nil && failed.Error.Code != auth.Unauthenticated {
 			return failure(failed.Error.Code, "Local credential removed; remote revocation was not confirmed", nil)

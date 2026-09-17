@@ -529,11 +529,11 @@ async function run() {
       await execute("make", ["build-cli"], "build-cli")
     const home = join(work, "home")
     mkdirSync(home, { mode: 0o700 })
-    const clientEnv = {
-      ...env,
-      HOME: home,
-      XDG_CONFIG_HOME: join(home, ".config"),
-    }
+    // A Clavis home or profile exported by the developer would point the
+    // client at another session store or server, so neither is inherited.
+    const clientEnv = { ...env, HOME: home }
+    delete clientEnv.CLAVIS_HOME
+    delete clientEnv.CLAVIS_PROFILE
     const username = "verify-admin"
     // Generated once, registered for redaction before anything can print them.
     const databasePassword = randomBytes(18).toString("base64url")

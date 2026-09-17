@@ -363,7 +363,7 @@ func grantsText(t *testing.T, server *httptest.Server, args ...string) (int, str
 		Stdin: strings.NewReader(""), Stdout: &out, Stderr: &prompt, ReadPassword: ReadTerminalPassword,
 	})
 	require.Empty(t, prompt.String())
-	return exit, out.String()
+	return exit, serverText(t, out.String(), server.URL, "")
 }
 
 // TestGrantsWorkflow walks the documented lifecycle over the fixture: grant by

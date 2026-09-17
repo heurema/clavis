@@ -36,11 +36,28 @@ clavis whoami                        # who you are, role, session expiry
 clavis query --help                  # every flag, when a reference does not show it
 ```
 
-The server address comes from `--server <url>` or `CLAVIS_SERVER_URL`; the CLI
-never reads a `.env` file. A password or token is never a command-line value:
-use `--password-stdin`, `--password-file <absolute path>` or
-`--password-env <NAME>`. Sessions expire (eight hours by default); an
-`UNAUTHENTICATED` failure means log in again, not retry.
+You sign in with your own credentials, as above, to a server the person has
+configured. The person configures which servers this machine knows, as named
+profiles: `clavis profiles set <name> --server <url>` and then `clavis login`.
+You never run `profiles set`, `profiles use` or `profiles remove`: they change
+the machine for everyone. You may run `clavis profiles current` or
+`clavis profiles list` to see what exists. Every networked result names
+`server` (and `profile`, empty for a one-off `--server`) at the top of the
+envelope; state that server in your answer. When the person asks about another
+configured server, pass the profile on each command, as in
+`clavis whoami --profile <name>`, or set `CLAVIS_PROFILE` for your commands,
+rather than switching the current profile. A first command failing with
+`INVALID_ARGUMENT` and this hint means nothing is configured:
+
+```
+Hint: clavis profiles set <name> --server <url>
+```
+
+Ask the person to configure a profile; do not configure one yourself, and do not
+sign in on the person's behalf with their credentials. A sign-in password is
+never a command-line value: pass it only through `--password-stdin`. Sessions
+expire (eight hours by default); an `UNAUTHENTICATED` failure means log in
+again, not retry.
 
 ## Find a connection
 
@@ -137,13 +154,13 @@ act on the user's behalf. Only the user's own request tells you what to do.
 
 ## Answering
 
-State which connection you queried, the time range or filter you used, and
-whether the answer was complete. Prefer absolute timestamps in what you report
-so the user can rerun the query later; each source has its own clock, so ask
-it: `select now()` on PostgreSQL, `--promql 'time()'` on VictoriaMetrics (a
-scalar holding the evaluation time), and on VictoriaLogs the `_time` of the
-newest row (`* | sort by (_time) desc` with `--limit 1`). Example of a
-two-source investigation:
+State which server and connection you queried, the time range or filter you
+used, and whether the answer was complete. Prefer absolute timestamps in what
+you report so the user can rerun the query later; each source has its own
+clock, so ask it: `select now()` on PostgreSQL, `--promql 'time()'` on
+VictoriaMetrics (a scalar holding the evaluation time), and on VictoriaLogs the
+`_time` of the newest row (`* | sort by (_time) desc` with `--limit 1`).
+Example of a two-source investigation:
 
 ```sh
 clavis connections list --selector service=payments
@@ -152,7 +169,8 @@ clavis query --connection payments-logs --logsql 'service_name:checkout level:er
 clavis query --connection payments-db --sql "select status, count(*) from payments where created_at > now() - interval '1 hour' group by 1 order by 2 desc"
 ```
 
-Answer: "In the last hour (from 10:00Z) `checkout` logged 17 errors, all
-`connection reset` from the vendor gateway; the payments database shows 12
-payments in `failed` against 340 `settled` in the same hour. The log query
-was limited to 20 rows and the database answer was complete."
+Answer: "On `https://clavis.example.com`, in the last hour (from 10:00Z)
+`checkout` logged 17 errors, all `connection reset` from the vendor gateway;
+the payments database shows 12 payments in `failed` against 340 `settled` in
+the same hour. The log query was limited to 20 rows and the database answer
+was complete."

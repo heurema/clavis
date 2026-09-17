@@ -249,11 +249,13 @@ try {
       mkdirSync(home, { mode: 0o700 })
       homes.set(name, home)
     }
-    return {
-      ...env,
-      HOME: homes.get(name),
-      XDG_CONFIG_HOME: join(homes.get(name), ".config"),
-    }
+    // A Clavis home or profile exported by the developer would make clients
+    // share one session store or choose another server, so neither is
+    // inherited.
+    const client = { ...env, HOME: homes.get(name) }
+    delete client.CLAVIS_HOME
+    delete client.CLAVIS_PROFILE
+    return client
   }
   async function cli(name, args, expected = 0, input) {
     const result = JSON.parse(
@@ -354,13 +356,19 @@ try {
   assert.equal(doctor.ok, true)
   assert.equal(doctor.data.database, "ready")
   // The aggregate reports both halves and the build identity of the binary.
+  // Both executables come from one build, so the CLI names the version the
+  // server must report: "dev" only without VCS data, a tag-derived version in a
+  // checkout.
+  const buildVersion = JSON.parse(
+    await execute(join(root, "bin/clavis"), ["version"], "cli-version"),
+  ).data.version
   const healthy = await fetch(apiURL + "/healthz", {
     signal: AbortSignal.timeout(2_000),
   })
   assert.equal(healthy.status, 200)
   assert.deepEqual(await healthy.json(), {
     status: "ok",
-    version: "dev",
+    version: buildVersion,
     checks: { live: { status: "alive" }, ready: { status: "ready" } },
   })
   // The origin redirects into the administration shell without a database read.
@@ -2329,6 +2337,122 @@ try {
   summary.skill = "passed"
   console.log("[smoke] Embedded skill install, refusal, force and show passed")
 
+  // Profiles: one client names the server once, then resolves it with no
+  // --server; every networked envelope says which server and profile answered,
+  // and the local profiles commands carry neither.
+  let profileCalls = 0
+  async function profileCLI(args, expected = 0, overrides = {}, input) {
+    profileCalls++
+    const result = JSON.parse(
+      await execute(
+        join(root, "bin/clavis"),
+        args,
+        `profiles-${profileCalls}-${args.slice(0, 2).join("-")}`,
+        { env: { ...clientEnv("profiles"), ...overrides }, input },
+        expected,
+      ),
+    )
+    assert.equal(result.schemaVersion, 1)
+    assert.equal(result.ok, expected === 0)
+    for (const secret of secrets)
+      assert(!JSON.stringify(result).includes(secret), "CLI exposed a password")
+    return result
+  }
+  function assertTarget(result, profile) {
+    assert.equal(result.server, apiURL)
+    assert.equal(result.profile, profile)
+  }
+  function assertLocal(result) {
+    assert(!("server" in result) && !("profile" in result))
+  }
+  const firstProfile = await profileCLI([
+    "profiles",
+    "set",
+    "local",
+    "--server",
+    apiURL,
+  ])
+  assertLocal(firstProfile)
+  assert.deepEqual(firstProfile.data, {
+    name: "local",
+    server: apiURL,
+    created: true,
+    madeCurrent: true,
+  })
+  const profileLogin = await profileCLI(
+    ["login", "--username", "smoke-admin", "--password-stdin"],
+    0,
+    {},
+    password + "\n",
+  )
+  assertTarget(profileLogin, "local")
+  const profileWhoami = await profileCLI(["whoami"])
+  assertTarget(profileWhoami, "local")
+  assert.equal(profileWhoami.data.user.username, "smoke-admin")
+  const profileDoctor = await profileCLI(["doctor"])
+  assertTarget(profileDoctor, "local")
+  assert.equal(profileDoctor.data.database, "ready")
+  const secondProfile = await profileCLI([
+    "profiles",
+    "set",
+    "other",
+    "--server",
+    "http://127.0.0.1:1",
+  ])
+  assert.equal(secondProfile.data.created, true)
+  assert.equal(secondProfile.data.madeCurrent, false)
+  const profileList = await profileCLI(["profiles", "list"])
+  assertLocal(profileList)
+  assert.equal(profileList.data.current, "local")
+  assert.equal(profileList.data.override, "")
+  assert.deepEqual(
+    profileList.data.profiles.map((entry) => [
+      entry.name,
+      entry.current,
+      entry.session?.username ?? null,
+    ]),
+    [
+      ["local", true, "smoke-admin"],
+      ["other", false, null],
+    ],
+  )
+  const profileUse = await profileCLI(["profiles", "use", "other"])
+  assertLocal(profileUse)
+  assert.equal(profileUse.data.profile.name, "other")
+  assert.equal(profileUse.data.profile.current, true)
+  assert.equal(profileUse.data.profile.session, null)
+  const fromConfig = await profileCLI(["profiles", "current"])
+  assertLocal(fromConfig)
+  assert.equal(fromConfig.data.source, "config")
+  assert.equal(fromConfig.data.profile.name, "other")
+  const fromEnvironment = await profileCLI(["profiles", "current"], 0, {
+    CLAVIS_PROFILE: "local",
+  })
+  assertLocal(fromEnvironment)
+  assert.equal(fromEnvironment.data.source, "environment")
+  assert.equal(fromEnvironment.data.profile.name, "local")
+  assert.equal(fromEnvironment.data.profile.session.username, "smoke-admin")
+  // CLAVIS_PROFILE pins this environment to local while other is current.
+  assertTarget(
+    await profileCLI(["whoami"], 0, { CLAVIS_PROFILE: "local" }),
+    "local",
+  )
+  const removedProfile = await profileCLI(["profiles", "remove", "other"])
+  assertLocal(removedProfile)
+  assert.deepEqual(removedProfile.data, { name: "other", currentCleared: true })
+  // With no current profile nothing falls back to another server.
+  const unconfigured = await profileCLI(["whoami"], 2)
+  assertLocal(unconfigured)
+  assert.equal(unconfigured.error.code, "INVALID_ARGUMENT")
+  assert.equal(
+    unconfigured.error.hint,
+    "clavis profiles set <name> --server <url>",
+  )
+  summary.profiles = "passed"
+  console.log(
+    "[smoke] Profiles set, use, current, list and remove resolved the server without --server",
+  )
+
   await sql(
     "UPDATE sessions SET expires_at=clock_timestamp()-interval '1 second' WHERE user_id IN (SELECT id FROM users WHERE username='smoke-admin')",
     "fixture-expire",
@@ -2361,7 +2485,7 @@ try {
   assert.equal(unhealthy.status, 503)
   const unhealthyBody = await unhealthy.json()
   assert.equal(unhealthyBody.status, "unhealthy")
-  assert.equal(unhealthyBody.version, "dev")
+  assert.equal(unhealthyBody.version, buildVersion)
   assert.deepEqual(unhealthyBody.checks.live, { status: "alive" })
   assert.equal(unhealthyBody.checks.ready.error.code, "DEPENDENCY_UNAVAILABLE")
   const databaseUnavailable = JSON.parse(

@@ -20,16 +20,21 @@ func RunWithIO(ctx context.Context, args []string, streams IO) int {
 	var result *Result
 	format := "json"
 	invalid := errors.New("invalid invocation")
+	usageHint := ""
 	check := func(command *urfave.Command) error {
 		format = command.String("output")
-		if command.Args().Len() != 0 || (format != "json" && format != "text") {
+		if arguments, usage := positionalArguments(command); command.Args().Len() != arguments {
+			usageHint = usage
+			return invalid
+		}
+		if format != "json" && format != "text" {
 			return invalid
 		}
 		return nil
 	}
 	command := newRootCommand(streams, &help, invalid, check, func(value Result) { result = &value })
 	if err := command.Run(ctx, args); err != nil {
-		value := failure("INVALID_ARGUMENT", "Invalid arguments or configuration; run clavis help", nil)
+		value := failureWithHint("INVALID_ARGUMENT", "Invalid arguments or configuration; run clavis help", usageHint)
 		if secretValueFlag(args) {
 			// There is deliberately no flag that carries a secret value; say
 			// which channels exist instead of the generic usage message.
@@ -88,18 +93,24 @@ func newRootCommand(streams IO, help io.Writer, invalid error, check func(*urfav
 				return nil
 			}},
 			{Name: "doctor", Usage: "Check server and platform database readiness", Flags: []urfave.Flag{
-				&urfave.StringFlag{Name: "server", Value: "http://127.0.0.1:8080", Sources: urfave.EnvVars("CLAVIS_SERVER_URL"), Usage: "Server base URL"},
+				&urfave.StringFlag{Name: "server", Usage: "Server root origin for this command only"},
+				&urfave.StringFlag{Name: "profile", Usage: "Configured profile naming the server"},
 				&urfave.DurationFlag{Name: "timeout", Value: 5 * time.Second, Usage: "Entire readiness request deadline"},
 			}, Action: func(ctx context.Context, command *urfave.Command) error {
 				if err := check(command); err != nil {
 					return err
 				}
-				set(Doctor(ctx, command.String("server"), command.Duration("timeout")))
+				resolved, failed := resolveCommandTarget(command)
+				if failed != nil {
+					set(*failed)
+					return nil
+				}
+				set(resolved.named(Doctor(ctx, resolved.Origin, command.Duration("timeout"))))
 				return nil
 			}},
 		},
 	}
 	command.Commands = append(command.Commands, authCommands(streams, check, set)...)
-	command.Commands = append(command.Commands, skillCommands(streams, check, set))
+	command.Commands = append(command.Commands, skillCommands(streams, check, set), profilesCommands(check, set))
 	return command
 }

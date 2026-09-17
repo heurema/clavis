@@ -67,13 +67,20 @@ func TestCLIProcesses(t *testing.T) {
 		home := cliHome(t)
 		password := testToken()
 		fixture, server := newCLIFixture(t, password)
-		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		cliProfile(t, server.URL)
+		// Text output names the profile's server first; the rest is what the
+		// command rendered.
+		processText := func(args ...string) (int, string) {
+			t.Helper()
+			exit, output, _ := processCLI(t, binary, "", args...)
+			return exit, serverText(t, output, server.URL, "test")
+		}
 		exit, output, prompt := processCLI(t, binary, string(password)+"\n", "login", "--username=cli-test", "--password-stdin")
 		require.Equal(t, 0, exit)
 		require.True(t, decode(t, output).OK)
 		require.Empty(t, prompt)
 		require.False(t, strings.Contains(output, string(password)))
-		exit, output, _ = processCLI(t, binary, "", "whoami", "--output=text")
+		exit, output = processText("whoami", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Contains(t, output, "User: cli-test")
 		require.Contains(t, output, "Role: admin")
@@ -92,10 +99,10 @@ func TestCLIProcesses(t *testing.T) {
 		require.False(t, strings.Contains(output, string(secret)))
 		alice, _ := created.Data.(map[string]any)["id"].(string)
 		require.True(t, auth.ValidUserID(alice))
-		exit, output, _ = processCLI(t, binary, "", "users", "list", "--output=text")
+		exit, output = processText("users", "list", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, testIdentity().User.ID+" cli-test admin enabled\n"+alice+" alice member enabled\n", output)
-		exit, output, _ = processCLI(t, binary, "", "users", "block", "--user", alice, "--output=text")
+		exit, output = processText("users", "block", "--user", alice, "--output=text")
 		require.Equal(t, 0, exit)
 		require.Contains(t, output, "User: alice ("+alice+")\nRole: member\nStatus: blocked\nCreated: ")
 		require.True(t, strings.HasSuffix(output, "Z\nSessions revoked: true\n"))
@@ -114,81 +121,81 @@ func TestCLIProcesses(t *testing.T) {
 		require.NotContains(t, output, "password")
 		connection, _ := decode(t, output).Data.(map[string]any)["id"].(string)
 		require.True(t, auth.ValidUserID(connection))
-		exit, output, _ = processCLI(t, binary, "", "connections", "list", "--selector", "env=prod", "--output=text")
+		exit, output = processText("connections", "list", "--selector", "env=prod", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, connection+" payments-prod-reporting postgresql enabled unchecked\n", output)
-		exit, output, _ = processCLI(t, binary, "", "connections", "check", "--connection", "payments-prod-reporting", "--output=text")
+		exit, output = processText("connections", "check", "--connection", "payments-prod-reporting", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Contains(t, output, "Check: reachable at ")
-		exit, output, _ = processCLI(t, binary, "", "connections", "delete", "--connection", "payments-prod-reporting", "--dry-run", "--output=text")
+		exit, output = processText("connections", "delete", "--connection", "payments-prod-reporting", "--dry-run", "--output=text")
 		require.Equal(t, 1, exit)
 		require.Equal(t, "CONNECTION_IN_USE: The connection must be disabled and have no grants before deletion\n"+
 			"Hint: "+inUseHint+"\n", output)
 
 		// Grants are addressed by name in the isolated process too, creating
 		// one twice is idempotent, and a blocked user keeps the grant.
-		exit, output, _ = processCLI(t, binary, "", "grants", "create", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
+		exit, output = processText("grants", "create", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Contains(t, output, "Grant: alice → payments-prod-reporting\n")
 		require.Contains(t, output, "Created: true\n")
-		exit, output, _ = processCLI(t, binary, "", "grants", "create", "--user", alice, "--connection", "payments-prod-reporting", "--output=text")
+		exit, output = processText("grants", "create", "--user", alice, "--connection", "payments-prod-reporting", "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Contains(t, output, "Created: false\n")
-		exit, output, _ = processCLI(t, binary, "", "grants", "list", "--output=text")
+		exit, output = processText("grants", "list", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Regexp(t, `^alice payments-prod-reporting \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$`, output)
-		exit, output, _ = processCLI(t, binary, "", "grants", "revoke", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
+		exit, output = processText("grants", "revoke", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, "Revoked: true\n", output)
-		exit, output, _ = processCLI(t, binary, "", "grants", "revoke", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
+		exit, output = processText("grants", "revoke", "--user", "alice", "--connection", "payments-prod-reporting", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, "Revoked: false\n", output)
 
 		// Groups are addressed by name in the isolated process too: create,
 		// populate, inherit a grant, read the paths back, and the guarded
 		// delete that only a revocation lets through.
-		exit, output, _ = processCLI(t, binary, "", "groups", "create", "--name", "finance-managers",
+		exit, output = processText("groups", "create", "--name", "finance-managers",
 			"--description", "Finance managers", "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Contains(t, output, "Description: Finance managers\nMembers: 0\nGrants: 0\n")
-		exit, output, _ = processCLI(t, binary, "", "groups", "add-member", "--group", "finance-managers",
+		exit, output = processText("groups", "add-member", "--group", "finance-managers",
 			"--user", "alice", "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Equal(t, "Member: alice → finance-managers\nAdded: true\n", output)
-		exit, output, _ = processCLI(t, binary, "", "groups", "add-member", "--group", "finance-managers",
+		exit, output = processText("groups", "add-member", "--group", "finance-managers",
 			"--user", alice, "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Equal(t, "Member: alice → finance-managers\nAdded: false\n", output)
-		exit, output, _ = processCLI(t, binary, "", "groups", "members", "--group", "finance-managers", "--output=text")
+		exit, output = processText("groups", "members", "--group", "finance-managers", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Regexp(t, `^`+alice+` alice blocked \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$`, output)
-		exit, output, _ = processCLI(t, binary, "", "grants", "create", "--group", "finance-managers",
+		exit, output = processText("grants", "create", "--group", "finance-managers",
 			"--connection", "payments-prod-reporting", "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Contains(t, output, "Grant: group finance-managers → payments-prod-reporting\n")
-		exit, output, _ = processCLI(t, binary, "", "grants", "list", "--group", "finance-managers", "--output=text")
+		exit, output = processText("grants", "list", "--group", "finance-managers", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Regexp(t, `^group finance-managers payments-prod-reporting \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n$`, output)
-		exit, output, _ = processCLI(t, binary, "", "grants", "list", "--user", "alice", "--effective", "--output=text")
+		exit, output = processText("grants", "list", "--user", "alice", "--effective", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Contains(t, output, "User: alice ("+alice+")\nRole: member\nStatus: blocked\n")
 		require.Regexp(t, `payments-prod-reporting via finance-managers \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n`, output)
-		exit, output, _ = processCLI(t, binary, "", "groups", "list", "--output=text")
+		exit, output = processText("groups", "list", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Regexp(t, `^[0-9a-f-]{36} finance-managers 1 1\n$`, output)
-		exit, output, _ = processCLI(t, binary, "", "groups", "delete", "--group", "finance-managers",
+		exit, output = processText("groups", "delete", "--group", "finance-managers",
 			"--dry-run", "--output=text")
 		require.Equal(t, 1, exit)
 		require.Contains(t, output, "GROUP_IN_USE")
-		exit, output, _ = processCLI(t, binary, "", "grants", "revoke", "--group", "finance-managers",
+		exit, output = processText("grants", "revoke", "--group", "finance-managers",
 			"--connection", "payments-prod-reporting", "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, "Revoked: true\n", output)
-		exit, output, _ = processCLI(t, binary, "", "groups", "remove-member", "--group", "finance-managers",
+		exit, output = processText("groups", "remove-member", "--group", "finance-managers",
 			"--user", "alice", "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Equal(t, "Member: alice → finance-managers\nRemoved: true\n", output)
-		exit, output, _ = processCLI(t, binary, "", "groups", "delete", "--group", "finance-managers", "--output=text")
+		exit, output = processText("groups", "delete", "--group", "finance-managers", "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Regexp(t, `^Deleted: finance-managers \([0-9a-f-]{36}\)\n$`, output)
 		// Execution is driven the way an agent drives it: inline, and from a
@@ -196,7 +203,7 @@ func TestCLIProcesses(t *testing.T) {
 		fixture.mu.Lock()
 		fixture.queryResponse = queryRows()
 		fixture.mu.Unlock()
-		exit, output, _ = processCLI(t, binary, "", "query", "--connection", "payments-prod-reporting",
+		exit, output = processText("query", "--connection", "payments-prod-reporting",
 			"--sql", "select id, label from notes", "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Equal(t, "id   label\n1    alpha\n22   ∅\n333  \n(3 rows)\nUPDATE 2\nDuration: 17 ms\n", output)
@@ -212,7 +219,7 @@ func TestCLIProcesses(t *testing.T) {
 			Source: &auth.SourceFailure{SQLState: "42601", Message: "syntax error", Position: 1,
 				Statement: auth.StatementIndex(0)}}
 		fixture.mu.Unlock()
-		exit, output, _ = processCLI(t, binary, "", "query", "--connection", "payments-prod-reporting",
+		exit, output = processText("query", "--connection", "payments-prod-reporting",
 			"--sql", "selec 1", "--output=text")
 		require.Equal(t, 1, exit)
 		require.Equal(t, "SOURCE_ERROR: The source rejected the query\nHint: "+querySourceHint+"\n"+
@@ -227,7 +234,7 @@ func TestCLIProcesses(t *testing.T) {
 		fixture.connections = append(fixture.connections, metrics)
 		fixture.queryResponse = metricsRows()
 		fixture.mu.Unlock()
-		exit, output, _ = processCLI(t, binary, "", "query", "--connection", "metrics-prod",
+		exit, output = processText("query", "--connection", "metrics-prod",
 			"--promql", "up", "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Equal(t, "Warning: the range is long\n"+
@@ -242,11 +249,11 @@ func TestCLIProcesses(t *testing.T) {
 		fixture.mu.Unlock()
 
 		// A user command takes the username as readily as the UUID.
-		exit, output, _ = processCLI(t, binary, "", "users", "unblock", "--user", "alice", "--output=text")
+		exit, output = processText("users", "unblock", "--user", "alice", "--output=text")
 		require.Equal(t, 0, exit, output)
 		require.Contains(t, output, "User: alice ("+alice+")\nRole: member\nStatus: enabled\n")
 
-		exit, output, _ = processCLI(t, binary, "", "sessions", "revoke", "--user", testIdentity().User.ID, "--output=text")
+		exit, output = processText("sessions", "revoke", "--user", testIdentity().User.ID, "--output=text")
 		require.Equal(t, 0, exit)
 		require.Equal(t, "Revoked: true\n", output)
 		exit, output, _ = processCLI(t, binary, "", "whoami")
@@ -256,10 +263,13 @@ func TestCLIProcesses(t *testing.T) {
 		require.Equal(t, 0, exit)
 		require.True(t, decode(t, output).OK)
 		server.Close()
-		// Offline commands must not even inspect a deliberately unsafe cache.
-		config, err := os.UserConfigDir()
+		// Offline commands must not even inspect a deliberately unsafe cache or
+		// read a corrupt configuration.
+		require.NoError(t, os.Chmod(filepath.Join(home, ".clavis", "sessions"), 0755))
+		configPath := filepath.Join(home, ".clavis", "config.toml")
+		config, err := os.ReadFile(configPath)
 		require.NoError(t, err)
-		require.NoError(t, os.Chmod(filepath.Join(config, "clavis"), 0755))
+		require.NoError(t, os.WriteFile(configPath, []byte("output = \"text\"\n"), 0600))
 		for _, args := range [][]string{
 			{"--help"}, {"login", "--help"}, {"sessions", "revoke", "--help"}, {"users", "--help"}, {"users"},
 			{"users", "list", "--help"}, {"users", "create", "--help"}, {"users", "block", "--help"}, {"users", "unblock", "--help"},
@@ -273,12 +283,13 @@ func TestCLIProcesses(t *testing.T) {
 			{"groups", "--help"}, {"groups"}, {"groups", "list", "--help"}, {"groups", "get", "--help"},
 			{"groups", "create", "--help"}, {"groups", "update", "--help"}, {"groups", "delete", "--help"},
 			{"groups", "members", "--help"}, {"groups", "add-member", "--help"}, {"groups", "remove-member", "--help"},
-			{"query", "--help"},
+			{"query", "--help"}, {"profiles", "--help"}, {"skill", "show"}, {"skill", "show", "--file", "postgresql.md"},
 		} {
 			exit, output, prompt = processCLI(t, binary, "", args...)
 			require.Equal(t, 0, exit, "%v: %s", args, output)
 			require.Empty(t, prompt)
 		}
+		require.NoError(t, os.WriteFile(configPath, config, 0600))
 		for _, args := range [][]string{
 			{"login", "--username=cli-test", "--output=text"},
 			{"users", "create", "--username=alice", "--output=text"},
@@ -323,7 +334,7 @@ func TestCLIProcesses(t *testing.T) {
 		home := cliHome(t)
 		password := testToken()
 		fixture, server := newCLIFixture(t, password)
-		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		cliProfile(t, server.URL)
 		exit, _, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin")
 		require.Equal(t, 0, exit)
 		secretPath := filepath.Join(home, "connection-secret")
@@ -382,7 +393,7 @@ func TestCLIProcesses(t *testing.T) {
 		cliHome(t)
 		password := testToken()
 		_, server := newCLIFixture(t, password)
-		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		cliProfile(t, server.URL)
 		exit, _, _ := processCLI(t, binary, string(password), "login", "--username=cli-test", "--password-stdin")
 		require.Equal(t, 0, exit)
 		exit, output, _ := processCLI(t, binary, string(testToken()), "users", "create", "--username=alice", "--password-stdin")
@@ -438,7 +449,7 @@ func TestCLIProcesses(t *testing.T) {
 		cliHome(t)
 		password := testToken()
 		fixture, server := newCLIFixture(t, password)
-		t.Setenv("CLAVIS_SERVER_URL", server.URL)
+		cliProfile(t, server.URL)
 		var workers sync.WaitGroup
 		for range 6 {
 			workers.Go(func() {
@@ -478,7 +489,7 @@ func TestCLIProcesses(t *testing.T) {
 		defer func() { _ = input.Close(); _ = writer.Close() }()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		command := exec.CommandContext(ctx, binary, "login", "--username=cli-test", "--password-stdin")
+		command := exec.CommandContext(ctx, binary, "login", "--username=cli-test", "--password-stdin", "--server", "http://127.0.0.1:1")
 		command.Stdin = input
 		var out bytes.Buffer
 		command.Stdout = &out
