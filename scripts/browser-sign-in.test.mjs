@@ -133,6 +133,12 @@ test("browserSignIn signs in, approves and waits for the CLI's result", async ()
     })
     assert.equal(signedIn.code, 0)
     assert.equal(signedIn.result.ok, true)
+    assert.match(
+      signedIn.callback,
+      new RegExp(
+        `^http://127\\.0\\.0\\.1:\\d+/callback\\?code=k{43}&state=${state}$`,
+      ),
+    )
     assert.equal(child.callbacks.length, 1)
     assert.match(
       child.callbacks[0],

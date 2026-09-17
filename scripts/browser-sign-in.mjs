@@ -41,7 +41,9 @@ function sessionCookie(response) {
 // --server, possibly a port-forward); origin is the server's public origin the
 // form checks, which defaults to baseURL. A sign-in the form refuses stops the
 // CLI and returns { refused: true, status, page, code }; a completed one
-// returns { code, result } with the CLI's parsed JSON result.
+// returns { code, result, callback } with the CLI's parsed JSON result and the
+// loopback callback URL the approval redirected to, whose code the CLI has
+// redeemed.
 export async function browserSignIn({
   child,
   baseURL,
@@ -141,7 +143,7 @@ export async function browserSignIn({
         ),
       ),
     ])
-    return { code, result: JSON.parse(stdout) }
+    return { code, result: JSON.parse(stdout), callback }
   } catch (error) {
     if (child.exitCode === null && child.signalCode === null) await stopped()
     throw error

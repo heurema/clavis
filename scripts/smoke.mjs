@@ -276,7 +276,9 @@ try {
   }
   // Sign-in runs `clavis login --no-browser` and does the browser's part:
   // the form, Approve and the loopback callback. A refused form sign-in
-  // (expected 1) stops the waiting CLI and returns the refusal.
+  // (expected 1) stops the waiting CLI and returns the refusal. The callback of
+  // the last completed sign-in is kept so its redeemed code can be replayed.
+  let lastCallback = ""
   async function browserLogin(
     logName,
     args,
@@ -315,6 +317,7 @@ try {
       0,
       `${logName} failed; see reports/smoke-${logName}.log`,
     )
+    lastCallback = signedIn.callback
     const result = signedIn.result
     assert.equal(result.schemaVersion, 1)
     assert.equal(result.ok, true)
@@ -465,6 +468,23 @@ try {
 
   const administrator = (await login("admin-one")).data.user
   assert.equal(administrator.username, "smoke-admin")
+  // The code the CLI just redeemed is consumed: replaying it issues nothing.
+  const replayed = await fetch(apiURL + "/api/auth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      code: new URL(lastCallback).searchParams.get("code"),
+      verifier: randomBytes(32).toString("base64url"),
+    }),
+    redirect: "error",
+    signal: AbortSignal.timeout(2_000),
+  })
+  assert.equal(replayed.status, 401, "a redeemed code was accepted again")
+  const replayedBody = await replayed.json()
+  assert.equal(replayedBody.error.code, "INVALID_CREDENTIALS")
+  assert(!("token" in replayedBody), "the replay returned a session token")
+  summary.redeemedCodeReplayRefused = "passed"
+  console.log("[smoke] A redeemed CLI authorization code is refused on replay")
   assert.equal(
     (await cli("admin-one", ["whoami"])).data.user.id,
     administrator.id,
