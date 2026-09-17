@@ -26,7 +26,7 @@ func TestRealHTTPQueryRouteRoundTrip(t *testing.T) {
 	pool, path, password := serverDatabase(t)
 	checker := store.NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	service := local.WithKeyring(serverTestKeyring(t))
 	_, isExecutor := any(service).(auth.QueryExecutor)

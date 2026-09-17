@@ -24,7 +24,7 @@ func authFixture(t *testing.T) (*pgxpool.Pool, *LocalAuth, auth.LoginInput) {
 	path, password := testSecret(t)
 	i := NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, i.Attempt(t.Context()).State)
-	service, err := NewLocalAuth(pool, i, auth.DefaultSessionTTL)
+	service, err := NewLocalAuth(pool, i, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	return pool, service, auth.LoginInput{Username: "personal-admin", Password: password, Kind: auth.CLI, Peer: netip.MustParseAddr("127.0.0.1")}
 }
@@ -57,7 +57,8 @@ func TestSessionKindsExpiryCurrentAccountAndRevocation(t *testing.T) {
 	input.Kind = auth.Browser
 	browser := login(t, s, input)
 	require.NotEqual(t, cli.Token, browser.Token)
-	require.WithinDuration(t, time.Now().Add(8*time.Hour), cli.ExpiresAt, 2*time.Second)
+	require.WithinDuration(t, time.Now().Add(auth.DefaultSessionMaxLifetime), cli.ExpiresAt, 2*time.Second)
+	require.WithinDuration(t, time.Now().Add(auth.DefaultSessionIdleTimeout), cli.IdleExpiresAt, 2*time.Second)
 	actor := session(t, s, cli, auth.CLI)
 	_, err := s.Authenticate(t.Context(), cli.Token, auth.Browser)
 	code(t, err, auth.Unauthenticated)
@@ -120,7 +121,7 @@ func TestUnknownAccountIsIndistinguishableAndStoresNothing(t *testing.T) {
 
 func TestSharedThrottleExpiresAndBoundsState(t *testing.T) {
 	pool, s, input := authFixture(t)
-	replica, err := NewLocalAuth(pool, s.checker, s.ttl)
+	replica, err := NewLocalAuth(pool, s.checker, s.idle, s.lifetime)
 	require.NoError(t, err)
 	input.Password = "not the account password"
 	for index := 0; index < 10; index++ {
@@ -255,7 +256,7 @@ func TestEscapedMaximumPasswordAgainstRealStore(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(password), 0600))
 	i := NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, i.Attempt(t.Context()).State)
-	s, err := NewLocalAuth(pool, i, auth.DefaultSessionTTL)
+	s, err := NewLocalAuth(pool, i, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	data, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
 	require.NoError(t, err)

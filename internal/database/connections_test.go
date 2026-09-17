@@ -585,7 +585,7 @@ func TestCheckConnectionFailsClosedWithoutTheKey(t *testing.T) {
 	record := createConnection(t, s, admin, connectionRequest("payments-prod"))
 	second := createConnection(t, s, admin, connectionRequest("metrics-prod"))
 
-	other, err := NewLocalAuth(pool, s.checker, auth.DefaultSessionTTL)
+	other, err := NewLocalAuth(pool, s.checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	_, err = other.WithKeyring(newTestKeyring(t)).CheckConnection(t.Context(), admin, record.Name)
 	code(t, err, auth.CredentialsUnavailable)
@@ -601,7 +601,7 @@ func TestCheckConnectionFailsClosedWithoutTheKey(t *testing.T) {
 	require.Equal(t, "credentials_unavailable", storedOutcome(t, pool, second.ID))
 
 	// Without a keyring at all the service fails closed the same way.
-	bare, err := NewLocalAuth(pool, s.checker, auth.DefaultSessionTTL)
+	bare, err := NewLocalAuth(pool, s.checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	_, err = bare.CheckConnection(t.Context(), admin, record.Name)
 	code(t, err, auth.CredentialsUnavailable)

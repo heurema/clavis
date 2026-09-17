@@ -12,7 +12,7 @@ import (
 
 const authenticateSession = `-- name: AuthenticateSession :one
 SELECT s.id::text AS session_id, s.kind, u.id::text AS user_id,
-    u.username, u.role, s.expires_at
+    u.username, u.role, s.expires_at AS idle_expires_at, s.max_expires_at
 FROM sessions s JOIN users u ON u.id = s.user_id
 WHERE s.token_digest = $1 AND s.kind = $2
     AND s.revoked_at IS NULL AND s.expires_at > clock_timestamp() AND NOT u.disabled
@@ -24,12 +24,13 @@ type AuthenticateSessionParams struct {
 }
 
 type AuthenticateSessionRow struct {
-	SessionID string
-	Kind      string
-	UserID    string
-	Username  string
-	Role      string
-	ExpiresAt time.Time
+	SessionID     string
+	Kind          string
+	UserID        string
+	Username      string
+	Role          string
+	IdleExpiresAt time.Time
+	MaxExpiresAt  time.Time
 }
 
 func (q *Queries) AuthenticateSession(ctx context.Context, arg AuthenticateSessionParams) (AuthenticateSessionRow, error) {
@@ -41,21 +42,33 @@ func (q *Queries) AuthenticateSession(ctx context.Context, arg AuthenticateSessi
 		&i.UserID,
 		&i.Username,
 		&i.Role,
-		&i.ExpiresAt,
+		&i.IdleExpiresAt,
+		&i.MaxExpiresAt,
 	)
 	return i, err
 }
 
-const createSession = `-- name: CreateSession :one
-INSERT INTO sessions (id, token_digest, user_id, kind, expires_at)
-VALUES (
-    $1::text::uuid,
-    $2,
-    $3::text::uuid,
-    $4,
-    clock_timestamp() + $5::double precision * interval '1 second'
+const cleanupSessions = `-- name: CleanupSessions :exec
+DELETE FROM sessions WHERE id IN (
+    SELECT id FROM sessions WHERE expires_at <= clock_timestamp()
+    ORDER BY expires_at LIMIT 100
 )
-RETURNING expires_at
+`
+
+// Indexed, bounded cleanup of the oldest sessions whose idle expiry passed.
+// Revoked sessions age out through the same predicate.
+func (q *Queries) CleanupSessions(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, cleanupSessions)
+	return err
+}
+
+const createSession = `-- name: CreateSession :one
+INSERT INTO sessions (id, token_digest, user_id, kind, expires_at, max_expires_at)
+SELECT $1::text::uuid, $2, $3::text::uuid, $4,
+    issued + $5::double precision * interval '1 second',
+    issued + $6::double precision * interval '1 second'
+FROM (SELECT clock_timestamp() AS issued) issuance
+RETURNING expires_at AS idle_expires_at, max_expires_at
 `
 
 type CreateSessionParams struct {
@@ -63,20 +76,29 @@ type CreateSessionParams struct {
 	TokenDigest []byte
 	UserID      string
 	Kind        string
-	TtlSeconds  float64
+	IdleSeconds float64
+	MaxSeconds  float64
 }
 
-func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (time.Time, error) {
+type CreateSessionRow struct {
+	IdleExpiresAt time.Time
+	MaxExpiresAt  time.Time
+}
+
+// The idle expiry starts at the idle timeout and the absolute expiry at the
+// maximum lifetime; configuration keeps the first no later than the second.
+func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (CreateSessionRow, error) {
 	row := q.db.QueryRow(ctx, createSession,
 		arg.ID,
 		arg.TokenDigest,
 		arg.UserID,
 		arg.Kind,
-		arg.TtlSeconds,
+		arg.IdleSeconds,
+		arg.MaxSeconds,
 	)
-	var expires_at time.Time
-	err := row.Scan(&expires_at)
-	return expires_at, err
+	var i CreateSessionRow
+	err := row.Scan(&i.IdleExpiresAt, &i.MaxExpiresAt)
+	return i, err
 }
 
 const findLoginUser = `-- name: FindLoginUser :one
@@ -153,7 +175,7 @@ func (q *Queries) LockMutationUsers(ctx context.Context, arg LockMutationUsersPa
 
 const recheckSession = `-- name: RecheckSession :one
 SELECT s.id::text AS session_id, s.kind, u.id::text AS user_id,
-    u.username, u.role, s.expires_at
+    u.username, u.role, s.expires_at AS idle_expires_at, s.max_expires_at
 FROM sessions s JOIN users u ON u.id = s.user_id
 WHERE s.id = $1::text::uuid
     AND s.user_id = $2::text::uuid AND s.kind = $3
@@ -168,12 +190,13 @@ type RecheckSessionParams struct {
 }
 
 type RecheckSessionRow struct {
-	SessionID string
-	Kind      string
-	UserID    string
-	Username  string
-	Role      string
-	ExpiresAt time.Time
+	SessionID     string
+	Kind          string
+	UserID        string
+	Username      string
+	Role          string
+	IdleExpiresAt time.Time
+	MaxExpiresAt  time.Time
 }
 
 func (q *Queries) RecheckSession(ctx context.Context, arg RecheckSessionParams) (RecheckSessionRow, error) {
@@ -185,7 +208,56 @@ func (q *Queries) RecheckSession(ctx context.Context, arg RecheckSessionParams) 
 		&i.UserID,
 		&i.Username,
 		&i.Role,
-		&i.ExpiresAt,
+		&i.IdleExpiresAt,
+		&i.MaxExpiresAt,
+	)
+	return i, err
+}
+
+const renewSession = `-- name: RenewSession :one
+UPDATE sessions s
+SET expires_at = LEAST(clock_timestamp() + $1::double precision * interval '1 second', s.max_expires_at)
+FROM users u
+WHERE u.id = s.user_id AND s.token_digest = $2 AND s.kind = $3
+    AND s.revoked_at IS NULL AND s.expires_at > clock_timestamp() AND NOT u.disabled
+    AND s.expires_at < clock_timestamp() + ($1::double precision / 2) * interval '1 second'
+    AND s.expires_at < s.max_expires_at
+RETURNING s.id::text AS session_id, s.kind, u.id::text AS user_id,
+    u.username, u.role, s.expires_at AS idle_expires_at, s.max_expires_at
+`
+
+type RenewSessionParams struct {
+	IdleSeconds float64
+	TokenDigest []byte
+	Kind        string
+}
+
+type RenewSessionRow struct {
+	SessionID     string
+	Kind          string
+	UserID        string
+	Username      string
+	Role          string
+	IdleExpiresAt time.Time
+	MaxExpiresAt  time.Time
+}
+
+// Renewal writes only when less than half the idle window remains and the
+// session is not yet at its cap, and only to a session AuthenticateSession
+// would accept: a revoked, expired or disabled session is never touched, and
+// the absolute expiry is never written. A renewal waiting on a row that a
+// revocation holds re-evaluates revoked_at once the lock is released.
+func (q *Queries) RenewSession(ctx context.Context, arg RenewSessionParams) (RenewSessionRow, error) {
+	row := q.db.QueryRow(ctx, renewSession, arg.IdleSeconds, arg.TokenDigest, arg.Kind)
+	var i RenewSessionRow
+	err := row.Scan(
+		&i.SessionID,
+		&i.Kind,
+		&i.UserID,
+		&i.Username,
+		&i.Role,
+		&i.IdleExpiresAt,
+		&i.MaxExpiresAt,
 	)
 	return i, err
 }

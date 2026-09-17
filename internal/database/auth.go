@@ -19,17 +19,21 @@ import (
 // LocalAuth owns SQL authentication, not transport. Its methods bound their
 // entire operation even when called without an HTTP adapter.
 type LocalAuth struct {
-	pool    *pgxpool.Pool
-	checker platform.Checker
-	ttl     time.Duration
-	keys    *secrets.Keyring
+	pool     *pgxpool.Pool
+	checker  platform.Checker
+	idle     time.Duration
+	lifetime time.Duration
+	keys     *secrets.Keyring
 }
 
-func NewLocalAuth(pool *pgxpool.Pool, checker platform.Checker, ttl time.Duration) (*LocalAuth, error) {
-	if checker == nil || ttl < auth.MinSessionTTL || ttl > auth.MaxSessionTTL {
+// NewLocalAuth takes the session idle timeout and maximum lifetime and repeats
+// the configuration rule, so a direct caller cannot issue a session whose idle
+// expiry passes its absolute expiry.
+func NewLocalAuth(pool *pgxpool.Pool, checker platform.Checker, idle, lifetime time.Duration) (*LocalAuth, error) {
+	if checker == nil || !auth.ValidSessionDurations(idle, lifetime) {
 		return nil, &auth.Error{Code: auth.InvalidArgument}
 	}
-	return &LocalAuth{pool: pool, checker: checker, ttl: ttl}, nil
+	return &LocalAuth{pool: pool, checker: checker, idle: idle, lifetime: lifetime}, nil
 }
 
 var _ auth.Service = (*LocalAuth)(nil)
@@ -122,8 +126,8 @@ func (s *LocalAuth) Login(ctx context.Context, input auth.LoginInput) (auth.Logi
 		return response, unavailable()
 	}
 	expires, err := qtx.CreateSession(ctx, sqlc.CreateSessionParams{
-		ID: id, TokenDigest: digest[:], UserID: user.ID,
-		Kind: string(input.Kind), TtlSeconds: s.ttl.Seconds(),
+		ID: id, TokenDigest: digest[:], UserID: user.ID, Kind: string(input.Kind),
+		IdleSeconds: s.idle.Seconds(), MaxSeconds: s.lifetime.Seconds(),
 	})
 	if err != nil {
 		return response, unavailable()
@@ -134,7 +138,9 @@ func (s *LocalAuth) Login(ctx context.Context, input auth.LoginInput) (auth.Logi
 	if err := tx.Commit(ctx); err != nil {
 		return response, unavailable()
 	}
-	return auth.LoginResponse{Token: auth.Secret(token), Identity: auth.Identity{User: user, ExpiresAt: expires.UTC()}}, nil
+	return auth.LoginResponse{Token: auth.Secret(token), Identity: auth.Identity{
+		User: user, ExpiresAt: expires.MaxExpiresAt.UTC(), IdleExpiresAt: expires.IdleExpiresAt.UTC(),
+	}}, nil
 }
 
 func (s *LocalAuth) Authenticate(ctx context.Context, token auth.Secret, kind auth.Kind) (auth.Session, error) {
@@ -148,7 +154,20 @@ func (s *LocalAuth) Authenticate(ctx context.Context, token auth.Secret, kind au
 		return session, err
 	}
 	digest := sha256.Sum256([]byte(token))
-	row, err := sqlc.New(s.pool).AuthenticateSession(ctx, sqlc.AuthenticateSessionParams{
+	queries := sqlc.New(s.pool)
+	// Renewal is a conditional write that applies only when less than half the
+	// idle window remains; otherwise the unchanged read authenticates, so the
+	// steady state stays one read per request.
+	renewed, err := queries.RenewSession(ctx, sqlc.RenewSessionParams{
+		IdleSeconds: s.idle.Seconds(), TokenDigest: digest[:], Kind: string(kind),
+	})
+	if err == nil && ctx.Err() == nil {
+		return sessionFrom(sqlc.AuthenticateSessionRow(renewed)), nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) || ctx.Err() != nil {
+		return auth.Session{}, unavailable()
+	}
+	row, err := queries.AuthenticateSession(ctx, sqlc.AuthenticateSessionParams{
 		TokenDigest: digest[:], Kind: string(kind),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -157,11 +176,19 @@ func (s *LocalAuth) Authenticate(ctx context.Context, token auth.Secret, kind au
 	if err != nil || ctx.Err() != nil {
 		return auth.Session{}, unavailable()
 	}
+	return sessionFrom(row), nil
+}
+
+// sessionFrom reports the absolute expiry as ExpiresAt and the idle expiry
+// beside it.
+func sessionFrom(row sqlc.AuthenticateSessionRow) auth.Session {
 	return auth.Session{
 		ID: row.SessionID, Kind: auth.Kind(row.Kind),
-		User:      auth.User{ID: row.UserID, Username: row.Username, Role: auth.Role(row.Role)},
-		ExpiresAt: row.ExpiresAt.UTC(),
-	}, nil
+		Identity: auth.Identity{
+			User:      auth.User{ID: row.UserID, Username: row.Username, Role: auth.Role(row.Role)},
+			ExpiresAt: row.MaxExpiresAt.UTC(), IdleExpiresAt: row.IdleExpiresAt.UTC(),
+		},
+	}
 }
 
 func recheck(ctx context.Context, tx pgx.Tx, previous auth.Session) (auth.Session, error) {
@@ -178,7 +205,7 @@ func recheck(ctx context.Context, tx pgx.Tx, previous auth.Session) (auth.Sessio
 	return auth.Session{
 		ID: row.SessionID, Kind: auth.Kind(row.Kind),
 		User:      auth.User{ID: row.UserID, Username: row.Username, Role: auth.Role(row.Role)},
-		ExpiresAt: row.ExpiresAt,
+		ExpiresAt: row.MaxExpiresAt, IdleExpiresAt: row.IdleExpiresAt,
 	}, nil
 }
 

@@ -437,6 +437,7 @@ func TestAuditJournalDropAppliesOnceToInitializedInstallation(t *testing.T) {
 	// ledger would then be ahead of the manifest and fail closed.
 	delete(previous, "006_victorialogs_provider.sql")
 	delete(previous, "007_groups.sql")
+	delete(previous, "008_session_renewal_and_cli_authorization.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	path, _ := testSecret(t)
 	// The previous release bootstrapped and stored events in its journal.

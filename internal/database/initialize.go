@@ -66,6 +66,7 @@ func (i *Initializer) check(ctx context.Context) platform.State {
 	for _, check := range []func(context.Context) error{
 		queries.CheckUsersColumns,
 		queries.CheckSessionsColumns,
+		queries.CheckCLIAuthorizationsColumns,
 		queries.CheckLoginLimitsColumns,
 		queries.CheckConnectionsColumns,
 		queries.CheckGrantsColumns,

@@ -26,7 +26,10 @@ type Config struct {
 	BootstrapUsername     string        `env:"CLAVIS_BOOTSTRAP_USERNAME"`
 	BootstrapPasswordFile string        `env:"CLAVIS_BOOTSTRAP_PASSWORD_FILE"`
 	PublicURL             string        `env:"CLAVIS_PUBLIC_URL"`
-	SessionTTL            time.Duration `env:"CLAVIS_SESSION_TTL" envDefault:"8h"`
+	// Every session has an idle expiry renewed on use and an absolute expiry
+	// that never moves: 5m <= idle timeout <= max lifetime <= 2160h.
+	SessionIdleTimeout time.Duration `env:"CLAVIS_SESSION_IDLE_TIMEOUT" envDefault:"168h"`
+	SessionMaxLifetime time.Duration `env:"CLAVIS_SESSION_MAX_LIFETIME" envDefault:"720h"`
 	// EncryptionKeyFile is required: connection credentials are encrypted at
 	// rest under this key. The file is read once at startup by the server
 	// entry point; Load only validates the setting.
@@ -60,8 +63,10 @@ func Load(environment map[string]string) (Config, error) {
 				return Config{}, &Error{"CLAVIS_DB_CHECK_TIMEOUT", "INVALID_DURATION"}
 			case "ShutdownTimeout":
 				return Config{}, &Error{"CLAVIS_SHUTDOWN_TIMEOUT", "INVALID_DURATION"}
-			case "SessionTTL":
-				return Config{}, &Error{"CLAVIS_SESSION_TTL", "INVALID_DURATION"}
+			case "SessionIdleTimeout":
+				return Config{}, &Error{"CLAVIS_SESSION_IDLE_TIMEOUT", "INVALID_DURATION"}
+			case "SessionMaxLifetime":
+				return Config{}, &Error{"CLAVIS_SESSION_MAX_LIFETIME", "INVALID_DURATION"}
 			}
 		}
 		return Config{}, &Error{"environment", "INVALID_CONFIG"}
@@ -93,8 +98,15 @@ func (c Config) validate() error {
 	if c.ShutdownTimeout <= 0 {
 		return &Error{"CLAVIS_SHUTDOWN_TIMEOUT", "MUST_BE_POSITIVE"}
 	}
-	if c.SessionTTL < auth.MinSessionTTL || c.SessionTTL > auth.MaxSessionTTL {
-		return &Error{"CLAVIS_SESSION_TTL", "INVALID_DURATION"}
+	// A bad idle value, or one above the lifetime, names the idle variable.
+	if c.SessionIdleTimeout < auth.MinSessionDuration || c.SessionIdleTimeout > auth.MaxSessionDuration {
+		return &Error{"CLAVIS_SESSION_IDLE_TIMEOUT", "INVALID_DURATION"}
+	}
+	if c.SessionMaxLifetime < auth.MinSessionDuration || c.SessionMaxLifetime > auth.MaxSessionDuration {
+		return &Error{"CLAVIS_SESSION_MAX_LIFETIME", "INVALID_DURATION"}
+	}
+	if !auth.ValidSessionDurations(c.SessionIdleTimeout, c.SessionMaxLifetime) {
+		return &Error{"CLAVIS_SESSION_IDLE_TIMEOUT", "INVALID_DURATION"}
 	}
 	// A port-zero bind address is valid here; only the actual listener can
 	// supply a derived public origin after binding.

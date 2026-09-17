@@ -39,7 +39,7 @@ type backendFixture struct {
 }
 
 var fixtureToken = auth.Secret(strings.Repeat("A", 43))
-var fixtureIdentity = auth.Identity{User: auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}, ExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)}
+var fixtureIdentity = auth.Identity{User: auth.User{ID: "12345678-1234-4234-8234-123456789abc", Username: "personal-admin", Role: auth.Admin}, ExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), IdleExpiresAt: time.Date(2029, 12, 1, 0, 0, 0, 0, time.UTC)}
 
 func (f *backendFixture) Login(ctx context.Context, input auth.LoginInput) (auth.LoginResponse, error) {
 	f.loginCalls++
@@ -132,7 +132,7 @@ func TestServiceOwnsReadinessAndPreservesRejectionPrecedence(t *testing.T) {
 				return platform.Readiness{State: state}
 			})
 			// An unready real service must never reach its pool, even directly.
-			service, err := store.NewLocalAuth(nil, checker, auth.DefaultSessionTTL)
+			service, err := store.NewLocalAuth(nil, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 			require.NoError(t, err)
 			fixture := &backendFixture{}
 			healthCalls := 0
@@ -389,7 +389,8 @@ func TestBrowserOutcomesCookiesAndPublicBypass(t *testing.T) {
 		require.Empty(t, cookie.Domain)
 		require.Equal(t, "/", cookie.Path)
 		require.Equal(t, strings.HasPrefix(origin, "https:"), cookie.Secure)
-		require.False(t, cookie.Expires.After(fixtureIdentity.ExpiresAt))
+		// The cookie lives until the absolute expiry, never only the idle one.
+		require.True(t, cookie.Expires.Equal(fixtureIdentity.ExpiresAt), "%v", cookie.Expires)
 		for _, tc := range []struct {
 			err    error
 			status int

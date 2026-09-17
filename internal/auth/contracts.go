@@ -10,14 +10,27 @@ import (
 
 const (
 	OperationTimeout  = 5 * time.Second
-	DefaultSessionTTL = 8 * time.Hour
-	MinSessionTTL     = 5 * time.Minute
-	MaxSessionTTL     = 24 * time.Hour
 	MaxCredentialBody = 8 * 1024
 	MaxResponseBody   = 64 * 1024
 	MinPasswordBytes  = 15
 	MaxPasswordBytes  = 1024
 )
+
+// Every session has an idle expiry, renewed on use, and an absolute expiry
+// that never moves. Valid settings satisfy
+// MinSessionDuration <= idle timeout <= max lifetime <= MaxSessionDuration.
+const (
+	DefaultSessionIdleTimeout = 168 * time.Hour
+	DefaultSessionMaxLifetime = 720 * time.Hour
+	MinSessionDuration        = 5 * time.Minute
+	MaxSessionDuration        = 2160 * time.Hour
+)
+
+// ValidSessionDurations reports whether an idle timeout and a maximum lifetime
+// satisfy the session duration rule.
+func ValidSessionDurations(idle, lifetime time.Duration) bool {
+	return idle >= MinSessionDuration && idle <= lifetime && lifetime <= MaxSessionDuration
+}
 
 const (
 	LoginPath  = "/api/auth/login"
@@ -68,7 +81,9 @@ type User struct {
 	Role     Role   `json:"role"`
 }
 
-// Identity is the safe output projection shared by login and whoami. The
+// Identity is the safe output projection shared by login and whoami.
+// ExpiresAt is the session's absolute expiry and IdleExpiresAt the idle expiry
+// that use renews, never later than ExpiresAt. The
 // connection names are filled only by whoami for members: what the caller may
 // use through any path, in name order, bounded with an explicit truncation
 // flag. The group names are filled by whoami for every caller, bounded and
@@ -76,6 +91,7 @@ type User struct {
 type Identity struct {
 	User                 User      `json:"user"`
 	ExpiresAt            time.Time `json:"expiresAt"`
+	IdleExpiresAt        time.Time `json:"idleExpiresAt"`
 	Connections          []string  `json:"connections,omitempty"`
 	ConnectionsTruncated bool      `json:"connectionsTruncated,omitempty"`
 	Groups               []string  `json:"groups,omitempty"`

@@ -66,7 +66,7 @@ func realHandler(t *testing.T, pool *pgxpool.Pool, secretPath string) http.Handl
 	t.Helper()
 	checker := store.NewInitializer(pool, "personal-admin", secretPath)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	local, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	service := local.WithKeyring(serverTestKeyring(t))
 	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, service,
@@ -114,7 +114,7 @@ func sendJSON(t *testing.T, handler http.Handler, headers http.Header,
 func TestRealHTTPLoginFailsClosedBeforeInitializationAndAfterPoolClose(t *testing.T) {
 	pool, _, _ := serverDatabase(t)
 	checker := store.NewInitializer(pool, "", "")
-	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	checks := 0
 	// Health has a separate counter: authentication must use the service's
@@ -160,7 +160,7 @@ func TestRealHTTPAuthenticationAndLockDeadlines(t *testing.T) {
 		readinessCalls++
 		return checker.Check(ctx)
 	})
-	service, err := store.NewLocalAuth(pool, readiness, auth.DefaultSessionTTL)
+	service, err := store.NewLocalAuth(pool, readiness, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	handler, err := HandlerWithAuth(time.Second, readiness, service, service, service, service, service, service, service, "http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))
 	require.NoError(t, err)
@@ -224,7 +224,7 @@ func TestNormalServeInitializesAndResolvesPortZero(t *testing.T) {
 	require.NoError(t, err)
 	origin := "http://" + listener.Addr().String()
 	cfg := config.Config{HTTPAddr: "127.0.0.1:0", DBCheckTimeout: time.Second, ShutdownTimeout: time.Second,
-		BootstrapUsername: "personal-admin", BootstrapPasswordFile: path, SessionTTL: auth.DefaultSessionTTL}
+		BootstrapUsername: "personal-admin", BootstrapPasswordFile: path, SessionIdleTimeout: auth.DefaultSessionIdleTimeout, SessionMaxLifetime: auth.DefaultSessionMaxLifetime}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- Serve(ctx, listener, cfg, pool, slog.New(slog.NewJSONHandler(io.Discard, nil))) }()
@@ -257,7 +257,7 @@ func TestBrowserLoginNeverRetargetsAnExistingSession(t *testing.T) {
 	pool, path, password := serverDatabase(t)
 	checker := store.NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	// An isolated member fixture shares this test's generated password so only
 	// the username changes between the two browser sign-ins.

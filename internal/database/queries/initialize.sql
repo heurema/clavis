@@ -5,7 +5,10 @@ SELECT pg_advisory_xact_lock(sqlc.arg(lock_id)::bigint);
 SELECT id, username, password_hash, role, disabled, created_at, updated_at FROM users LIMIT 0;
 
 -- name: CheckSessionsColumns :exec
-SELECT id, token_digest, user_id, kind, created_at, expires_at, revoked_at FROM sessions LIMIT 0;
+SELECT id, token_digest, user_id, kind, created_at, expires_at, max_expires_at, revoked_at FROM sessions LIMIT 0;
+
+-- name: CheckCLIAuthorizationsColumns :exec
+SELECT code_digest, user_id, challenge, expires_at FROM cli_authorizations LIMIT 0;
 
 -- name: CheckLoginLimitsColumns :exec
 SELECT key, failures, expires_at FROM login_limits LIMIT 0;

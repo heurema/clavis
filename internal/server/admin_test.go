@@ -394,7 +394,7 @@ func TestRealHTTPAdministrationRoutesMutateAndFailClosed(t *testing.T) {
 	pool, path, password := serverDatabase(t)
 	checker := store.NewInitializer(pool, "personal-admin", path)
 	require.Equal(t, platform.Ready, checker.Attempt(t.Context()).State)
-	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionTTL)
+	service, err := store.NewLocalAuth(pool, checker, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
 	handler, err := HandlerWithAuth(time.Second, checker, service, service, service, service, service, service, service,
 		"http://127.0.0.1", fixtureViews(), slog.New(slog.NewJSONHandler(io.Discard, nil)))

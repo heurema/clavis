@@ -31,17 +31,20 @@ func TestGeneratedQueriesStayOnNativeTransaction(t *testing.T) {
 	require.Equal(t, "admin", user.Role)
 	digest := sha256.Sum256([]byte("fixture-only-session"))
 	expires, err := qtx.CreateSession(t.Context(), sqlc.CreateSessionParams{
-		ID: sessionID, UserID: id, Kind: "cli", TokenDigest: digest[:], TtlSeconds: 3600,
+		ID: sessionID, UserID: id, Kind: "cli", TokenDigest: digest[:], IdleSeconds: 3600, MaxSeconds: 7200,
 	})
 	require.NoError(t, err)
-	require.WithinDuration(t, time.Now().Add(time.Hour), expires, 2*time.Second)
+	require.WithinDuration(t, time.Now().Add(time.Hour), expires.IdleExpiresAt, 2*time.Second)
+	// Both expiries come from one issuance instant.
+	require.Equal(t, time.Hour, expires.MaxExpiresAt.Sub(expires.IdleExpiresAt))
 	require.NoError(t, qtx.MarkInstallationInitialized(t.Context()))
 	require.NoError(t, qtx.LockMutationUsers(t.Context(), sqlc.LockMutationUsersParams{ActorID: id}))
 	current, err := qtx.RecheckSession(t.Context(), sqlc.RecheckSessionParams{
 		SessionID: sessionID, UserID: id, Kind: "cli",
 	})
 	require.NoError(t, err)
-	require.Equal(t, expires, current.ExpiresAt)
+	require.Equal(t, expires.IdleExpiresAt, current.IdleExpiresAt)
+	require.Equal(t, expires.MaxExpiresAt, current.MaxExpiresAt)
 	// Independent fixture assertions prove writes cannot escape WithTx into pool.
 	for _, table := range []string{"users", "sessions", "installation"} {
 		require.Zero(t, countRows(t, pool, table))
@@ -82,13 +85,14 @@ func TestGeneratedAdvisoryLockRespectsTransactionAndContext(t *testing.T) {
 
 func TestGeneratedReadinessChecksEveryApplicationColumn(t *testing.T) {
 	for table, columns := range map[string][]string{
-		"users":         {"id", "username", "password_hash", "role", "disabled", "created_at", "updated_at"},
-		"sessions":      {"id", "token_digest", "user_id", "kind", "created_at", "expires_at", "revoked_at"},
-		"grants":        {"user_id", "group_id", "connection_id", "created_at", "created_by"},
-		"groups":        {"id", "name", "description", "created_at", "updated_at"},
-		"group_members": {"group_id", "user_id", "created_at", "created_by"},
-		"login_limits":  {"key", "failures", "expires_at"},
-		"installation":  {"singleton", "initialized_at"},
+		"users":              {"id", "username", "password_hash", "role", "disabled", "created_at", "updated_at"},
+		"sessions":           {"id", "token_digest", "user_id", "kind", "created_at", "expires_at", "max_expires_at", "revoked_at"},
+		"cli_authorizations": {"code_digest", "user_id", "challenge", "expires_at"},
+		"grants":             {"user_id", "group_id", "connection_id", "created_at", "created_by"},
+		"groups":             {"id", "name", "description", "created_at", "updated_at"},
+		"group_members":      {"group_id", "user_id", "created_at", "created_by"},
+		"login_limits":       {"key", "failures", "expires_at"},
+		"installation":       {"singleton", "initialized_at"},
 	} {
 		for _, column := range columns {
 			t.Run(table+"/"+column, func(t *testing.T) {
@@ -351,6 +355,7 @@ func TestConnectionMigrationAppliesToInitializedInstallation(t *testing.T) {
 	delete(previous, "005_drop_audit_events.sql")
 	delete(previous, "006_victorialogs_provider.sql")
 	delete(previous, "007_groups.sql")
+	delete(previous, "008_session_renewal_and_cli_authorization.sql")
 	require.NoError(t, migrateFS(t.Context(), pool, previous))
 	// The previous release still had the journal and stored rows in it.
 	execSQL(t, pool, `INSERT INTO auth_events (id, action, outcome) VALUES ($1::uuid, 'user.create', 'success')`, randomTestID(t))

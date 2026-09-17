@@ -40,6 +40,11 @@ func (s *LocalAuth) reserve(ctx context.Context, input auth.LoginInput) (limitRe
 	if err = queries.CleanupLoginLimits(ctx); err != nil {
 		return r, unavailable()
 	}
+	// Every sign-in also deletes a bounded batch of the oldest expired
+	// sessions, so long-lived sessions cannot grow their table without bound.
+	if err = queries.CleanupSessions(ctx); err != nil {
+		return r, unavailable()
+	}
 	count, err := queries.CountLoginLimits(ctx)
 	if err != nil {
 		return r, unavailable()
