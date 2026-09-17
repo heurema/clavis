@@ -356,13 +356,19 @@ try {
   assert.equal(doctor.ok, true)
   assert.equal(doctor.data.database, "ready")
   // The aggregate reports both halves and the build identity of the binary.
+  // Both executables come from one build, so the CLI names the version the
+  // server must report: "dev" only without VCS data, a tag-derived version in a
+  // checkout.
+  const buildVersion = JSON.parse(
+    await execute(join(root, "bin/clavis"), ["version"], "cli-version"),
+  ).data.version
   const healthy = await fetch(apiURL + "/healthz", {
     signal: AbortSignal.timeout(2_000),
   })
   assert.equal(healthy.status, 200)
   assert.deepEqual(await healthy.json(), {
     status: "ok",
-    version: "dev",
+    version: buildVersion,
     checks: { live: { status: "alive" }, ready: { status: "ready" } },
   })
   // The origin redirects into the administration shell without a database read.
@@ -2479,7 +2485,7 @@ try {
   assert.equal(unhealthy.status, 503)
   const unhealthyBody = await unhealthy.json()
   assert.equal(unhealthyBody.status, "unhealthy")
-  assert.equal(unhealthyBody.version, "dev")
+  assert.equal(unhealthyBody.version, buildVersion)
   assert.deepEqual(unhealthyBody.checks.live, { status: "alive" })
   assert.equal(unhealthyBody.checks.ready.error.code, "DEPENDENCY_UNAVAILABLE")
   const databaseUnavailable = JSON.parse(
