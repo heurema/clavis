@@ -54,7 +54,14 @@ func TestLoginFailureDocuments(t *testing.T) {
 			assert.NotContains(t, body, "SENTINEL_SECRET")
 			assert.Contains(t, body, `id="auth-error"`)
 			assert.Contains(t, body, `role="alert"`)
-			assert.Contains(t, body, "Your password has been cleared")
+			// One failure, one short sentence: nothing restates the form's own
+			// state, and only throttling adds the line saying when to retry.
+			assert.NotContains(t, body, "Your password has been cleared")
+			lines := 1
+			if code == auth.RateLimited {
+				lines = 2
+			}
+			assert.Equal(t, lines, strings.Count(body, "<p>"), body)
 			assert.Contains(t, body, `>Sign in</h1>`)
 			// The username format is enforced by the input, not explained in prose.
 			assert.NotContains(t, body, "username-help")
@@ -63,6 +70,12 @@ func TestLoginFailureDocuments(t *testing.T) {
 			// names the credentials it asked for.
 			if code == auth.InvalidCredentials {
 				assert.Contains(t, body, "Invalid username or password")
+			}
+			// A refused origin names the refusal, not a role the form cannot
+			// know about.
+			if code == auth.Forbidden {
+				assert.Contains(t, body, "This request is not permitted.")
+				assert.NotContains(t, body, "administration")
 			}
 		})
 	}
@@ -280,7 +293,8 @@ func TestAuthErrorDocuments(t *testing.T) {
 	assert.NotContains(t, body, "<form")
 	assert.Contains(t, body, `href="/login"`)
 	body = renderAuth(t, 403, AuthError(AuthErrorModel{ErrorCode: auth.Forbidden}))
-	assert.Contains(t, body, "administrator access is required")
+	assert.Contains(t, body, "This request is not permitted.")
+	assert.NotContains(t, body, "administrator access is required")
 	assert.Contains(t, body, `href="/login"`)
 	assert.Contains(t, body, `action="/logout"`)
 	assert.Equal(t, "Wait a few minutes before trying again.", retryMessage(-1))

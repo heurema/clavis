@@ -24,9 +24,10 @@ func authMessage(code string) string {
 	if code == auth.InvalidCredentials {
 		return "Invalid username or password"
 	}
-	// FORBIDDEN also describes rejected Origin checks, not just role checks.
+	// FORBIDDEN also describes rejected Origin checks, not just role checks, so
+	// the sentence names neither: one failure, one short line.
 	if code == auth.Forbidden {
-		return "This request is not permitted. Use this site's sign-in page; administrator access is required for administration."
+		return "This request is not permitted."
 	}
 	return failure.Message
 }

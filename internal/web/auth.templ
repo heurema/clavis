@@ -64,7 +64,6 @@ templ Login(model LoginModel) {
 						if model.ErrorCode == auth.RateLimited {
 							<p>{ retryMessage(model.RetryAfterSeconds) }</p>
 						}
-						<p>Your password has been cleared. Enter it again to retry.</p>
 					}
 				}
 			}
