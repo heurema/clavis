@@ -69,11 +69,17 @@ func fixtureModel(t *testing.T, body string, into any) {
 	require.NoError(t, json.Unmarshal([]byte(body), into))
 }
 
-func requireDocumentHeaders(t *testing.T, response *httptest.ResponseRecorder) {
+// requireDocumentHeaders asserts the headers every response on the authorize
+// routes carries. The policy is pinned as a literal: "strict-origin" on every
+// document, because "no-referrer" makes Safari and Firefox send `Origin: null`
+// on a form POST from it, which the origin check refuses with 403 and which
+// broke browser sign-in outright; "no-referrer" only on the Approve redirect,
+// which governs the loopback GET that follows it and renders no form.
+func requireDocumentHeaders(t *testing.T, response *httptest.ResponseRecorder, policy string) {
 	t.Helper()
 	require.Equal(t, "frame-ancestors 'none'", response.Header().Get("Content-Security-Policy"))
 	require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
-	require.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
+	require.Equal(t, policy, response.Header().Get("Referrer-Policy"))
 }
 
 // Scenario: invalid link parameters, on the link and on Approve.
@@ -98,7 +104,7 @@ func TestInvalidAuthorizationLinkRendersSafeDocument(t *testing.T) {
 			require.Equal(t, 400, response.Code)
 			require.Contains(t, response.Body.String(), "AUTHORIZE_INVALID")
 			require.NotContains(t, response.Body.String(), "SENTINEL")
-			requireDocumentHeaders(t, response)
+			requireDocumentHeaders(t, response, "strict-origin")
 			response = requestAuth(handler, "POST", "/authorize", query, browserHeaders())
 			require.Equal(t, 400, response.Code)
 			require.Contains(t, response.Body.String(), "AUTHORIZE_INVALID")
@@ -118,7 +124,7 @@ func TestAuthorizePageRendersForSessionOrSignIn(t *testing.T) {
 		handler := authHandler(t, f, nil, "http://127.0.0.1")
 		response := requestAuth(handler, "GET", path, "", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}})
 		require.Equal(t, 200, response.Code)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "strict-origin")
 		var model web.AuthorizeModel
 		fixtureModel(t, response.Body.String(), &model)
 		require.Equal(t, web.AuthorizeModel{Username: fixtureIdentity.User.Username, Link: link}, model)
@@ -139,7 +145,7 @@ func TestAuthorizePageRendersForSessionOrSignIn(t *testing.T) {
 		handler := authHandler(t, f, nil, "http://127.0.0.1")
 		response := requestAuth(handler, "GET", path, "", http.Header{"Cookie": {tc.cookie}})
 		require.Equal(t, 200, response.Code, name)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "strict-origin")
 		var model web.LoginModel
 		fixtureModel(t, response.Body.String(), &model)
 		require.Equal(t, web.LoginModel{Next: link.Link()}, model, name)
@@ -158,7 +164,7 @@ func TestAuthorizePageRendersForSessionOrSignIn(t *testing.T) {
 		require.Equal(t, tc.status, response.Code, name)
 		require.NotContains(t, response.Body.String(), "SENTINEL", name)
 		require.NotContains(t, response.Body.String(), link.State, name)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "strict-origin")
 	}
 }
 
@@ -173,7 +179,7 @@ func TestApproveRedirectsToTheLoopbackCallback(t *testing.T) {
 		body := "state=" + link.State + "&challenge=" + link.Challenge + "&port=" + strconv.Itoa(port)
 		response := requestAuth(handler, "POST", "/authorize", body, browserHeaders())
 		require.Equal(t, 303, response.Code)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "no-referrer")
 		require.Equal(t, 1, f.approveCalls)
 		require.Equal(t, auth.CLIAuthorization{Port: port, Challenge: link.Challenge, State: link.State}, f.lastLink)
 		location, err := url.Parse(response.Header().Get("Location"))
@@ -213,7 +219,7 @@ func TestCrossSiteApprovalStoresNothing(t *testing.T) {
 		require.Contains(t, []int{400, 403}, response.Code, name)
 		require.Empty(t, response.Header().Get("Location"), name)
 		require.Zero(t, f.authCalls+f.approveCalls, name)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "strict-origin")
 	}
 }
 
@@ -241,7 +247,7 @@ func TestApproveWithoutSessionRedirectsToSignIn(t *testing.T) {
 		require.Equal(t, want, response.Header().Get("Location"), name)
 		require.Equal(t, tc.authCalls, f.authCalls, name)
 		require.Equal(t, tc.approvals, f.approveCalls, name)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "no-referrer")
 	}
 	f := &backendFixture{}
 	f.approveErr = errors.New("SENTINEL_DRIVER")
@@ -249,7 +255,7 @@ func TestApproveWithoutSessionRedirectsToSignIn(t *testing.T) {
 	require.Equal(t, 503, response.Code)
 	require.Empty(t, response.Header().Get("Location"))
 	require.NotContains(t, response.Body.String(), "SENTINEL")
-	requireDocumentHeaders(t, response)
+	requireDocumentHeaders(t, response, "strict-origin")
 }
 
 // Scenarios: sign-in returns to a CLI authorization, and sign-in ignores any
@@ -406,6 +412,6 @@ func TestAuthorizeDeadlineReturnsTheSafeDocument(t *testing.T) {
 		require.Contains(t, response.Body.String(), "<!doctype html>", method)
 		require.Contains(t, response.Body.String(), auth.ServiceUnavailable, method)
 		require.Empty(t, response.Header().Get("Location"), method)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "strict-origin")
 	}
 }

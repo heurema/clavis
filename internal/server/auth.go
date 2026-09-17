@@ -27,6 +27,14 @@ import (
 const browserCookie = "__Host-clavis-session"
 const developmentCookie = "clavis-dev-session"
 
+// documentReferrerPolicy is the referrer policy of every document a browser may
+// submit a form from. `no-referrer` makes Safari and Firefox send `Origin: null`
+// on a form POST from such a document, which originAllowed refuses with 403, so
+// it breaks browser sign-in and approval outright. `strict-origin` leaves that
+// Origin intact and still keeps the document's path and query, where an
+// authorization link's challenge and state live, from reaching any origin.
+const documentReferrerPolicy = "strict-origin"
+
 // AuthViews is only a presentation seam. No fixture service or account is
 // installed by the production constructor.
 type AuthViews struct {
@@ -191,7 +199,7 @@ func (a *authHTTP) bounded(budget time.Duration, extendWrite bool, next http.Han
 			case "/login":
 				a.loginFailure(buffer, r, "", "", failure)
 			case auth.AuthorizePath:
-				buffer.Header().Set("Referrer-Policy", "no-referrer")
+				buffer.Header().Set("Referrer-Policy", documentReferrerPolicy)
 				a.render(buffer, r, 503, a.views.Error(web.AuthErrorModel{ErrorCode: auth.ServiceUnavailable}))
 			case "/logout":
 				if keepCookie {
@@ -676,8 +684,9 @@ func loginLocation(link auth.CLIAuthorization) string {
 // valid browser session or the sign-in document returning to the link. It
 // writes nothing but the renewal Authenticate may perform.
 func (a *authHTTP) authorizePage(w http.ResponseWriter, r *http.Request) {
-	// The link carries the state; no document on this route passes it on.
-	w.Header().Set("Referrer-Policy", "no-referrer")
+	// The link carries the state; no document on this route passes it on, and
+	// the sign-in form one of them renders must still carry its own origin.
+	w.Header().Set("Referrer-Policy", documentReferrerPolicy)
 	values, err := url.ParseQuery(r.URL.RawQuery)
 	link, ok := auth.ParseCLIAuthorization(values)
 	if err != nil || !ok {
@@ -708,7 +717,9 @@ func (a *authHTTP) authorizePage(w http.ResponseWriter, r *http.Request) {
 // form content type are checked before anything else, and the redirect is
 // built only from the parsed port, the fresh code and the validated state.
 func (a *authHTTP) approveBrowser(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Referrer-Policy", "no-referrer")
+	// A document rendered here carries forms of its own; only the redirect,
+	// which governs the loopback GET that follows it, withholds the referrer.
+	w.Header().Set("Referrer-Policy", documentReferrerPolicy)
 	fail := func(err error) {
 		status, failure := auth.FailureFor(err)
 		a.render(w, r, status, a.views.Error(web.AuthErrorModel{ErrorCode: failure.Error.Code}))
@@ -755,6 +766,7 @@ func (a *authHTTP) approveBrowser(w http.ResponseWriter, r *http.Request) {
 		fail(err)
 		return
 	}
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Location", location)
