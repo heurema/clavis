@@ -69,7 +69,7 @@ WHERE u.id = s.user_id AND s.token_digest = @digest AND s.kind = @kind
 RETURNING ...same columns as AuthenticateSession...
 ```
 
-When it returns no row, the unchanged `AuthenticateSession` select runs. The steady state is one read per request and one write per session per half idle window, whatever the agent's request rate. Under READ COMMITTED, an update waiting on a row that `RevokeUserSessions` is changing re-evaluates `revoked_at IS NULL` after the lock is released and skips the row, so renewal cannot bring a revoked session back. The guard `expires_at < max_expires_at` stops a capped session from being rewritten on every request in its last half window. `RecheckSession ... FOR UPDATE` and `recheck()` stay untouched: every mutation already passed `Authenticate` moments earlier.
+When it returns no row, the unchanged `AuthenticateSession` select runs. The steady state is one read per request and one write per session per half idle window, whatever the agent's request rate. Under READ COMMITTED, an update waiting on a row that `RevokeUserSessions` is changing re-evaluates `revoked_at IS NULL` after the lock is released and skips the row, so renewal cannot bring a revoked session back. The guard `expires_at < max_expires_at` stops a capped session from being rewritten on every request in its last half window. `RecheckSession ... FOR UPDATE` and `recheck()` keep their predicates and their lock and only report the second expiry as well: every mutation already passed `Authenticate` moments earlier, so nothing renews inside the locked transaction.
 
 Alternative: renew on every request. It writes once per request, which an agent loop turns into constant row churn for no benefit.
 
@@ -97,7 +97,7 @@ CREATE TABLE cli_authorizations (
 CREATE INDEX cli_authorizations_expiry ON cli_authorizations(expires_at);
 ```
 
-`challenge` stores the 32 decoded bytes of the base64url value. The port is not stored: the 303 `Location` is built with `fmt.Sprintf("http://127.0.0.1:%d/callback?code=%s&state=%s", port, code, state)` from the parsed integer and two values already validated as base64url. The authorize document sets `frame-ancestors 'none'` like every authentication document, so Approve cannot be clickjacked. There is no Deny button: closing the tab leaves nothing behind.
+`challenge` stores the 32 decoded bytes of the base64url value. The port is not stored: the 303 `Location` is built from the parsed integer port and two values already validated as base64url, encoded through `url.Values`. The authorize document sets `frame-ancestors 'none'` like every authentication document, so Approve cannot be clickjacked. There is no Deny button: closing the tab leaves nothing behind.
 
 Ports below 1024 are refused because an unprivileged CLI never binds them. The document shows the port so a person who did not start a sign-in can notice.
 
@@ -128,7 +128,7 @@ Every failure returns 401 `INVALID_CREDENTIALS`. A wrong verifier still commits 
 3. `net.Listen("tcp", "127.0.0.1:0")` and serve with an `http.Server` whose handler accepts only `GET /callback` with a matching `state` (compared in constant time) and a 43-character `code`. Other requests get 400 or 404 and the CLI keeps waiting.
 4. Print `Open this link to sign in:` and the link to stderr. Unless `--no-browser`, run `open` (darwin) or `xdg-open` (linux) with the link as a single argument, without a shell, and ignore its failure.
 5. Wait for the callback, five minutes or an interrupt. Answer the callback with a static page, shut the listener down, then post the code and verifier to `/api/auth/token` under the usual whole-request `--timeout`.
-6. Store the session with the existing locked write: per-origin lock, atomic write, best-effort revocation of the new session on storage failure, best-effort revocation of the replaced session.
+6. Store the session with the existing locked write, taking the per-origin lock only for the write and not across the wait: atomic write, best-effort revocation of the new session on storage failure, best-effort revocation of the replaced session.
 
 The browser opener is injected through `IO` so tests drive the whole flow: a fake opener performs the GET and the Approve POST with a browser cookie against an `httptest` server backed by the real database.
 
