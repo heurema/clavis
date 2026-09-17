@@ -75,9 +75,11 @@ Alternatives: `BurntSushi/toml` (strictness through `MetaData.Undecoded` after t
 The `--server` flag loses its default value and its `Sources`, so `command.IsSet("server")` means the command line; `--profile` joins it on every networked command and on `doctor`. `CLAVIS_PROFILE` is read with `os.Getenv`; empty is unset. `CLAVIS_SERVER_URL` is not read anywhere.
 
 ```go
-type target struct{ Origin, Profile, Home string }
-func resolveTarget(server, profile string, getenv func(string) string, load func(home string) (clientConfig, *Result)) (target, *Result)
+type target struct{ Origin, Profile string }
+func resolveTarget(server, profile string) (target, *Result)
 ```
+
+It reads `CLAVIS_PROFILE` from the environment and loads the file itself, so tests exercise the real `O_NOFOLLOW` read through `t.Setenv` and files on disk; a wrapper, `resolveCommandTarget`, first refuses a flag given with an empty value. Session storage derives the home again rather than taking it from the target.
 
 Steps: compute the home (decision 1); `--server` and `--profile` together is `INVALID_ARGUMENT`; `--server` alone canonicalizes and returns with an empty profile, never loading the file; otherwise take the name from `--profile`, then `CLAVIS_PROFILE`, then `current` (loading the file once, only now); an unknown name is `INVALID_ARGUMENT` with a `profiles list` hint; no name at all is `INVALID_ARGUMENT` with `clavis profiles set <name> --server <url>`. `login` uses the same function. It runs first in `runAuth` and in the `doctor` action: before argument validation that reads input, before any password, secret or SQL input, and before `openCache`.
 
