@@ -352,17 +352,18 @@ After building and initializing the server, name it once as a profile:
 ./bin/clavis logout
 ```
 
-Login prompts without echo; automation can use `--password-stdin` with redirected
-protected input. Passwords and tokens are never command-line values or normal
-output. Results default to one JSON document; `--output text` is also available.
-Sessions are stored privately under `~/.clavis/sessions` and keyed by server
-origin, so two profiles naming one server share its session. `whoami` verifies the session with the server rather than
-trusting cached identity, and for members it lists the names of the connections
-they can use (`connections`, with `connectionsTruncated` when the list is
-cut), direct grants and group grants together; administrators see no list
-because they need no grants. Every caller's group names come back as `groups`
-(with `groupsTruncated`), so an agent's first call already says which groups it
-belongs to; the two lists are bounded independently.
+Login prompts without echo; automation can use `--password-stdin` with
+redirected protected input. Passwords and tokens are never command-line values
+or normal output. Results default to one JSON document; `--output text` is also
+available. Sessions are stored privately under `~/.clavis/sessions` and keyed by
+server origin, so two profiles naming one server share its session. `whoami`
+verifies the session with the server rather than trusting cached identity, and
+for members it lists the names of the connections they can use (`connections`,
+with `connectionsTruncated` when the list is cut), direct grants and group
+grants together; administrators see no list because they need no grants. Every
+caller's group names come back as `groups` (with `groupsTruncated`), so an
+agent's first call already says which groups it belongs to; the two lists are
+bounded independently.
 
 An administrator can run `./bin/clavis sessions revoke --user <uuid-or-username>`
 to revoke that user's existing browser and CLI sessions. Sessions have a fixed eight-hour
@@ -390,14 +391,15 @@ server = "https://clavis.example.com"
 The file holds no secrets and may be written by hand; it is read strictly, so
 an unknown key, an invalid name or server, or a `current` naming no profile
 fails every command that reads the file (a one-off `--server` does not) with
-`INVALID_ARGUMENT` naming the file and key, and nothing from it is used. The home must be owned by you and not group- or
-world-writable, `sessions` must be mode 0700, and no component of either path
-may be a symlink. The `profiles` commands manage the file the way `kubectl
-config` manages contexts, and never contact a server:
+`INVALID_ARGUMENT` naming the file and key, and nothing from it is used. The
+home must be owned by you and not group- or world-writable, `sessions` must be
+mode 0700, and no component of either path may be a symlink. The `profiles`
+commands manage the file the way `kubectl config` manages contexts, and never
+contact a server:
 
 | Command | kubectl counterpart | Effect |
 |---|---|---|
-| `clavis profiles set <name> --server <url>` | `config set-context` | Creates the profile or changes its server; the first one becomes current |
+| `clavis profiles set <name> --server <url>` | `config set-context` | Creates the profile or changes its server; it becomes current when no profile is current, as after `profiles remove` cleared `current` |
 | `clavis profiles use <name>` | `config use-context` | Makes the profile current; an unknown name fails |
 | `clavis profiles current` | `config current-context` | Shows the profile in effect and whether `CLAVIS_PROFILE` or the file chose it |
 | `clavis profiles list` | `config get-contexts` | Lists profiles, marks the current one, shows each stored session's user and expiry |

@@ -2416,11 +2416,13 @@ try {
   assert.equal(profileUse.data.profile.current, true)
   assert.equal(profileUse.data.profile.session, null)
   const fromConfig = await profileCLI(["profiles", "current"])
+  assertLocal(fromConfig)
   assert.equal(fromConfig.data.source, "config")
   assert.equal(fromConfig.data.profile.name, "other")
   const fromEnvironment = await profileCLI(["profiles", "current"], 0, {
     CLAVIS_PROFILE: "local",
   })
+  assertLocal(fromEnvironment)
   assert.equal(fromEnvironment.data.source, "environment")
   assert.equal(fromEnvironment.data.profile.name, "local")
   assert.equal(fromEnvironment.data.profile.session.username, "smoke-admin")
