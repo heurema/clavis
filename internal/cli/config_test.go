@@ -141,6 +141,7 @@ func TestLoadConfigRejectsInvalidFiles(t *testing.T) {
 		name, body, key, hint string
 	}{
 		{name: "unparseable", body: "current = \n", key: "line 1"},
+		{name: "keyless syntax error", body: "= 1\n", key: "line 1 is not valid TOML"},
 		{name: "unterminated table", body: "[profiles.fce\nserver = \"https://fce.example.com\"\n", key: "line 1"},
 		{name: "unknown top-level key", body: "output = \"text\"\n", key: "output is not a known key"},
 		{name: "unknown profile key", body: "[profiles.fce]\nserver = \"https://fce.example.com\"\nusername = \"alice\"\n", key: "profiles.fce.username is not a known key"},
@@ -192,6 +193,10 @@ func TestLoadConfigAcceptsValidFiles(t *testing.T) {
 	got, failed := resolveTarget("", "local-dev")
 	require.Nil(t, failed)
 	assert.Equal(t, "http://[::1]:8080", got.Origin)
+	// The bound is inclusive: a file of exactly 64 KiB still loads.
+	path = writeConfig(t, "# "+strings.Repeat("x", maxConfigBytes-3)+"\n")
+	_, failed = loadConfig(filepath.Dir(path))
+	require.Nil(t, failed)
 }
 
 func TestLoadConfigRefusesLinksAndSpecialFiles(t *testing.T) {
