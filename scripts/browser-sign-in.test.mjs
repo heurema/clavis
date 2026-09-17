@@ -68,10 +68,10 @@ async function fakeServer({ refuse = false } = {}) {
         return response.end("Invalid username or password")
       }
       // The target is in the action, never in the body the form submits.
-      assert.deepEqual([...new URLSearchParams(body).keys()], [
-        "username",
-        "password",
-      ])
+      assert.deepEqual(
+        [...new URLSearchParams(body).keys()],
+        ["username", "password"],
+      )
       const next = new URLSearchParams(request.url.split("?")[1]).get("next")
       response.writeHead(303, {
         Location: next,

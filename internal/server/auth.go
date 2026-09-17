@@ -63,6 +63,7 @@ func (a *authHTTP) mount(router chi.Router) {
 	// when it parses as an authorization link, so no database is involved.
 	router.Get("/login", func(w http.ResponseWriter, r *http.Request) {
 		next, _ := returnLink(r.URL.RawQuery)
+		w.Header().Set("Referrer-Policy", documentReferrerPolicy)
 		a.render(w, r, 200, a.views.Login(web.LoginModel{Action: loginAction(next)}))
 	})
 	router.With(a.operation).Post("/login", a.loginBrowser)
@@ -660,6 +661,9 @@ func (a *authHTTP) loginFailure(w http.ResponseWriter, r *http.Request, username
 		username = ""
 	}
 	next, _ := returnLink(r.URL.RawQuery)
+	// The sign-in URL carries the authorization link, so this document states
+	// the policy rather than trusting a browser default.
+	w.Header().Set("Referrer-Policy", documentReferrerPolicy)
 	retry := setRetry(w, err)
 	a.render(w, r, outcome.Status, a.views.Login(web.LoginModel{Username: username, ErrorCode: outcome.ErrorCode, RetryAfterSeconds: retry, Action: loginAction(next)}))
 }
