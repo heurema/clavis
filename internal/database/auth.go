@@ -115,22 +115,9 @@ func (s *LocalAuth) Login(ctx context.Context, input auth.LoginInput) (auth.Logi
 		return response, unavailable()
 	}
 	user.Username, user.Role = current.Username, auth.Role(current.Role)
-	var raw [32]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return response, unavailable()
-	}
-	token := base64.RawURLEncoding.EncodeToString(raw[:])
-	digest := sha256.Sum256([]byte(token))
-	id, err := bootstrapID()
+	issued, err := s.issueSession(ctx, qtx, user, input.Kind)
 	if err != nil {
-		return response, unavailable()
-	}
-	expires, err := qtx.CreateSession(ctx, sqlc.CreateSessionParams{
-		ID: id, TokenDigest: digest[:], UserID: user.ID, Kind: string(input.Kind),
-		IdleSeconds: s.idle.Seconds(), MaxSeconds: s.lifetime.Seconds(),
-	})
-	if err != nil {
-		return response, unavailable()
+		return response, err
 	}
 	if err := reservation.release(ctx, tx); err != nil {
 		return response, unavailable()
@@ -138,9 +125,153 @@ func (s *LocalAuth) Login(ctx context.Context, input auth.LoginInput) (auth.Logi
 	if err := tx.Commit(ctx); err != nil {
 		return response, unavailable()
 	}
-	return auth.LoginResponse{Token: auth.Secret(token), Identity: auth.Identity{
+	return issued, nil
+}
+
+// secretToken returns 32 random bytes as base64url and the digest of that
+// text, which is all the database ever stores.
+func secretToken() (auth.Secret, [32]byte, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", [32]byte{}, unavailable()
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw[:])
+	return auth.Secret(token), sha256.Sum256([]byte(token)), nil
+}
+
+// issueSession creates a session for a user whose row the caller holds
+// locked, under the configured idle timeout and maximum lifetime.
+func (s *LocalAuth) issueSession(ctx context.Context, queries *sqlc.Queries, user auth.User, kind auth.Kind) (auth.LoginResponse, error) {
+	token, digest, err := secretToken()
+	if err != nil {
+		return auth.LoginResponse{}, err
+	}
+	id, err := bootstrapID()
+	if err != nil {
+		return auth.LoginResponse{}, unavailable()
+	}
+	expires, err := queries.CreateSession(ctx, sqlc.CreateSessionParams{
+		ID: id, TokenDigest: digest[:], UserID: user.ID, Kind: string(kind),
+		IdleSeconds: s.idle.Seconds(), MaxSeconds: s.lifetime.Seconds(),
+	})
+	if err != nil {
+		return auth.LoginResponse{}, unavailable()
+	}
+	return auth.LoginResponse{Token: token, Identity: auth.Identity{
 		User: user, ExpiresAt: expires.MaxExpiresAt.UTC(), IdleExpiresAt: expires.IdleExpiresAt.UTC(),
 	}}, nil
+}
+
+// ApproveCLI records an approval for the current browser session. The user
+// row is locked before the session is rechecked, in the order every other
+// mutation takes, and expired authorizations are cleaned first, before any
+// lock is held.
+func (s *LocalAuth) ApproveCLI(ctx context.Context, previous auth.Session, link auth.CLIAuthorization) (auth.Secret, error) {
+	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
+	defer cancel()
+	challenge, err := base64.RawURLEncoding.Strict().DecodeString(link.Challenge)
+	if err != nil || len(challenge) != sha256.Size || previous.Kind != auth.Browser ||
+		!auth.ValidUserID(previous.ID) || !auth.ValidUserID(previous.User.ID) {
+		return "", &auth.Error{Code: auth.InvalidArgument}
+	}
+	if err := s.ready(ctx); err != nil {
+		return "", err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", unavailable()
+	}
+	defer rollback(ctx, tx)
+	queries := sqlc.New(tx)
+	if err := queries.CleanupCLIAuthorizations(ctx); err != nil {
+		return "", unavailable()
+	}
+	if err := lockMutationUsers(ctx, queries, previous.User.ID, ""); err != nil {
+		return "", unavailable()
+	}
+	current, err := recheck(ctx, tx, previous)
+	if err != nil {
+		return "", err
+	}
+	code, digest, err := secretToken()
+	if err != nil {
+		return "", err
+	}
+	if err := queries.CreateCLIAuthorization(ctx, sqlc.CreateCLIAuthorizationParams{
+		CodeDigest: digest[:], UserID: current.User.ID, Challenge: challenge,
+		LifetimeSeconds: auth.CLIAuthorizationLifetime.Seconds(),
+	}); err != nil {
+		return "", unavailable()
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", unavailable()
+	}
+	return code, nil
+}
+
+// ExchangeCLICode redeems an approval in one transaction. The row is deleted
+// before the verifier is compared and the transaction commits on every
+// refusal after that, so a code is consumed by its first presentation.
+func (s *LocalAuth) ExchangeCLICode(ctx context.Context, input auth.TokenRequest) (auth.LoginResponse, error) {
+	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
+	defer cancel()
+	refused := &auth.Error{Code: auth.InvalidCredentials}
+	if !auth.ValidToken(input.Code) || !auth.ValidToken(input.Verifier) {
+		return auth.LoginResponse{}, &auth.Error{Code: auth.InvalidArgument}
+	}
+	if err := s.ready(ctx); err != nil {
+		return auth.LoginResponse{}, err
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return auth.LoginResponse{}, unavailable()
+	}
+	defer rollback(ctx, tx)
+	queries := sqlc.New(tx)
+	// Cleanup runs before any lock is taken, so it never waits on a row while
+	// holding a user lock another redemption needs.
+	if err := queries.CleanupCLIAuthorizations(ctx); err != nil {
+		return auth.LoginResponse{}, unavailable()
+	}
+	digest := sha256.Sum256([]byte(input.Code))
+	approval, err := queries.ConsumeCLIAuthorization(ctx, digest[:])
+	if errors.Is(err, pgx.ErrNoRows) {
+		return auth.LoginResponse{}, refusal(ctx, tx, refused)
+	}
+	if err != nil {
+		return auth.LoginResponse{}, unavailable()
+	}
+	if !auth.VerifierMatches(input.Verifier, approval.Challenge) {
+		return auth.LoginResponse{}, refusal(ctx, tx, refused)
+	}
+	current, err := queries.LockLoginUser(ctx, approval.UserID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && current.Disabled) {
+		return auth.LoginResponse{}, refusal(ctx, tx, refused)
+	}
+	if err != nil {
+		return auth.LoginResponse{}, unavailable()
+	}
+	user := auth.User{ID: approval.UserID, Username: current.Username, Role: auth.Role(current.Role)}
+	issued, err := s.issueSession(ctx, queries, user, auth.CLI)
+	if err != nil {
+		return auth.LoginResponse{}, err
+	}
+	if err := queries.CleanupSessions(ctx); err != nil {
+		return auth.LoginResponse{}, unavailable()
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return auth.LoginResponse{}, unavailable()
+	}
+	return issued, nil
+}
+
+// refusal commits the consumed authorization before answering with the
+// refusal; a failed commit is unavailability, never a silent success.
+func refusal(ctx context.Context, tx pgx.Tx, refused error) error {
+	if err := tx.Commit(ctx); err != nil {
+		return unavailable()
+	}
+	return refused
 }
 
 func (s *LocalAuth) Authenticate(ctx context.Context, token auth.Secret, kind auth.Kind) (auth.Session, error) {

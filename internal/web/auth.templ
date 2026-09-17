@@ -70,6 +70,9 @@ templ Login(model LoginModel) {
 			}
 			@card.Card(card.Props{Class: "p-5"}) {
 				<form action="/login" method="post" class="space-y-4">
+					if returnTarget(model.Next) != "" {
+						<input type="hidden" name="next" value={ returnTarget(model.Next) }/>
+					}
 					<div class="space-y-1.5">
 						<label for="username" class="block text-[13px] font-medium">Username</label>
 						<input id="username" name="username" type="text" value={ retainedUsername(model.Username) } required minlength="3" maxlength="64" pattern="[a-z][a-z0-9._\-]{2,63}" autocomplete="username" autocapitalize="none" spellcheck="false" class="h-9 w-full min-w-0 rounded-md border bg-card px-2.5 text-sm shadow-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"/>
@@ -412,6 +415,52 @@ templ grantsTable(model AdminModel) {
 	}
 	if model.GrantsTruncated {
 		<p class="text-sm text-muted-foreground">{ grantsTruncationNotice() }</p>
+	}
+}
+
+// Authorize asks a signed-in person to approve one CLI sign-in. It names the
+// account the CLI will act as and the loopback port that asked, so a person
+// who did not start a sign-in can notice. There is no Deny: closing the page
+// leaves nothing behind.
+templ Authorize(model AuthorizeModel) {
+	@publicDocument("Approve CLI sign-in") {
+		<div class="mx-auto w-full max-w-sm space-y-5 px-6 pt-24 pb-16">
+			<h1 class="text-[22px] font-semibold tracking-tight">Approve CLI sign-in</h1>
+			@card.Card(card.Props{Class: "p-5"}) {
+				<form action="/authorize" method="post" class="space-y-4">
+					<input type="hidden" name="port" value={ strconv.Itoa(model.Link.Port) }/>
+					<input type="hidden" name="challenge" value={ model.Link.Challenge }/>
+					<input type="hidden" name="state" value={ model.Link.State }/>
+					<p class="text-sm">
+						The Clavis CLI will be signed in as
+						<span class="break-all font-semibold">{ model.Username }</span>.
+					</p>
+					<p class="text-sm text-muted-foreground">
+						The request came from a CLI listening on 127.0.0.1 port
+						<span class="font-semibold tabular-nums text-foreground">{ strconv.Itoa(model.Link.Port) }</span>.
+						Approve only if you just ran clavis login on this computer.
+					</p>
+					@button.Button(button.Props{Type: button.TypeSubmit, FullWidth: true}) {
+						Approve
+					}
+				</form>
+			}
+		</div>
+	}
+}
+
+// AuthorizeInvalid is the safe 400 document for a link that is not an
+// authorization link. It never echoes the submitted parameters.
+templ AuthorizeInvalid() {
+	@publicDocument("Sign-in link not valid") {
+		<div class="mx-auto w-full max-w-sm space-y-5 px-6 pt-24 pb-16">
+			<h1 class="text-[22px] font-semibold tracking-tight">Sign-in link not valid</h1>
+			@alert.Alert(alert.Props{ID: "auth-error", Variant: alert.VariantDestructive, Attributes: templ.Attributes{"tabindex": "-1", "autofocus": true}}) {
+				@alert.Description() {
+					<p>This CLI sign-in link is incomplete or malformed. Run clavis login again and open the link it prints.</p>
+				}
+			}
+		</div>
 	}
 }
 

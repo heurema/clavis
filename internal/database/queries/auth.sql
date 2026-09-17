@@ -75,3 +75,24 @@ WHERE user_id = sqlc.arg(user_id)::text::uuid AND revoked_at IS NULL;
 
 -- name: RevokeSession :exec
 UPDATE sessions SET revoked_at = clock_timestamp() WHERE id = sqlc.arg(id)::text::uuid;
+
+-- name: CreateCLIAuthorization :exec
+-- Only the code's digest is stored, with the approving user and the 32
+-- decoded bytes of the challenge.
+INSERT INTO cli_authorizations (code_digest, user_id, challenge, expires_at)
+VALUES (sqlc.arg(code_digest), sqlc.arg(user_id)::text::uuid, sqlc.arg(challenge),
+    clock_timestamp() + sqlc.arg(lifetime_seconds)::double precision * interval '1 second');
+
+-- name: ConsumeCLIAuthorization :one
+-- The first presentation deletes the row whatever the verifier turns out to
+-- be, so a code is never redeemable twice.
+DELETE FROM cli_authorizations
+WHERE code_digest = sqlc.arg(code_digest) AND expires_at > clock_timestamp()
+RETURNING user_id::text AS user_id, challenge;
+
+-- name: CleanupCLIAuthorizations :exec
+-- Indexed, bounded cleanup of the oldest expired authorizations.
+DELETE FROM cli_authorizations WHERE code_digest IN (
+    SELECT code_digest FROM cli_authorizations WHERE expires_at <= clock_timestamp()
+    ORDER BY expires_at LIMIT 100
+);

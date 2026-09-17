@@ -48,6 +48,19 @@ func (q *Queries) AuthenticateSession(ctx context.Context, arg AuthenticateSessi
 	return i, err
 }
 
+const cleanupCLIAuthorizations = `-- name: CleanupCLIAuthorizations :exec
+DELETE FROM cli_authorizations WHERE code_digest IN (
+    SELECT code_digest FROM cli_authorizations WHERE expires_at <= clock_timestamp()
+    ORDER BY expires_at LIMIT 100
+)
+`
+
+// Indexed, bounded cleanup of the oldest expired authorizations.
+func (q *Queries) CleanupCLIAuthorizations(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, cleanupCLIAuthorizations)
+	return err
+}
+
 const cleanupSessions = `-- name: CleanupSessions :exec
 DELETE FROM sessions WHERE id IN (
     SELECT id FROM sessions WHERE expires_at <= clock_timestamp()
@@ -59,6 +72,51 @@ DELETE FROM sessions WHERE id IN (
 // Revoked sessions age out through the same predicate.
 func (q *Queries) CleanupSessions(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, cleanupSessions)
+	return err
+}
+
+const consumeCLIAuthorization = `-- name: ConsumeCLIAuthorization :one
+DELETE FROM cli_authorizations
+WHERE code_digest = $1 AND expires_at > clock_timestamp()
+RETURNING user_id::text AS user_id, challenge
+`
+
+type ConsumeCLIAuthorizationRow struct {
+	UserID    string
+	Challenge []byte
+}
+
+// The first presentation deletes the row whatever the verifier turns out to
+// be, so a code is never redeemable twice.
+func (q *Queries) ConsumeCLIAuthorization(ctx context.Context, codeDigest []byte) (ConsumeCLIAuthorizationRow, error) {
+	row := q.db.QueryRow(ctx, consumeCLIAuthorization, codeDigest)
+	var i ConsumeCLIAuthorizationRow
+	err := row.Scan(&i.UserID, &i.Challenge)
+	return i, err
+}
+
+const createCLIAuthorization = `-- name: CreateCLIAuthorization :exec
+INSERT INTO cli_authorizations (code_digest, user_id, challenge, expires_at)
+VALUES ($1, $2::text::uuid, $3,
+    clock_timestamp() + $4::double precision * interval '1 second')
+`
+
+type CreateCLIAuthorizationParams struct {
+	CodeDigest      []byte
+	UserID          string
+	Challenge       []byte
+	LifetimeSeconds float64
+}
+
+// Only the code's digest is stored, with the approving user and the 32
+// decoded bytes of the challenge.
+func (q *Queries) CreateCLIAuthorization(ctx context.Context, arg CreateCLIAuthorizationParams) error {
+	_, err := q.db.Exec(ctx, createCLIAuthorization,
+		arg.CodeDigest,
+		arg.UserID,
+		arg.Challenge,
+		arg.LifetimeSeconds,
+	)
 	return err
 }
 

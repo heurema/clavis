@@ -30,9 +30,11 @@ const developmentCookie = "clavis-dev-session"
 // AuthViews is only a presentation seam. No fixture service or account is
 // installed by the production constructor.
 type AuthViews struct {
-	Login func(web.LoginModel) templ.Component
-	Admin func(web.AdminModel) templ.Component
-	Error func(web.AuthErrorModel) templ.Component
+	Login            func(web.LoginModel) templ.Component
+	Admin            func(web.AdminModel) templ.Component
+	Error            func(web.AuthErrorModel) templ.Component
+	Authorize        func(web.AuthorizeModel) templ.Component
+	AuthorizeInvalid func() templ.Component
 }
 
 type authHTTP struct {
@@ -49,10 +51,16 @@ type authHTTP struct {
 }
 
 func (a *authHTTP) mount(router chi.Router) {
+	// The sign-in document reads only its own query: a return target is kept
+	// when it parses as an authorization link, so no database is involved.
 	router.Get("/login", func(w http.ResponseWriter, r *http.Request) {
-		a.render(w, r, 200, a.views.Login(web.LoginModel{}))
+		next, _ := returnLink(r.URL.RawQuery)
+		a.render(w, r, 200, a.views.Login(web.LoginModel{Next: next}))
 	})
 	router.With(a.operation).Post("/login", a.loginBrowser)
+	router.With(a.operation).Get(auth.AuthorizePath, a.authorizePage)
+	router.With(a.operation).Post(auth.AuthorizePath, a.approveBrowser)
+	router.With(a.operation).Post(auth.TokenPath, a.tokenJSON)
 	router.With(a.operation).Post("/logout", a.logoutBrowser)
 	// Old bookmarks keep working. The redirect is public: it reads neither the
 	// database nor the request's cookies, so it answers during an outage.
@@ -182,7 +190,9 @@ func (a *authHTTP) bounded(budget time.Duration, extendWrite bool, next http.Han
 			failure := &auth.Error{Code: auth.ServiceUnavailable}
 			switch r.URL.Path {
 			case "/login":
-				a.loginFailure(buffer, r, "", failure)
+				a.loginFailure(buffer, r, "", "", failure)
+			case auth.AuthorizePath:
+				a.render(buffer, r, 503, a.views.Error(web.AuthErrorModel{ErrorCode: auth.ServiceUnavailable}))
 			case "/logout":
 				if keepCookie {
 					a.render(buffer, r, 503, a.views.Error(web.AuthErrorModel{ErrorCode: auth.ServiceUnavailable}))
@@ -672,22 +682,163 @@ func (a *authHTTP) render(w http.ResponseWriter, r *http.Request, status int, co
 	_ = web.Render(w, r, status, component)
 }
 
-func (a *authHTTP) loginFailure(w http.ResponseWriter, r *http.Request, username string, err error) {
+func (a *authHTTP) loginFailure(w http.ResponseWriter, r *http.Request, username, next string, err error) {
 	outcome := auth.LoginOutcome(err)
 	if !auth.ValidUsername(username) {
 		username = ""
 	}
 	retry := setRetry(w, err)
-	a.render(w, r, outcome.Status, a.views.Login(web.LoginModel{Username: username, ErrorCode: outcome.ErrorCode, RetryAfterSeconds: retry}))
+	a.render(w, r, outcome.Status, a.views.Login(web.LoginModel{Username: username, ErrorCode: outcome.ErrorCode, RetryAfterSeconds: retry, Next: next}))
+}
+
+// returnLink reads a return target from a query or form: exactly one next
+// value that parses as an authorization link, returned rebuilt from the parsed
+// values. Anything else is no return target.
+func returnLink(query string) (string, bool) {
+	values, err := url.ParseQuery(query)
+	if err != nil || len(values["next"]) != 1 {
+		return "", false
+	}
+	link, ok := auth.ParseAuthorizeLink(values.Get("next"))
+	if !ok {
+		return "", false
+	}
+	return link.Link(), true
+}
+
+// loginLocation is where a request without a valid browser session goes to
+// sign in and come back to the same authorization link.
+func loginLocation(link auth.CLIAuthorization) string {
+	return "/login?" + url.Values{"next": {link.Link()}}.Encode()
+}
+
+// authorizePage validates the link, then renders the approval document for a
+// valid browser session or the sign-in document returning to the link. It
+// writes nothing but the renewal Authenticate may perform.
+func (a *authHTTP) authorizePage(w http.ResponseWriter, r *http.Request) {
+	values, err := url.ParseQuery(r.URL.RawQuery)
+	link, ok := auth.ParseCLIAuthorization(values)
+	if err != nil || !ok {
+		a.render(w, r, 400, a.views.AuthorizeInvalid())
+		return
+	}
+	token, err := a.token(r)
+	var session auth.Session
+	if err == nil {
+		err = a.requireService()
+	}
+	if err == nil {
+		session, err = a.authenticate(r, token, auth.Browser)
+	}
+	status, failure := auth.FailureFor(err)
+	switch {
+	case err == nil:
+		a.render(w, r, 200, a.views.Authorize(web.AuthorizeModel{Username: session.User.Username, Link: link}))
+	case failure.Error.Code == auth.Unauthenticated:
+		a.render(w, r, 200, a.views.Login(web.LoginModel{Next: link.Link()}))
+	default:
+		a.render(w, r, status, a.views.Error(web.AuthErrorModel{ErrorCode: failure.Error.Code}))
+	}
+}
+
+// approveBrowser stores an approval and sends the browser to the CLI's
+// loopback callback. It is a browser mutation: Origin, Fetch Metadata and the
+// form content type are checked before anything else, and the redirect is
+// built only from the parsed port, the fresh code and the validated state.
+func (a *authHTTP) approveBrowser(w http.ResponseWriter, r *http.Request) {
+	fail := func(err error) {
+		status, failure := auth.FailureFor(err)
+		a.render(w, r, status, a.views.Error(web.AuthErrorModel{ErrorCode: failure.Error.Code}))
+	}
+	if !a.originAllowed(r, true) {
+		fail(&auth.Error{Code: auth.Forbidden})
+		return
+	}
+	if len(r.Header.Values("Authorization")) != 0 || !mediaType(r, "application/x-www-form-urlencoded") {
+		fail(&auth.Error{Code: auth.InvalidArgument})
+		return
+	}
+	token, tokenErr := a.token(r)
+	var failure *auth.Error
+	if errors.As(tokenErr, &failure) && failure.Code == auth.InvalidArgument {
+		fail(tokenErr)
+		return
+	}
+	body, err := credentialBody(r)
+	values, parseErr := url.ParseQuery(string(body))
+	link, ok := auth.ParseCLIAuthorization(values)
+	if err != nil || parseErr != nil || !ok {
+		a.render(w, r, 400, a.views.AuthorizeInvalid())
+		return
+	}
+	err = tokenErr
+	var session auth.Session
+	if err == nil {
+		err = a.requireService()
+	}
+	if err == nil {
+		session, err = a.authenticate(r, token, auth.Browser)
+	}
+	var code auth.Secret
+	if err == nil {
+		code, err = a.service.ApproveCLI(r.Context(), session, link)
+	}
+	location := ""
+	if err == nil {
+		location = link.CallbackURL(code)
+	} else if errors.As(err, &failure) && failure.Code == auth.Unauthenticated {
+		location = loginLocation(link)
+	} else {
+		fail(err)
+		return
+	}
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Location", location)
+	w.WriteHeader(http.StatusSeeOther)
+}
+
+// tokenJSON redeems an approved code under the rules loginJSON enforces:
+// JSON only, bounded and strictly decoded, and never with a cookie or an
+// Authorization header. Those are refused before the service is called.
+func (a *authHTTP) tokenJSON(w http.ResponseWriter, r *http.Request) {
+	if !a.originAllowed(r, false) {
+		jsonFailure(w, &auth.Error{Code: auth.Forbidden})
+		return
+	}
+	if len(r.Header.Values("Authorization")) != 0 || len(r.Header.Values("Cookie")) != 0 || !mediaType(r, "application/json") {
+		jsonFailure(w, &auth.Error{Code: auth.InvalidArgument})
+		return
+	}
+	var input auth.TokenRequest
+	err := decodeJSON(r, auth.MaxCredentialBody, map[string]func(string){
+		"code":     func(value string) { input.Code = auth.Secret(value) },
+		"verifier": func(value string) { input.Verifier = auth.Secret(value) },
+	})
+	if err == nil && (!auth.ValidToken(input.Code) || !auth.ValidToken(input.Verifier)) {
+		err = &auth.Error{Code: auth.InvalidArgument}
+	}
+	if err == nil {
+		err = a.requireService()
+	}
+	var response auth.LoginResponse
+	if err == nil {
+		response, err = a.service.ExchangeCLICode(r.Context(), input)
+	}
+	if err != nil {
+		jsonFailure(w, err)
+		return
+	}
+	writeJSON(w, 200, response)
 }
 
 func (a *authHTTP) loginBrowser(w http.ResponseWriter, r *http.Request) {
 	if !a.originAllowed(r, true) {
-		a.loginFailure(w, r, "", &auth.Error{Code: auth.Forbidden})
+		a.loginFailure(w, r, "", "", &auth.Error{Code: auth.Forbidden})
 		return
 	}
 	if len(r.Header.Values("Authorization")) != 0 || !mediaType(r, "application/x-www-form-urlencoded") {
-		a.loginFailure(w, r, "", &auth.Error{Code: auth.InvalidArgument})
+		a.loginFailure(w, r, "", "", &auth.Error{Code: auth.InvalidArgument})
 		return
 	}
 	// A valid existing cookie is replaced only on successful login. Duplicate
@@ -695,29 +846,36 @@ func (a *authHTTP) loginBrowser(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.token(r); err != nil {
 		var failure *auth.Error
 		if errors.As(err, &failure) && failure.Code == auth.InvalidArgument {
-			a.loginFailure(w, r, "", err)
+			a.loginFailure(w, r, "", "", err)
 			return
 		}
 	}
 	body, err := credentialBody(r)
 	values, parseErr := url.ParseQuery(string(body))
-	if err != nil || parseErr != nil || len(values) != 2 || len(values["username"]) != 1 || len(values["password"]) != 1 ||
+	// The form carries a username, a password and at most one return target.
+	fields := 2 + min(len(values["next"]), 1)
+	next, _ := returnLink(string(body))
+	if err != nil || parseErr != nil || len(values) != fields || len(values["username"]) != 1 || len(values["password"]) != 1 ||
 		!auth.ValidUsername(values.Get("username")) || !auth.ValidPassword(auth.Secret(values.Get("password"))) {
-		a.loginFailure(w, r, "", &auth.Error{Code: auth.InvalidArgument})
+		a.loginFailure(w, r, "", next, &auth.Error{Code: auth.InvalidArgument})
 		return
 	}
 	if err := a.requireService(); err != nil {
-		a.loginFailure(w, r, values.Get("username"), err)
+		a.loginFailure(w, r, values.Get("username"), next, err)
 		return
 	}
 	response, err := a.service.Login(r.Context(), auth.LoginInput{Username: values.Get("username"), Password: auth.Secret(values.Get("password")), Kind: auth.Browser, Peer: peer(r)})
 	if err != nil {
-		a.loginFailure(w, r, values.Get("username"), err)
+		a.loginFailure(w, r, values.Get("username"), next, err)
 		return
 	}
 	// The contract owns where a successful browser sign-in lands, so the handler
-	// reads it rather than repeating the location.
+	// reads it rather than repeating the location. A valid return target
+	// replaces it with the link rebuilt from its parsed values.
 	outcome := auth.LoginOutcome(nil)
+	if next != "" {
+		outcome.Location = next
+	}
 	a.cookie(w, response.Token, response.ExpiresAt, false)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Location", outcome.Location)
@@ -869,6 +1027,12 @@ func newAuthHTTP(origin string, service auth.Service, views AuthViews) (*authHTT
 	}
 	if views.Error == nil {
 		views.Error = web.AuthError
+	}
+	if views.Authorize == nil {
+		views.Authorize = web.Authorize
+	}
+	if views.AuthorizeInvalid == nil {
+		views.AuthorizeInvalid = web.AuthorizeInvalid
 	}
 	return &authHTTP{service: service, origin: canonical, secure: strings.HasPrefix(canonical, "https:"), views: views}, nil
 }

@@ -36,6 +36,7 @@ type backendFixture struct {
 	fakeGrants
 	fakeGroups
 	fakeExecutor
+	fakeCLIAuthorization
 }
 
 var fixtureToken = auth.Secret(strings.Repeat("A", 43))
@@ -91,9 +92,11 @@ func fixtureViews() AuthViews {
 		})
 	}
 	return AuthViews{
-		Login: func(m web.LoginModel) templ.Component { return component(m) },
-		Admin: func(m web.AdminModel) templ.Component { return component(m) },
-		Error: func(m web.AuthErrorModel) templ.Component { return component(m) },
+		Login:            func(m web.LoginModel) templ.Component { return component(m) },
+		Admin:            func(m web.AdminModel) templ.Component { return component(m) },
+		Error:            func(m web.AuthErrorModel) templ.Component { return component(m) },
+		Authorize:        func(m web.AuthorizeModel) templ.Component { return component(m) },
+		AuthorizeInvalid: func() templ.Component { return component("AUTHORIZE_INVALID") },
 	}
 }
 
