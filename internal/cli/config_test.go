@@ -86,7 +86,7 @@ server = "http://127.0.0.1:8080"
 		{name: "nothing current", file: withoutCurrent, env: unset, hint: profileSetupHint},
 		{name: "empty environment and nothing current", file: withoutCurrent, env: "", hint: profileSetupHint},
 		{name: "absent file", env: unset, hint: profileSetupHint},
-		{name: "server and profile", file: withCurrent, server: "https://fce.example.com", profile: "fce", env: unset, hint: profileListHint},
+		{name: "server and profile", file: withCurrent, server: "https://fce.example.com", profile: "fce", env: unset},
 		{name: "unknown flag profile", file: withCurrent, profile: "staging", env: unset, hint: profileListHint},
 		{name: "unknown environment profile", file: withCurrent, env: "staging", hint: profileListHint},
 		{name: "unknown flag profile with absent file", profile: "staging", env: unset, hint: profileListHint},

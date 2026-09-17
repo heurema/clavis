@@ -3,14 +3,12 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"os"
 	"path/filepath"
 
-	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/sys/unix"
 )
 
@@ -50,11 +48,11 @@ func saveConfig(ctx context.Context, home string, change func(*clientConfig) *Re
 	if failed := change(&config); failed != nil {
 		return failed
 	}
-	var body bytes.Buffer
-	if err := toml.NewEncoder(&body).SetIndentTables(false).Encode(config); err != nil {
+	body, err := encodeConfig(config)
+	if err != nil {
 		return writeFailure(path + " could not be encoded")
 	}
-	if err := replaceConfig(fd, body.Bytes()); err != nil {
+	if err := replaceConfig(fd, body); err != nil {
 		return writeFailure(path + " could not be written")
 	}
 	return nil

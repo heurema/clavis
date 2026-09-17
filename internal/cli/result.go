@@ -270,7 +270,11 @@ func renderServer(w io.Writer, result Result) error {
 // renderProfile prints one profile with what the local session store holds for
 // its server, which is never a verification: whoami is.
 func renderProfile(w io.Writer, entry ProfileEntry) error {
-	_, err := fmt.Fprintf(w, "Profile: %s\nServer: %s\n%s\n", entry.Name, entry.Server, profileSessionText(entry.Session))
+	session := "none (not signed in)"
+	if entry.Session != nil {
+		session = entry.Session.Username + " until " + timestamp(entry.Session.ExpiresAt)
+	}
+	_, err := fmt.Fprintf(w, "Profile: %s\nServer: %s\nStored session: %s\n", entry.Name, entry.Server, session)
 	return err
 }
 

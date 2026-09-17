@@ -214,7 +214,7 @@ func TestProfilesUseCurrentAndList(t *testing.T) {
 
 	code, out = profilesText(t, "use", "fce")
 	require.Equal(t, 0, code)
-	assert.Equal(t, "Profile: fce\nServer: https://clavis.example.com\nstored session: alice until "+stamp+"\n", out)
+	assert.Equal(t, "Profile: fce\nServer: https://clavis.example.com\nStored session: alice until "+stamp+"\n", out)
 
 	code, _, data = profilesRun(t, "current")
 	require.Equal(t, 0, code)
@@ -486,4 +486,39 @@ func TestProfilesCorruptFiles(t *testing.T) {
 
 func sortedKeys(values map[string]json.RawMessage) []string {
 	return slices.Sorted(maps.Keys(values))
+}
+
+func TestProfilesShortNamesAndFileLayout(t *testing.T) {
+	cliHome(t)
+	for _, name := range []string{"v", "qa", "a.b", "fce"} {
+		code, _, _ := profilesRun(t, "set", name, "--server", "https://"+strings.ReplaceAll(name, ".", "-")+".example.com")
+		require.Equal(t, 0, code, name)
+	}
+	home, err := clavisHome()
+	require.NoError(t, err)
+	body, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	require.NoError(t, err)
+	// One table per profile sorted by name, no empty [profiles] table, and a
+	// dotted name quoted so it stays one profile.
+	assert.Equal(t, "current = 'v'\n\n[profiles.'a.b']\nserver = 'https://a-b.example.com'\n\n"+
+		"[profiles.fce]\nserver = 'https://fce.example.com'\n\n[profiles.qa]\nserver = 'https://qa.example.com'\n\n"+
+		"[profiles.v]\nserver = 'https://v.example.com'\n", string(body))
+	config, failed := loadConfig(home)
+	require.Nil(t, failed)
+	assert.Len(t, config.Profiles, 4)
+	got, failed := resolveTarget("", "qa")
+	require.Nil(t, failed)
+	assert.Equal(t, "https://qa.example.com", got.Origin)
+
+	code, _, _ := profilesRun(t, "remove", "v")
+	require.Equal(t, 0, code)
+	body, err = os.ReadFile(filepath.Join(home, "config.toml"))
+	require.NoError(t, err)
+	assert.False(t, strings.HasPrefix(string(body), "\n"), "no current leaves no blank first line")
+
+	for _, name := range []string{"Q", "1a", "a b", strings.Repeat("a", 65)} {
+		code, result, _ := profilesRun(t, "set", name, "--server", "https://x.example.com")
+		require.Equal(t, 2, code, name)
+		assert.Equal(t, profileNameHint, result.Error.Hint)
+	}
 }

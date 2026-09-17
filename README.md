@@ -376,7 +376,8 @@ the local credential but returns failure because remote revocation is unconfirme
 The CLI keeps its state in one directory, `~/.clavis`, or wherever the absolute
 path in `CLAVIS_HOME` points: `config.toml` holds named profiles and `sessions/`
 the stored sessions. A profile is a name and a server root origin, and
-`current` names the profile used when nothing else is chosen:
+`current` names the profile used when nothing else is chosen. A name is 1 to 64
+characters: a lowercase letter, then lowercase letters, digits, `.`, `_` or `-`:
 
 ```toml
 current = "local"

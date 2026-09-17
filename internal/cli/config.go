@@ -28,8 +28,15 @@ const profileSetupHint = "clavis profiles set <name> --server <url>"
 
 const profileListHint = "Run clavis profiles list to see the configured profiles"
 
-// profileNameHint states the profile-name rule, which is the username grammar.
-const profileNameHint = "Profile names are 3 to 64 characters: a lowercase letter followed by lowercase letters, digits, '.', '_' or '-', and never UUID-shaped"
+// profileNameHint states the profile-name rule. It follows the username
+// grammar without its three-character minimum, so short names such as qa or v6
+// work as kubectl context names do.
+const profileNameHint = "Profile names are 1 to 64 characters: a lowercase letter followed by lowercase letters, digits, '.', '_' or '-'"
+
+var profileNamePattern = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,63}$`)
+
+// validProfileName reports whether a name follows the profile-name rule.
+func validProfileName(name string) bool { return profileNamePattern.MatchString(name) }
 
 // clientConfig is config.toml in the Clavis home. It never holds a secret.
 type clientConfig struct {
@@ -71,7 +78,7 @@ func resolveTarget(server, profile string) (target, *Result) {
 		return target{}, &r
 	}
 	if server != "" && profile != "" {
-		r := failureWithHint("INVALID_ARGUMENT", "Use either --server or --profile, not both", profileListHint)
+		r := failure("INVALID_ARGUMENT", "Use either --server or --profile, not both", nil)
 		return target{}, &r
 	}
 	if server != "" {
@@ -88,7 +95,7 @@ func resolveTarget(server, profile string) (target, *Result) {
 	}
 	// A name from the command line or the environment is checked before the
 	// file is read and never echoed unless it is a well-formed name.
-	if profile != "" && !auth.ValidUsername(profile) {
+	if profile != "" && !validProfileName(profile) {
 		r := failureWithHint("INVALID_ARGUMENT", source+" is not a valid profile name", profileListHint)
 		return target{}, &r
 	}
@@ -181,7 +188,7 @@ func loadConfig(home string) (clientConfig, *Result) {
 	sort.Strings(names)
 	for _, name := range names {
 		key := configKey(toml.Key{"profiles", name})
-		if !auth.ValidUsername(name) {
+		if !validProfileName(name) {
 			return invalid(key+" is not a valid profile name", profileNameHint)
 		}
 		if _, err := auth.CanonicalOrigin(config.Profiles[name].Server); err != nil {
@@ -229,4 +236,37 @@ func configKey(key toml.Key) string {
 		}
 	}
 	return strings.Join(parts, ".")
+}
+
+// encodeConfig writes the file people read and edit: current first, then one
+// table per profile sorted by name. The encoder would also emit an empty
+// [profiles] table above them, so the tables are laid out here and only the
+// values go through it, keeping its string quoting.
+func encodeConfig(config clientConfig) ([]byte, error) {
+	var body bytes.Buffer
+	if config.Current != "" {
+		line, err := toml.Marshal(map[string]string{"current": config.Current})
+		if err != nil {
+			return nil, err
+		}
+		body.Write(line)
+	}
+	for _, name := range slices.Sorted(maps.Keys(config.Profiles)) {
+		line, err := toml.Marshal(map[string]string{"server": config.Profiles[name].Server})
+		if err != nil {
+			return nil, err
+		}
+		if body.Len() > 0 {
+			body.WriteByte('\n')
+		}
+		// A profile name never holds a quote; one with a dot must be quoted
+		// or TOML reads it as a nested table.
+		key := name
+		if strings.Contains(name, ".") {
+			key = "'" + name + "'"
+		}
+		fmt.Fprintf(&body, "[profiles.%s]\n", key)
+		body.Write(line)
+	}
+	return body.Bytes(), nil
 }

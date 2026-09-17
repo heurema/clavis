@@ -94,7 +94,7 @@ func profilesCommands(check func(*urfave.Command) error, set func(Result)) *urfa
 				set(failure("INVALID_ARGUMENT", err.Error(), nil))
 				return nil
 			}
-			if arguments, _ := positionalArguments(command); arguments == 1 && !auth.ValidUsername(command.Args().First()) {
+			if arguments, _ := positionalArguments(command); arguments == 1 && !validProfileName(command.Args().First()) {
 				set(failureWithHint("INVALID_ARGUMENT", "Provide a valid profile name", profileNameHint))
 				return nil
 			}
@@ -251,7 +251,7 @@ func profileRemove(ctx context.Context, command *urfave.Command, home string) Re
 // that is not a profile name is refused without being echoed.
 func profileOverride() (string, *Result) {
 	override := os.Getenv("CLAVIS_PROFILE")
-	if override != "" && !auth.ValidUsername(override) {
+	if override != "" && !validProfileName(override) {
 		return "", argumentFailure("CLAVIS_PROFILE is not a valid profile name", profileNameHint)
 	}
 	return override, nil
