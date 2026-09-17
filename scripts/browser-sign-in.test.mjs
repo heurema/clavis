@@ -62,12 +62,17 @@ async function fakeServer({ refuse = false } = {}) {
       cookie: request.headers.cookie,
       body,
     })
-    if (request.method === "POST" && request.url === "/login") {
+    if (request.method === "POST" && request.url.startsWith("/login")) {
       if (refuse) {
         response.writeHead(401)
         return response.end("Invalid username or password")
       }
-      const next = new URLSearchParams(body).get("next")
+      // The target is in the action, never in the body the form submits.
+      assert.deepEqual([...new URLSearchParams(body).keys()], [
+        "username",
+        "password",
+      ])
+      const next = new URLSearchParams(request.url.split("?")[1]).get("next")
       response.writeHead(303, {
         Location: next,
         "Set-Cookie": "clavis-dev-session=token; Path=/; HttpOnly",
@@ -145,13 +150,13 @@ test("browserSignIn signs in, approves and waits for the CLI's result", async ()
       new RegExp(`^/callback\\?code=k{43}&state=${state}$`),
     )
     const [form, document, approve] = seen
-    assert.equal(form.url, "/login")
     assert.equal(form.origin, "https://public.example")
     const submitted = new URLSearchParams(form.body)
     assert.equal(submitted.get("username"), "smoke-admin")
     assert.equal(submitted.get("password"), "secret-password-value")
+    // The action the form posted to is what carries the return target.
     assert.match(
-      submitted.get("next"),
+      new URLSearchParams(form.url.split("?")[1]).get("next"),
       /^\/authorize\?port=\d+&challenge=c{43}&state=s{43}$/,
     )
     assert.equal(document.cookie, "clavis-dev-session=token")
