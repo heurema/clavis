@@ -1,6 +1,7 @@
 package web
 
 import (
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,9 +16,11 @@ type LoginModel struct {
 	Username          string
 	ErrorCode         string
 	RetryAfterSeconds int
-	// Next is a CLI authorization link to return to after sign-in. The
-	// document renders it only when it parses as one, and then rebuilt.
-	Next string
+	// Action is where the form posts: the sign-in route, carrying the CLI
+	// authorization link to return to after sign-in when the request that
+	// rendered the document carried one. The document renders it only when it
+	// is that route with such a link, and then with the link rebuilt.
+	Action string
 }
 
 // AuthorizeModel is the approval document for one parsed authorization link:
@@ -35,6 +38,25 @@ func returnTarget(next string) string {
 		return ""
 	}
 	return link.Link()
+}
+
+// loginAction keeps the sign-in form on the sign-in route, carrying at most one
+// return target rebuilt from its parsed values. Anything else posts to the bare
+// route, so no submitted text can steer where the credentials go.
+func loginAction(action string) string {
+	path, query, _ := strings.Cut(action, "?")
+	if path != "/login" {
+		return "/login"
+	}
+	values, err := url.ParseQuery(query)
+	if err != nil || len(values["next"]) != 1 {
+		return "/login"
+	}
+	next := returnTarget(values.Get("next"))
+	if next == "" {
+		return "/login"
+	}
+	return "/login?" + url.Values{"next": {next}}.Encode()
 }
 
 // AdminPage names the administration page a request asked for. The shell needs

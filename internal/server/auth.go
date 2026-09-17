@@ -63,7 +63,7 @@ func (a *authHTTP) mount(router chi.Router) {
 	// when it parses as an authorization link, so no database is involved.
 	router.Get("/login", func(w http.ResponseWriter, r *http.Request) {
 		next, _ := returnLink(r.URL.RawQuery)
-		a.render(w, r, 200, a.views.Login(web.LoginModel{Next: next}))
+		a.render(w, r, 200, a.views.Login(web.LoginModel{Action: loginAction(next)}))
 	})
 	router.With(a.operation).Post("/login", a.loginBrowser)
 	router.With(a.operation).Get(auth.AuthorizePath, a.authorizePage)
@@ -197,7 +197,7 @@ func (a *authHTTP) bounded(budget time.Duration, extendWrite bool, next http.Han
 			failure := &auth.Error{Code: auth.ServiceUnavailable}
 			switch r.URL.Path {
 			case "/login":
-				a.loginFailure(buffer, r, "", "", failure)
+				a.loginFailure(buffer, r, "", failure)
 			case auth.AuthorizePath:
 				buffer.Header().Set("Referrer-Policy", documentReferrerPolicy)
 				a.render(buffer, r, 503, a.views.Error(web.AuthErrorModel{ErrorCode: auth.ServiceUnavailable}))
@@ -650,13 +650,18 @@ func (a *authHTTP) render(w http.ResponseWriter, r *http.Request, status int, co
 	_ = web.Render(w, r, status, component)
 }
 
-func (a *authHTTP) loginFailure(w http.ResponseWriter, r *http.Request, username, next string, err error) {
+// loginFailure renders the sign-in document for every refused sign-in. It reads
+// the return target from the request URL itself rather than taking it as a
+// parameter, so a refusal raised before the body is read keeps it too and no
+// new refusal path can forget to pass it on.
+func (a *authHTTP) loginFailure(w http.ResponseWriter, r *http.Request, username string, err error) {
 	outcome := auth.LoginOutcome(err)
 	if !auth.ValidUsername(username) {
 		username = ""
 	}
+	next, _ := returnLink(r.URL.RawQuery)
 	retry := setRetry(w, err)
-	a.render(w, r, outcome.Status, a.views.Login(web.LoginModel{Username: username, ErrorCode: outcome.ErrorCode, RetryAfterSeconds: retry, Next: next}))
+	a.render(w, r, outcome.Status, a.views.Login(web.LoginModel{Username: username, ErrorCode: outcome.ErrorCode, RetryAfterSeconds: retry, Action: loginAction(next)}))
 }
 
 // returnLink reads a return target from a query or form: exactly one next
@@ -674,10 +679,15 @@ func returnLink(query string) (string, bool) {
 	return link.Link(), true
 }
 
-// loginLocation is where a request without a valid browser session goes to
-// sign in and come back to the same authorization link.
-func loginLocation(link auth.CLIAuthorization) string {
-	return "/login?" + url.Values{"next": {link.Link()}}.Encode()
+// loginAction is the sign-in route carrying a return target: where the sign-in
+// form posts, and where a request without a valid browser session goes to sign
+// in and come back to the same authorization link. The target travels here
+// rather than in a hidden field, so it survives every refusal.
+func loginAction(next string) string {
+	if next == "" {
+		return "/login"
+	}
+	return "/login?" + url.Values{"next": {next}}.Encode()
 }
 
 // authorizePage validates the link, then renders the approval document for a
@@ -706,7 +716,7 @@ func (a *authHTTP) authorizePage(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		a.render(w, r, 200, a.views.Authorize(web.AuthorizeModel{Username: session.User.Username, Link: link}))
 	case failure.Error.Code == auth.Unauthenticated:
-		a.render(w, r, 200, a.views.Login(web.LoginModel{Next: link.Link()}))
+		a.render(w, r, 200, a.views.Login(web.LoginModel{Action: loginAction(link.Link())}))
 	default:
 		a.render(w, r, status, a.views.Error(web.AuthErrorModel{ErrorCode: failure.Error.Code}))
 	}
@@ -761,7 +771,7 @@ func (a *authHTTP) approveBrowser(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		location = link.CallbackURL(code)
 	} else if errors.As(err, &failure) && failure.Code == auth.Unauthenticated {
-		location = loginLocation(link)
+		location = loginAction(link.Link())
 	} else {
 		fail(err)
 		return
@@ -809,11 +819,11 @@ func (a *authHTTP) tokenJSON(w http.ResponseWriter, r *http.Request) {
 
 func (a *authHTTP) loginBrowser(w http.ResponseWriter, r *http.Request) {
 	if !a.originAllowed(r, true) {
-		a.loginFailure(w, r, "", "", &auth.Error{Code: auth.Forbidden})
+		a.loginFailure(w, r, "", &auth.Error{Code: auth.Forbidden})
 		return
 	}
 	if len(r.Header.Values("Authorization")) != 0 || !mediaType(r, "application/x-www-form-urlencoded") {
-		a.loginFailure(w, r, "", "", &auth.Error{Code: auth.InvalidArgument})
+		a.loginFailure(w, r, "", &auth.Error{Code: auth.InvalidArgument})
 		return
 	}
 	// A valid existing cookie is replaced only on successful login. Duplicate
@@ -821,32 +831,33 @@ func (a *authHTTP) loginBrowser(w http.ResponseWriter, r *http.Request) {
 	if _, err := a.token(r); err != nil {
 		var failure *auth.Error
 		if errors.As(err, &failure) && failure.Code == auth.InvalidArgument {
-			a.loginFailure(w, r, "", "", err)
+			a.loginFailure(w, r, "", err)
 			return
 		}
 	}
 	body, err := credentialBody(r)
 	values, parseErr := url.ParseQuery(string(body))
-	// The form carries a username, a password and at most one return target.
-	fields := 2 + min(len(values["next"]), 1)
-	next, _ := returnLink(string(body))
-	if err != nil || parseErr != nil || len(values) != fields || len(values["username"]) != 1 || len(values["password"]) != 1 ||
+	// The form carries a username and a password, and nothing else: the return
+	// target travels in the action URL, so a `next` in the body is an unknown
+	// field like any other.
+	if err != nil || parseErr != nil || len(values) != 2 || len(values["username"]) != 1 || len(values["password"]) != 1 ||
 		!auth.ValidUsername(values.Get("username")) || !auth.ValidPassword(auth.Secret(values.Get("password"))) {
-		a.loginFailure(w, r, "", next, &auth.Error{Code: auth.InvalidArgument})
+		a.loginFailure(w, r, "", &auth.Error{Code: auth.InvalidArgument})
 		return
 	}
 	if err := a.requireService(); err != nil {
-		a.loginFailure(w, r, values.Get("username"), next, err)
+		a.loginFailure(w, r, values.Get("username"), err)
 		return
 	}
 	response, err := a.service.Login(r.Context(), auth.LoginInput{Username: values.Get("username"), Password: auth.Secret(values.Get("password")), Peer: peer(r)})
 	if err != nil {
-		a.loginFailure(w, r, values.Get("username"), next, err)
+		a.loginFailure(w, r, values.Get("username"), err)
 		return
 	}
 	// The contract owns where a successful browser sign-in lands, so the handler
 	// reads it rather than repeating the location. A valid return target
 	// replaces it with the link rebuilt from its parsed values.
+	next, _ := returnLink(r.URL.RawQuery)
 	outcome := auth.LoginOutcome(nil)
 	if next != "" {
 		outcome.Location = next

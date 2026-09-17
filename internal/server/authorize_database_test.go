@@ -60,8 +60,8 @@ func (f authorizeFlow) authorizations(t *testing.T) int {
 // cookie header and the redirect.
 func (f authorizeFlow) browserSignIn(t *testing.T, username, next string) (string, string) {
 	t.Helper()
-	body := url.Values{"username": {username}, "password": {string(f.password)}, "next": {next}}.Encode()
-	response := requestAuth(f.handler, "POST", "/login", body,
+	body := url.Values{"username": {username}, "password": {string(f.password)}}.Encode()
+	response := requestAuth(f.handler, "POST", "/login?"+url.Values{"next": {next}}.Encode(), body,
 		http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}})
 	require.Equal(t, 303, response.Code)
 	cookies := response.Result().Cookies()
@@ -99,7 +99,7 @@ func TestRealBrowserAuthorizationFlow(t *testing.T) {
 	require.Equal(t, 200, response.Code)
 	var signIn web.LoginModel
 	fixtureModel(t, response.Body.String(), &signIn)
-	require.Equal(t, web.LoginModel{Next: link.Link()}, signIn)
+	require.Equal(t, web.LoginModel{Action: wantAction(link.Link())}, signIn)
 
 	cookie, location := flow.browserSignIn(t, "member-user", link.Link())
 	require.Equal(t, link.Link(), location, "a member returns to the authorization, not /admin/users")

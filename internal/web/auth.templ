@@ -68,10 +68,7 @@ templ Login(model LoginModel) {
 				}
 			}
 			@card.Card(card.Props{Class: "p-5"}) {
-				<form action="/login" method="post" class="space-y-4">
-					if returnTarget(model.Next) != "" {
-						<input type="hidden" name="next" value={ returnTarget(model.Next) }/>
-					}
+				<form action={ loginAction(model.Action) } method="post" class="space-y-4">
 					<div class="space-y-1.5">
 						<label for="username" class="block text-[13px] font-medium">Username</label>
 						<input id="username" name="username" type="text" value={ retainedUsername(model.Username) } required minlength="3" maxlength="64" pattern="[a-z][a-z0-9._\-]{2,63}" autocomplete="username" autocapitalize="none" spellcheck="false" class="h-9 w-full min-w-0 rounded-md border bg-card px-2.5 text-sm shadow-xs focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"/>

@@ -112,12 +112,14 @@ func signInAndApprove(origin, username string, password auth.Secret, link string
 	if err != nil || !strings.HasPrefix(link, origin+auth.AuthorizePath+"?") {
 		return "", fmt.Errorf("unexpected link")
 	}
+	// The form's action carries the return target, so the sign-in posts to it.
+	action := "/login?" + url.Values{"next": {parsed.RequestURI()}}.Encode()
 	response, page, err := send("GET", link, nil)
-	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(page, `name="next"`) {
-		return "", fmt.Errorf("the signed-out link did not show the sign-in form")
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(page, `action="`+action+`"`) {
+		return "", fmt.Errorf("the signed-out link did not show the sign-in form returning to it")
 	}
-	response, _, err = send("POST", origin+"/login", url.Values{
-		"username": {username}, "password": {string(password)}, "next": {parsed.RequestURI()},
+	response, _, err = send("POST", origin+action, url.Values{
+		"username": {username}, "password": {string(password)},
 	})
 	if err != nil || response.StatusCode != http.StatusSeeOther || response.Header.Get("Location") != parsed.RequestURI() {
 		return "", fmt.Errorf("sign-in did not return to the link")
