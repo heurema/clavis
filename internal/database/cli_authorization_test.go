@@ -142,16 +142,23 @@ func TestWrongVerifierConsumesTheCode(t *testing.T) {
 	code(t, err, auth.InvalidCredentials)
 }
 
-// Scenario: expired code. A code still inside its lifetime redeems.
+// Scenario: expired code. A code still inside its lifetime redeems. A hundred
+// older expired rows keep the bounded cleanup from reaching the expired code,
+// so the redemption's own expiry check is what refuses it.
 func TestExpiredCodeIsRefused(t *testing.T) {
 	pool, s, _, browser := memberBrowser(t, "member-user")
 	verifier, link := pkce(t)
 	oneTime := approve(t, s, browser, link)
 	execSQL(t, pool, `UPDATE cli_authorizations SET expires_at = clock_timestamp() - interval '1 second'`)
+	execSQL(t, pool, `INSERT INTO cli_authorizations (code_digest, user_id, challenge, expires_at)
+		SELECT decode(lpad(to_hex(n),64,'0'),'hex'), $1, decode(lpad(to_hex(n),64,'0'),'hex'),
+			clock_timestamp()-n*interval '1 hour'
+		FROM generate_series(1,100) n`, browser.User.ID)
 	sessions := countRows(t, pool, "sessions")
 	_, err := redeem(t, s, oneTime, verifier)
 	code(t, err, auth.InvalidCredentials)
 	require.Equal(t, sessions, countRows(t, pool, "sessions"))
+	require.Equal(t, 1, countRows(t, pool, "cli_authorizations"), "the expired code outlived the cleanup and was still refused")
 
 	verifier, link = pkce(t)
 	oneTime = approve(t, s, browser, link)
