@@ -79,7 +79,9 @@ test("isolated mutation inputs compile with embedded assets and exclude develope
   // a release runner included, it is minutes. The bound is here to catch a
   // hang, not to assert a build time, so it is generous enough for a cold
   // cache and still ends a wedged compile.
-  const result = spawnSync("go", ["test", "./..."], {
+  // Packages run one at a time: with the test database variable exported, the
+  // database-backed packages share one database and its advisory lock keys.
+  const result = spawnSync("go", ["test", "-p", "1", "./..."], {
     cwd: workspace,
     encoding: "utf8",
     timeout: 900_000,
