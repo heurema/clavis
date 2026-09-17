@@ -35,8 +35,14 @@ clavis whoami                        # who you are, role, session expiry
 clavis query --help                  # every flag, when a reference does not show it
 ```
 
-The person signs in with `clavis login` in the browser, to a server they have
-configured. The person configures which servers this machine knows, as named
+The person signs in by running `clavis login` and approving in the browser;
+you use the session it stores. You never run `login` yourself and never
+handle a password to sign in. A session renews while it is used and ends after
+a week without use or thirty days after sign-in (the server's defaults), or
+when an administrator revokes it. An `UNAUTHENTICATED` failure means the
+session has ended: ask the person to run `clavis login`, and do not retry.
+
+The person also configures which servers this machine knows, as named
 profiles: `clavis profiles set <name> --server <url>` and then `clavis login`.
 You never run `profiles set`, `profiles use` or `profiles remove`: they change
 the machine for everyone. You may run `clavis profiles current` or
@@ -52,11 +58,8 @@ rather than switching the current profile. A first command failing with
 Hint: clavis profiles set <name> --server <url>
 ```
 
-Ask the person to configure a profile; do not configure one yourself, and do not
-sign in on the person's behalf with their credentials. A sign-in password is
-never a command-line value: pass it only through `--password-stdin`. Sessions
-expire (eight hours by default); an `UNAUTHENTICATED` failure means log in
-again, not retry.
+Ask the person to configure a profile and sign in; do not configure one
+yourself, and do not sign in on their behalf.
 
 ## Find a connection
 
@@ -131,7 +134,7 @@ fix the query it names, and never report the message as your own finding.
 | `SOURCE_TIMEOUT` | the connection's timeout passed | narrow the request |
 | `SOURCE_UNREACHABLE`, `SOURCE_AUTH_REJECTED` | the source is down or refuses the stored credentials | tell the user; `clavis connections get --connection <ref>` shows the last check, and an administrator can rerun `clavis connections check --connection <ref>` |
 | `CONNECTION_NOT_FOUND`, `CONNECTION_DISABLED`, `FORBIDDEN` | you may not use this connection | ask for a grant, do not retry |
-| `UNAUTHENTICATED` | no valid session | log in again |
+| `UNAUTHENTICATED` | the session ended or was revoked | ask the person to run `clavis login`; do not retry |
 
 ## Administration
 
