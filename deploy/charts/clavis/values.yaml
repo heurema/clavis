@@ -40,8 +40,11 @@ publicURL: ""
 server:
   # debug, info, warn or error.
   logLevel: info
-  # Session lifetime, between 5m and 24h.
-  sessionTTL: 8h
+  # A session ends when it goes unused for sessionIdleTimeout, and in any case
+  # sessionMaxLifetime after sign-in. Both lie between 5m and 2160h, and the
+  # idle timeout may not exceed the maximum lifetime.
+  sessionIdleTimeout: 168h
+  sessionMaxLifetime: 720h
   # Bound on the readiness database check. The readiness probe timeout is this
   # value plus one second, rounded up.
   dbCheckTimeout: 2s

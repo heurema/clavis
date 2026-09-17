@@ -16,7 +16,9 @@ strategy:
     maxSurge: 1
 server:
   logLevel: debug
-  sessionTTL: 1h30m
+  # Combined units, and an idle timeout equal to the maximum lifetime.
+  sessionIdleTimeout: 36h30m
+  sessionMaxLifetime: 2190m
   # Fractional and sub-second units, to exercise the duration helper: the
   # readiness timeout becomes 3 and the grace period 8.
   dbCheckTimeout: 1500ms

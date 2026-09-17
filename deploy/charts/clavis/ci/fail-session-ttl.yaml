@@ -1,0 +1,11 @@
+# The fixed session lifetime was replaced by sessionIdleTimeout and
+# sessionMaxLifetime. The strict schema refuses the leftover value, so an
+# upgrade cannot silently drop an operator's setting.
+publicURL: https://clavis.example.com
+server:
+  sessionTTL: 8h
+secrets:
+  database:
+    secretName: clavis
+  encryptionKey:
+    secretName: clavis

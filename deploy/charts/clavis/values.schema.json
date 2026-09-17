@@ -45,8 +45,12 @@
       "additionalProperties": false,
       "properties": {
         "logLevel": { "enum": ["debug", "info", "warn", "error"] },
-        "sessionTTL": {
-          "description": "Session lifetime. A pattern cannot express the bound, so it is stated here and enforced by a fail rule in templates/_helpers.tpl: at least 5m and at most 24h, the range the server accepts.",
+        "sessionIdleTimeout": {
+          "description": "How long an unused session lasts; use renews it. A pattern cannot express the bound, so it is stated here and enforced by a fail rule in templates/_helpers.tpl: at least 5m and at most sessionMaxLifetime, the rule the server accepts.",
+          "allOf": [{ "$ref": "#/definitions/duration" }]
+        },
+        "sessionMaxLifetime": {
+          "description": "How long a session lasts after sign-in, however often it is used. Enforced by the same fail rule: at least sessionIdleTimeout and at most 2160h.",
           "allOf": [{ "$ref": "#/definitions/duration" }]
         },
         "dbCheckTimeout": { "$ref": "#/definitions/duration" },

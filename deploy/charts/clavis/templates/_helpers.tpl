@@ -114,9 +114,13 @@ Every template includes this first, so any render fails with the same message.
 {{- end -}}
 {{- /* A JSON Schema pattern cannot express a duration range, so the bound the
 server accepts is checked here instead of being left to a startup failure. */ -}}
-{{- $sessionTTL := float64 (include "clavis.durationSeconds" .Values.server.sessionTTL) -}}
-{{- if or (lt $sessionTTL 300.0) (gt $sessionTTL 86400.0) -}}
-{{- fail (printf "clavis: server.sessionTTL must be between 5m and 24h, got %q" .Values.server.sessionTTL) -}}
+{{- $idle := float64 (include "clavis.durationSeconds" .Values.server.sessionIdleTimeout) -}}
+{{- $lifetime := float64 (include "clavis.durationSeconds" .Values.server.sessionMaxLifetime) -}}
+{{- if or (lt $idle 300.0) (gt $idle $lifetime) -}}
+{{- fail (printf "clavis: server.sessionIdleTimeout must be at least 5m and at most server.sessionMaxLifetime, got %q and %q" .Values.server.sessionIdleTimeout .Values.server.sessionMaxLifetime) -}}
+{{- end -}}
+{{- if gt $lifetime 7776000.0 -}}
+{{- fail (printf "clavis: server.sessionMaxLifetime must be at most 2160h, got %q" .Values.server.sessionMaxLifetime) -}}
 {{- end -}}
 {{- if and .Values.ingress.enabled .Values.httpRoute.enabled -}}
 {{- fail "clavis: ingress.enabled and httpRoute.enabled are mutually exclusive; enable at most one route kind" -}}

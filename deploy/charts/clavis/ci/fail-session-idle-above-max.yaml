@@ -1,0 +1,12 @@
+# An idle timeout longer than the maximum lifetime is a server startup error.
+# JSON Schema cannot compare two durations, so the fail rule in
+# templates/_helpers.tpl refuses to render, naming the idle timeout.
+publicURL: https://clavis.example.com
+server:
+  sessionIdleTimeout: 240h
+  sessionMaxLifetime: 168h
+secrets:
+  database:
+    secretName: clavis
+  encryptionKey:
+    secretName: clavis
