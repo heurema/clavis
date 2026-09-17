@@ -55,8 +55,7 @@ func (s *LocalAuth) Login(ctx context.Context, input auth.LoginInput) (auth.Logi
 	ctx, cancel := context.WithTimeout(ctx, auth.OperationTimeout)
 	defer cancel()
 	var response auth.LoginResponse
-	if !auth.ValidUsername(input.Username) || !auth.ValidPassword(input.Password) ||
-		(input.Kind != auth.CLI && input.Kind != auth.Browser) || !input.Peer.IsValid() {
+	if !auth.ValidUsername(input.Username) || !auth.ValidPassword(input.Password) || !input.Peer.IsValid() {
 		return response, &auth.Error{Code: auth.InvalidArgument}
 	}
 	if err := s.ready(ctx); err != nil {
@@ -115,7 +114,7 @@ func (s *LocalAuth) Login(ctx context.Context, input auth.LoginInput) (auth.Logi
 		return response, unavailable()
 	}
 	user.Username, user.Role = current.Username, auth.Role(current.Role)
-	issued, err := s.issueSession(ctx, qtx, user, input.Kind)
+	issued, err := s.issueSession(ctx, qtx, user, auth.Browser)
 	if err != nil {
 		return response, err
 	}

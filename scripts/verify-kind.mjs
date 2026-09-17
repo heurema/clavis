@@ -24,6 +24,7 @@ import {
   kubeconformPath,
   schemaLocations,
 } from "./chart-lint.mjs"
+import { browserSignIn } from "./browser-sign-in.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 const reports = join(root, "reports")
@@ -41,6 +42,8 @@ export const databaseImage =
 // The chart's own names for a release called clavis, and the container the
 // Deployment declares; the ephemeral debug container targets it by name.
 export const releaseName = "clavis"
+// The release's public origin: the browser sign-in form and Approve check it.
+const publicURL = "https://clavis.verify.test"
 export const selector =
   "app.kubernetes.io/name=clavis,app.kubernetes.io/instance=clavis"
 export const serverContainer = "server"
@@ -664,13 +667,32 @@ async function run() {
         )
       return result
     }
+    // Sign-in runs `clavis login --no-browser` against the port-forward and
+    // does the browser's part there, with the release's public origin, which
+    // the sign-in form and Approve check.
     async function signIn(origin, label) {
-      const signedIn = await cli(
-        origin,
-        `login-${label}`,
-        ["login", "--username", username, "--password-stdin"],
-        bootstrapPassword + "\n",
+      const child = start(
+        join(root, "bin/clavis"),
+        ["login", "--no-browser", "--server", origin],
+        `cli-login-${label}`,
+        { env: clientEnv },
       )
+      const browser = await browserSignIn({
+        child,
+        baseURL: origin,
+        origin: publicURL,
+        username,
+        password: bootstrapPassword,
+      })
+      assert(!browser.refused, `The sign-in form answered ${browser.status}`)
+      assert.equal(browser.code, 0, `clavis login failed for ${label}`)
+      const signedIn = browser.result
+      assert.equal(signedIn.ok, true)
+      for (const secret of secrets)
+        assert(
+          !JSON.stringify(signedIn).includes(secret),
+          "The CLI exposed a secret",
+        )
       assert.equal(signedIn.data.user.username, username)
       assert.equal(
         (await cli(origin, `whoami-${label}`, ["whoami"])).data.user.id,
@@ -816,7 +838,7 @@ async function run() {
           releaseName,
           chart,
           "--set",
-          "publicURL=https://clavis.verify.test",
+          `publicURL=${publicURL}`,
           "--set",
           "image.repository=clavis",
           "--set",

@@ -3,8 +3,8 @@ package database
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -26,12 +26,28 @@ func authFixture(t *testing.T) (*pgxpool.Pool, *LocalAuth, auth.LoginInput) {
 	require.Equal(t, platform.Ready, i.Attempt(t.Context()).State)
 	service, err := NewLocalAuth(pool, i, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
-	return pool, service, auth.LoginInput{Username: "personal-admin", Password: password, Kind: auth.CLI, Peer: netip.MustParseAddr("127.0.0.1")}
+	return pool, service, auth.LoginInput{Username: "personal-admin", Password: password, Peer: netip.MustParseAddr("127.0.0.1")}
 }
 
-func login(t *testing.T, s *LocalAuth, input auth.LoginInput) auth.LoginResponse {
+// browserLogin signs in through the browser form's service call, the one
+// place a password is verified.
+func browserLogin(t *testing.T, s *LocalAuth, input auth.LoginInput) auth.LoginResponse {
 	t.Helper()
 	response, err := s.Login(t.Context(), input)
+	require.NoError(t, err)
+	require.True(t, auth.ValidToken(response.Token))
+	return response
+}
+
+// login signs a CLI in the way the product does: a browser sign-in, Approve
+// and the code exchange. The browser session it passes through stays valid.
+func login(t *testing.T, s *LocalAuth, input auth.LoginInput) auth.LoginResponse {
+	t.Helper()
+	browser := session(t, s, browserLogin(t, s, input), auth.Browser)
+	verifier, link := pkce(t)
+	oneTime, err := s.ApproveCLI(t.Context(), browser, link)
+	require.NoError(t, err)
+	response, err := s.ExchangeCLICode(t.Context(), auth.TokenRequest{Code: oneTime, Verifier: verifier})
 	require.NoError(t, err)
 	require.True(t, auth.ValidToken(response.Token))
 	return response
@@ -54,8 +70,7 @@ func code(t *testing.T, err error, want string, msg ...any) {
 func TestSessionKindsExpiryCurrentAccountAndRevocation(t *testing.T) {
 	pool, s, input := authFixture(t)
 	cli := login(t, s, input)
-	input.Kind = auth.Browser
-	browser := login(t, s, input)
+	browser := browserLogin(t, s, input)
 	require.NotEqual(t, cli.Token, browser.Token)
 	require.WithinDuration(t, time.Now().Add(auth.DefaultSessionMaxLifetime), cli.ExpiresAt, 2*time.Second)
 	require.WithinDuration(t, time.Now().Add(auth.DefaultSessionIdleTimeout), cli.IdleExpiresAt, 2*time.Second)
@@ -83,7 +98,6 @@ func TestSessionKindsExpiryCurrentAccountAndRevocation(t *testing.T) {
 	code(t, err, auth.Unauthenticated)
 	session(t, s, browser, auth.Browser)
 	code(t, s.Logout(t.Context(), actor), auth.Unauthenticated)
-	input.Kind = auth.CLI
 	newCLI := login(t, s, input)
 	actor = session(t, s, newCLI, auth.CLI)
 	code(t, s.RevokeUserSessions(t.Context(), actor, randomTestID(t)), auth.UserNotFound)
@@ -162,8 +176,8 @@ func TestSharedThrottleExpiresAndBoundsState(t *testing.T) {
 
 func TestAuthLockDeadlinesRollbackAndRecovery(t *testing.T) {
 	pool, s, input := authFixture(t)
-	issued := login(t, s, input)
-	actor := session(t, s, issued, auth.CLI)
+	issued := browserLogin(t, s, input)
+	actor := session(t, s, issued, auth.Browser)
 	for _, operation := range []string{"login", "logout", "revoke", "authenticate", "pool"} {
 		t.Run(operation, func(t *testing.T) {
 			lock, err := pool.Begin(t.Context())
@@ -193,7 +207,7 @@ func TestAuthLockDeadlinesRollbackAndRecovery(t *testing.T) {
 			case "revoke":
 				err = s.RevokeUserSessions(ctx, actor, actor.User.ID)
 			case "authenticate":
-				_, err = s.Authenticate(ctx, issued.Token, auth.CLI)
+				_, err = s.Authenticate(ctx, issued.Token, auth.Browser)
 			}
 			cancel()
 			code(t, err, auth.ServiceUnavailable)
@@ -202,7 +216,7 @@ func TestAuthLockDeadlinesRollbackAndRecovery(t *testing.T) {
 				conn.Release()
 			}
 			require.NoError(t, lock.Rollback(t.Context()))
-			session(t, s, issued, auth.CLI)
+			session(t, s, issued, auth.Browser)
 		})
 	}
 	require.Equal(t, 1, countRows(t, pool, "sessions"))
@@ -237,14 +251,14 @@ func TestIssuanceSerializesWithRevocation(t *testing.T) {
 	require.NoError(t, lock.Commit(t.Context()))
 	later := <-done
 	require.NoError(t, later.err)
-	session(t, s, later.response, auth.CLI)
+	session(t, s, later.response, auth.Browser)
 	_, err = s.Authenticate(t.Context(), issued.Token, auth.CLI)
 	code(t, err, auth.Unauthenticated)
 	// And the inverse order: all sessions committed before the real service
 	// revoke are denied afterward, including the acting session.
-	newActor := session(t, s, later.response, auth.CLI)
+	newActor := session(t, s, later.response, auth.Browser)
 	require.NoError(t, s.RevokeUserSessions(t.Context(), newActor, newActor.User.ID))
-	_, err = s.Authenticate(t.Context(), later.response.Token, auth.CLI)
+	_, err = s.Authenticate(t.Context(), later.response.Token, auth.Browser)
 	code(t, err, auth.Unauthenticated)
 }
 
@@ -258,11 +272,11 @@ func TestEscapedMaximumPasswordAgainstRealStore(t *testing.T) {
 	require.Equal(t, platform.Ready, i.Attempt(t.Context()).State)
 	s, err := NewLocalAuth(pool, i, auth.DefaultSessionIdleTimeout, auth.DefaultSessionMaxLifetime)
 	require.NoError(t, err)
-	data, err := json.Marshal(auth.LoginRequest{Username: "personal-admin", Password: password})
+	// The browser form carries it percent-encoded, three bytes per byte.
+	form := url.Values{"username": {"personal-admin"}, "password": {string(password)}}.Encode()
+	require.Greater(t, len(form), 3*1024)
+	require.Less(t, len(form), auth.MaxCredentialBody)
+	values, err := url.ParseQuery(form)
 	require.NoError(t, err)
-	require.Greater(t, len(data), 4096)
-	require.Less(t, len(data), auth.MaxCredentialBody)
-	var request auth.LoginRequest
-	require.NoError(t, json.Unmarshal(data, &request))
-	login(t, s, auth.LoginInput{Username: request.Username, Password: request.Password, Kind: auth.CLI, Peer: netip.MustParseAddr("127.0.0.1")})
+	login(t, s, auth.LoginInput{Username: values.Get("username"), Password: auth.Secret(values.Get("password")), Peer: netip.MustParseAddr("127.0.0.1")})
 }

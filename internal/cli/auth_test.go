@@ -66,17 +66,25 @@ func testToken() auth.Secret {
 }
 
 func testIdentity() auth.Identity {
+	expires := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
 	return auth.Identity{User: auth.User{
 		ID: "7fde7ce1-cc8d-4de8-a9c0-df22ce8d92ba", Username: "cli-test", Role: auth.Admin,
-	}, ExpiresAt: time.Now().UTC().Add(time.Hour).Truncate(time.Second)}
+	}, ExpiresAt: expires, IdleExpiresAt: expires.Add(-30 * time.Minute)}
 }
 
 // The fixture rejects undocumented method/body/credential combinations. It is
 // intentionally not a substitute for integration with the real server lane.
 type cliAuthFixture struct {
-	mu       sync.Mutex
-	password auth.Secret
-	sessions map[auth.Secret]auth.Identity
+	mu sync.Mutex
+	// approvals maps each code the fake authorize route issued to the
+	// challenge it was approved for. refuseExchange answers every redemption
+	// with INVALID_CREDENTIALS, and the last redemption's values are kept so
+	// tests can prove they never reach an output.
+	approvals      map[auth.Secret][]byte
+	refuseExchange bool
+	lastCode       auth.Secret
+	lastVerifier   auth.Secret
+	sessions       map[auth.Secret]auth.Identity
 	// users is the administration store; the actor's role is re-read from it
 	// on every administration request, as the real service does.
 	users      []auth.UserRecord
@@ -128,10 +136,10 @@ type cliAuthFixture struct {
 	admin         int
 }
 
-func newCLIFixture(t *testing.T, password auth.Secret) (*cliAuthFixture, *httptest.Server) {
+func newCLIFixture(t *testing.T) (*cliAuthFixture, *httptest.Server) {
 	t.Helper()
 	identity := testIdentity()
-	fixture := &cliAuthFixture{password: password, sessions: map[auth.Secret]auth.Identity{},
+	fixture := &cliAuthFixture{approvals: map[auth.Secret][]byte{}, sessions: map[auth.Secret]auth.Identity{},
 		connSecrets: map[string]auth.Secret{}, connOutcome: auth.CheckReachable,
 		users: []auth.UserRecord{{
 			ID: identity.User.ID, Username: identity.User.Username, Role: identity.User.Role,
@@ -153,6 +161,21 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		_ = json.NewEncoder(w).Encode(auth.ErrorResponse{Error: safe})
 	}
+	// The authorize route stands in for a signed-in person clicking Approve:
+	// a valid link is answered with the redirect to the loopback callback.
+	if r.URL.Path == auth.AuthorizePath && r.Method == http.MethodGet {
+		link, ok := auth.ParseCLIAuthorization(r.URL.Query())
+		challenge, err := base64.RawURLEncoding.DecodeString(link.Challenge)
+		if !ok || err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		code := testToken()
+		f.approvals[code] = challenge
+		w.Header().Set("Location", link.CallbackURL(code))
+		w.WriteHeader(http.StatusSeeOther)
+		return
+	}
 	// Every route carries a credential-sized body except execution, which
 	// carries the SQL under its own documented bound.
 	execution := r.URL.Path == auth.QueryPath
@@ -170,15 +193,18 @@ func (f *cliAuthFixture) serve(w http.ResponseWriter, r *http.Request) {
 		fail(auth.InvalidArgument)
 		return
 	}
-	if r.URL.Path == auth.LoginPath {
+	if r.URL.Path == auth.TokenPath {
 		f.login++
-		var input auth.LoginRequest
+		var input auth.TokenRequest
 		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "" ||
 			r.Header.Get("Content-Type") != "application/json" || !strictJSON(body, &input) {
 			fail(auth.InvalidArgument)
 			return
 		}
-		if input.Username != "cli-test" || input.Password != f.password {
+		f.lastCode, f.lastVerifier = input.Code, input.Verifier
+		challenge, approved := f.approvals[input.Code]
+		delete(f.approvals, input.Code)
+		if !approved || f.refuseExchange || !auth.VerifierMatches(input.Verifier, challenge) {
 			fail(auth.InvalidCredentials)
 			return
 		}
@@ -421,12 +447,10 @@ func cliInvoke(t *testing.T, stdin string, args ...string) (int, Result, string)
 
 func TestAuthWorkflow(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	fixture, server := newCLIFixture(t, password)
-	exit, result, output := cliInvoke(t, string(password)+"\r\n", "login", "--username=cli-test", "--password-stdin", "--server", server.URL)
+	fixture, server := newCLIFixture(t)
+	exit, result, output, _ := loginInvoke(t, "--server", server.URL)
 	require.Equal(t, 0, exit)
 	require.True(t, result.OK)
-	require.False(t, strings.Contains(output, string(password)))
 	require.NotContains(t, output, `"token"`)
 	fixture.mu.Lock()
 	var original auth.Secret
@@ -437,14 +461,20 @@ func TestAuthWorkflow(t *testing.T) {
 	require.False(t, strings.Contains(output, string(original)))
 
 	// Failed login must preserve the old session and cache.
-	exit, result, _ = cliInvoke(t, string(testToken()), "login", "--username=cli-test", "--password-stdin", "--server", server.URL)
+	fixture.mu.Lock()
+	fixture.refuseExchange = true
+	fixture.mu.Unlock()
+	exit, result, _, _ = loginInvoke(t, "--server", server.URL)
 	require.Equal(t, 1, exit)
 	require.Equal(t, auth.InvalidCredentials, result.Error.Code)
 	exit, _, _ = cliInvoke(t, "", "whoami", "--server", server.URL)
 	require.Equal(t, 0, exit)
+	fixture.mu.Lock()
+	fixture.refuseExchange = false
+	fixture.mu.Unlock()
 
 	// Replacement cleans up only the old cached token.
-	exit, _, _ = cliInvoke(t, string(password), "login", "--username=cli-test", "--password-stdin", "--server", server.URL)
+	exit, _, _, _ = loginInvoke(t, "--server", server.URL)
 	require.Equal(t, 0, exit)
 	fixture.mu.Lock()
 	_, oldExists := fixture.sessions[original]
@@ -480,12 +510,10 @@ func TestAuthWorkflow(t *testing.T) {
 
 func TestAuthOriginIsolationAndOfflineLogout(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	_, first := newCLIFixture(t, password)
-	fixture, second := newCLIFixture(t, password)
-	for _, origin := range []string{first.URL, second.URL} {
-		exit, _, _ := cliInvoke(t, string(password), "login", "--username=cli-test", "--password-stdin", "--server", origin)
-		require.Equal(t, 0, exit)
+	_, first := newCLIFixture(t)
+	fixture, second := newCLIFixture(t)
+	for _, server := range []*httptest.Server{first, second} {
+		loginCLI(t, server)
 	}
 	first.Close()
 	exit, result, output := cliInvoke(t, "", "logout", "--server", first.URL, "--timeout=100ms")
@@ -513,8 +541,8 @@ func TestAuthOriginIsolationAndOfflineLogout(t *testing.T) {
 func TestAuthArgumentsAndInput(t *testing.T) {
 	cliHome(t)
 	for _, args := range [][]string{
-		{"login", "--server=http://127.0.0.1:1"}, {"login", "--username=cli-test", "--server=http://127.0.0.1:1"}, {"login", "--username=UPPER", "--password-stdin", "--server=http://127.0.0.1:1"},
-		{"login", "--password=value"}, {"login", "--token=value"}, {"whoami", "extra"},
+		{"login", "--username=cli-test", "--server=http://127.0.0.1:1"}, {"login", "--username=UPPER", "--password-stdin", "--server=http://127.0.0.1:1"},
+		{"login", "--password=value"}, {"login", "--token=value"}, {"login", "--code=value"}, {"whoami", "extra"},
 		{"logout", "--timeout=0", "--server=http://127.0.0.1:1"}, {"whoami", "--timeout=-1s", "--server=http://127.0.0.1:1"}, {"whoami", "--timeout=invalid"},
 		{"whoami", "--output=yaml"}, {"whoami", "--server=http://localhost:8080"},
 		{"sessions", "unknown"}, {"sessions", "revoke", "--user=INVALID", "--server=http://127.0.0.1:1"}, {"sessions", "revoke", "--server=http://127.0.0.1:1"},
@@ -545,34 +573,6 @@ func TestAuthArgumentsAndInput(t *testing.T) {
 	}
 }
 
-func TestMaxEscapedPasswordAndInjectedPrompt(t *testing.T) {
-	cliHome(t)
-	password := auth.Secret(strings.Repeat("\x01", auth.MaxPasswordBytes))
-	_, server := newCLIFixture(t, password)
-	exit, _, _ := cliInvoke(t, string(password)+"\r\n", "login", "--username=cli-test", "--password-stdin", "--server", server.URL)
-	require.Equal(t, 0, exit)
-	var stdout, stderr bytes.Buffer
-	exit = RunWithIO(context.Background(), []string{"clavis", "login", "--username=cli-test", "--server", server.URL}, IO{
-		Stdout: &stdout, Stderr: &stderr,
-		ReadPassword: func(ctx context.Context, input io.Reader, prompt io.Writer) ([]byte, error) {
-			_, err := io.WriteString(prompt, "Password: ")
-			return []byte(password), err
-		},
-	})
-	require.Equal(t, 0, exit)
-	require.Equal(t, "Password: ", stderr.String())
-	require.True(t, decode(t, stdout.String()).OK)
-	stdout.Reset()
-	exit = RunWithIO(context.Background(), []string{"clavis", "login", "--username=cli-test", "--server", server.URL}, IO{
-		Stdout: &stdout,
-		ReadPassword: func(context.Context, io.Reader, io.Writer) ([]byte, error) {
-			return nil, context.Canceled
-		},
-	})
-	require.Equal(t, 1, exit)
-	require.Equal(t, "TIMEOUT", decode(t, stdout.String()).Error.Code)
-}
-
 func TestCanonicalAuthOrigins(t *testing.T) {
 	for raw, want := range map[string]string{
 		"https://EXAMPLE.com:0443/":    "https://example.com",
@@ -596,7 +596,7 @@ func TestCanonicalAuthOrigins(t *testing.T) {
 	}
 }
 
-func TestAuthOriginFailuresAreSafeBeforeCredentialInput(t *testing.T) {
+func TestAuthOriginFailuresAreSafeBeforeListening(t *testing.T) {
 	for _, raw := range []string{
 		"http://secret.example", "https://user:secret@example.com",
 		"https://secret.example:0", "https://secret.example:", "https://secret.example/%zz",
@@ -604,19 +604,20 @@ func TestAuthOriginFailuresAreSafeBeforeCredentialInput(t *testing.T) {
 		"http://[::ffff:192.0.2.1]",
 	} {
 		t.Run(raw, func(t *testing.T) {
-			var stdout bytes.Buffer
+			var stdout, stderr bytes.Buffer
 			exit := RunWithIO(context.Background(), []string{
-				"clavis", "login", "--username=cli-test", "--server", raw,
+				"clavis", "login", "--server", raw,
 			}, IO{
-				Stdout: &stdout,
-				ReadPassword: func(context.Context, io.Reader, io.Writer) ([]byte, error) {
-					t.Fatal("invalid origins must be rejected before reading credentials")
-					return nil, nil
+				Stdout: &stdout, Stderr: &stderr,
+				OpenBrowser: func(context.Context, string) error {
+					t.Error("invalid origins must be rejected before a sign-in starts")
+					return nil
 				},
 			})
 			require.Equal(t, 2, exit)
 			require.Equal(t, "INVALID_ARGUMENT", decode(t, stdout.String()).Error.Code)
 			require.NotContains(t, stdout.String(), "secret")
+			require.Empty(t, stderr.String())
 		})
 	}
 }
@@ -628,21 +629,18 @@ func TestTokenEncodingAndCredentialEnvironmentIgnored(t *testing.T) {
 		require.False(t, auth.ValidToken(invalid))
 	}
 	cliHome(t)
+	fixture, server := newCLIFixture(t)
 	password := testToken()
-	fixture, server := newCLIFixture(t, password)
 	t.Setenv("CLAVIS_PASSWORD", string(password))
 	t.Setenv("CLAVIS_TOKEN", string(token))
-	exit, result, output := cliInvoke(t, "", "login", "--username=cli-test", "--server", server.URL)
-	require.Equal(t, 2, exit)
-	require.Equal(t, "INVALID_ARGUMENT", result.Error.Code)
-	require.False(t, strings.Contains(output, string(password)))
-	exit, result, _ = cliInvoke(t, "", "whoami", "--server", server.URL)
+	t.Setenv("CLAVIS_CODE", string(token))
+	exit, result, _ := cliInvoke(t, "", "whoami", "--server", server.URL)
 	require.Equal(t, 1, exit)
 	require.Equal(t, auth.Unauthenticated, result.Error.Code)
 	fixture.mu.Lock()
 	defer fixture.mu.Unlock()
 	require.Zero(t, fixture.login)
-	require.Zero(t, fixture.whoami)
+	require.Equal(t, 1, fixture.requests, "whoami reached the server without a session")
 }
 
 func TestWhoamiWithoutOrExpiredLocalCredentialCallsServer(t *testing.T) {
@@ -713,7 +711,7 @@ func TestAuthTransportStrictResponses(t *testing.T) {
 			}))
 			defer server.Close()
 			var response auth.LoginResponse
-			result := (authTransport{server.URL, time.Second}).request(context.Background(), auth.LoginPath, "", &auth.LoginRequest{}, &response)
+			result := (authTransport{server.URL, time.Second}).call(context.Background(), http.MethodPost, auth.TokenPath, "", &auth.TokenRequest{}, &response)
 			require.NotNil(t, result)
 			require.Equal(t, "INVALID_RESPONSE", result.Error.Code)
 			for _, format := range []string{"json", "text"} {
@@ -735,9 +733,9 @@ func TestAuthTransportRedirectDeadlineTLSAndErrors(t *testing.T) {
 		http.Redirect(w, r, destination.URL, http.StatusTemporaryRedirect)
 	}))
 	defer redirect.Close()
-	for _, path := range []string{auth.LoginPath, auth.WhoAmIPath, auth.LogoutPath, strings.Replace(auth.RevokePath, "{userID}", testIdentity().User.ID, 1)} {
+	for _, path := range []string{auth.TokenPath, auth.WhoAmIPath, auth.LogoutPath, strings.Replace(auth.RevokePath, "{userID}", testIdentity().User.ID, 1)} {
 		var value auth.Revocation
-		result := (authTransport{redirect.URL, time.Second}).request(context.Background(), path, testToken(), nil, &value)
+		result := (authTransport{redirect.URL, time.Second}).request(context.Background(), path, testToken(), &value)
 		require.Equal(t, "INVALID_RESPONSE", result.Error.Code)
 	}
 	require.Equal(t, int32(4), calls.Load(), "mutations must not retry")
@@ -751,14 +749,14 @@ func TestAuthTransportRedirectDeadlineTLSAndErrors(t *testing.T) {
 	defer stalled.Close()
 	start := time.Now()
 	var identity auth.Identity
-	result := (authTransport{stalled.URL, 60 * time.Millisecond}).request(context.Background(), auth.WhoAmIPath, testToken(), nil, &identity)
+	result := (authTransport{stalled.URL, 60 * time.Millisecond}).request(context.Background(), auth.WhoAmIPath, testToken(), &identity)
 	require.Equal(t, "TIMEOUT", result.Error.Code)
 	require.Less(t, time.Since(start), time.Second)
 	tls := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("untrusted TLS reached handler") }))
 	tls.Config.ErrorLog = log.New(io.Discard, "", 0)
 	tls.StartTLS()
 	defer tls.Close()
-	result = (authTransport{tls.URL, time.Second}).request(context.Background(), auth.WhoAmIPath, testToken(), nil, &identity)
+	result = (authTransport{tls.URL, time.Second}).request(context.Background(), auth.WhoAmIPath, testToken(), &identity)
 	require.Equal(t, "SERVER_UNREACHABLE", result.Error.Code)
 	for _, code := range []string{auth.InvalidArgument, auth.InvalidCredentials, auth.Unauthenticated, auth.Forbidden, auth.RateLimited, auth.ServiceUnavailable, platform.CodeSetupRequired, platform.CodeSchemaError} {
 		status, safe, _ := auth.LookupFailure(code)
@@ -768,11 +766,11 @@ func TestAuthTransportRedirectDeadlineTLSAndErrors(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(auth.ErrorResponse{Error: platform.Failure{Code: code, Message: string(testToken())}})
 		}))
 		var value auth.LoginResponse
-		path := auth.LoginPath
+		path := auth.TokenPath
 		if code == auth.Unauthenticated {
 			path = auth.WhoAmIPath
 		}
-		result := (authTransport{server.URL, time.Second}).request(context.Background(), path, "", nil, &value)
+		result := (authTransport{server.URL, time.Second}).request(context.Background(), path, "", &value)
 		server.Close()
 		require.Equal(t, safe.Code, result.Error.Code)
 		require.Equal(t, safe.Message, result.Error.Message)

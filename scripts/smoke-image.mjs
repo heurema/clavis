@@ -14,6 +14,7 @@ import { createServer } from "node:net"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
+import { browserSignIn } from "./browser-sign-in.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 const reports = join(root, "reports")
@@ -560,11 +561,31 @@ async function run() {
       assert.equal((await cli("doctor", ["doctor"])).data.database, "ready"),
     )
     await step("cliSignIn", async () => {
-      const signedIn = await cli(
-        "login",
-        ["login", "--username", username, "--password-stdin"],
-        password + "\n",
+      // The browser's part goes to the published loopback port with the
+      // container's public origin (CLAVIS_PUBLIC_URL in compose.yaml), which
+      // the sign-in form and Approve check.
+      const child = start(
+        join(root, "bin/clavis"),
+        ["login", "--no-browser", "--server", origin],
+        "cli-login",
+        { env: clientEnv },
       )
+      const browser = await browserSignIn({
+        child,
+        baseURL: origin,
+        origin: "https://clavis.local",
+        username,
+        password,
+      })
+      assert(!browser.refused, `The sign-in form answered ${browser.status}`)
+      assert.equal(browser.code, 0, "clavis login failed; see its report log")
+      const signedIn = browser.result
+      assert.equal(signedIn.ok, true)
+      for (const secret of secrets)
+        assert(
+          !JSON.stringify(signedIn).includes(secret),
+          "The CLI exposed a password",
+        )
       assert.equal(signedIn.data.user.username, username)
       assert.equal(
         (await cli("whoami", ["whoami"])).data.user.id,

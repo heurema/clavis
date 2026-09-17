@@ -38,7 +38,6 @@ func ValidSessionDurations(idle, lifetime time.Duration) bool {
 }
 
 const (
-	LoginPath  = "/api/auth/login"
 	TokenPath  = "/api/auth/token"
 	WhoAmIPath = "/api/auth/whoami"
 	LogoutPath = "/api/auth/logout"
@@ -104,11 +103,6 @@ type Identity struct {
 	GroupsTruncated      bool      `json:"groupsTruncated,omitempty"`
 }
 
-type LoginRequest struct {
-	Username string `json:"username"`
-	Password Secret `json:"password"`
-}
-
 // LoginResponse is secret-bearing and only for internal HTTP/cache handling.
 type LoginResponse struct {
 	Token Secret `json:"token"`
@@ -119,10 +113,11 @@ type Revocation struct {
 	Revoked bool `json:"revoked"`
 }
 
+// LoginInput is a browser sign-in form submission. A password reaches the
+// service only here; CLI sessions come from ExchangeCLICode.
 type LoginInput struct {
 	Username string
 	Password Secret
-	Kind     Kind
 	Peer     netip.Addr
 }
 
@@ -138,6 +133,8 @@ type Session struct {
 // ready, including direct calls without an HTTP adapter. A prior readiness or
 // authentication result never replaces current authority checks for mutations.
 type Service interface {
+	// Login verifies a password from the browser form and issues a browser
+	// session.
 	Login(context.Context, LoginInput) (LoginResponse, error)
 	Authenticate(context.Context, Secret, Kind) (Session, error)
 	Logout(context.Context, Session) error

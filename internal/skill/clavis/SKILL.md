@@ -31,12 +31,11 @@ the rule you broke or the next command to run.
 ```sh
 clavis version
 clavis doctor                        # API reachable, platform database ready
-clavis login --username <name> --password-stdin < /path/to/secret
 clavis whoami                        # who you are, role, session expiry
 clavis query --help                  # every flag, when a reference does not show it
 ```
 
-You sign in with your own credentials, as above, to a server the person has
+The person signs in with `clavis login` in the browser, to a server they have
 configured. The person configures which servers this machine knows, as named
 profiles: `clavis profiles set <name> --server <url>` and then `clavis login`.
 You never run `profiles set`, `profiles use` or `profiles remove`: they change

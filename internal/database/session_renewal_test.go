@@ -219,8 +219,8 @@ func TestLoginCleansUpBoundedBatchOfOldestExpiredSessions(t *testing.T) {
 			clock_timestamp()+interval '1 hour', clock_timestamp()+interval '1 day', clock_timestamp()
 		FROM generate_series(1001,1005) n`, owner)
 	before := countRows(t, pool, "sessions")
-	later := login(t, s, input)
-	session(t, s, later, auth.CLI)
+	later := browserLogin(t, s, input)
+	session(t, s, later, auth.Browser)
 	session(t, s, issued, auth.CLI)
 	require.Equal(t, before-100+1, countRows(t, pool, "sessions"))
 	var remaining, newest, oldest, revoked int
@@ -237,8 +237,8 @@ func TestLoginCleansUpBoundedBatchOfOldestExpiredSessions(t *testing.T) {
 // A refused sign-in still commits the bounded cleanup it ran first.
 func TestRefusedLoginStillCleansUpExpiredSessions(t *testing.T) {
 	pool, s, input := authFixture(t)
-	issued := login(t, s, input)
-	owner := session(t, s, issued, auth.CLI).User.ID
+	issued := browserLogin(t, s, input)
+	owner := session(t, s, issued, auth.Browser).User.ID
 	execSQL(t, pool, `INSERT INTO sessions (id, token_digest, user_id, kind, expires_at, max_expires_at)
 		SELECT gen_random_uuid(), decode(lpad(to_hex(n),64,'0'),'hex'), $1, 'cli',
 			clock_timestamp()-interval '1 minute', clock_timestamp()-interval '1 minute'
@@ -334,6 +334,6 @@ func TestSessionRenewalMigrationRevokesExistingSessions(t *testing.T) {
 		_, err := s.Authenticate(t.Context(), token, kind)
 		code(t, err, auth.Unauthenticated, kind)
 	}
-	fresh := login(t, s, auth.LoginInput{Username: "personal-admin", Password: password, Kind: auth.CLI, Peer: netip.MustParseAddr("127.0.0.1")})
+	fresh := login(t, s, auth.LoginInput{Username: "personal-admin", Password: password, Peer: netip.MustParseAddr("127.0.0.1")})
 	session(t, s, fresh, auth.CLI)
 }

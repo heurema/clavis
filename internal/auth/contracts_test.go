@@ -50,12 +50,12 @@ func TestSessionDurationRule(t *testing.T) {
 }
 
 func TestCredentialEncodingBudget(t *testing.T) {
-	request := auth.LoginRequest{Username: strings.Repeat("a", 64), Password: auth.Secret(strings.Repeat("\x01", auth.MaxPasswordBytes))}
+	request := auth.CreateUserRequest{Username: strings.Repeat("a", 64), Password: auth.Secret(strings.Repeat("\x01", auth.MaxPasswordBytes))}
 	encoded, err := json.Marshal(request)
 	require.NoError(t, err)
 	require.Greater(t, len(encoded), 4*1024)
 	require.LessOrEqual(t, len(encoded), auth.MaxCredentialBody)
-	var decoded auth.LoginRequest
+	var decoded auth.CreateUserRequest
 	require.NoError(t, json.Unmarshal(encoded, &decoded))
 	require.Equal(t, request, decoded)
 }

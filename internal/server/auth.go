@@ -82,7 +82,6 @@ func (a *authHTTP) mount(router chi.Router) {
 	router.With(a.operation).Get("/admin/grants", func(w http.ResponseWriter, r *http.Request) {
 		a.adminPage(w, r, web.PageGrants)
 	})
-	router.With(a.operation).Post(auth.LoginPath, a.loginJSON)
 	router.With(a.operation).Get(auth.WhoAmIPath, a.identityJSON)
 	router.With(a.operation).Post(auth.LogoutPath, a.logoutJSON)
 	router.With(a.operation).Post(auth.RevokePath, a.revokeJSON)
@@ -491,21 +490,6 @@ func decodeJSON(r *http.Request, limit int, into map[string]func(string)) error 
 	return decodeFields(r, limit, fields)
 }
 
-func decodeLogin(r *http.Request) (auth.LoginRequest, error) {
-	var input auth.LoginRequest
-	err := decodeJSON(r, auth.MaxCredentialBody, map[string]func(string){
-		"username": func(value string) { input.Username = value },
-		"password": func(value string) { input.Password = auth.Secret(value) },
-	})
-	if err != nil {
-		return input, err
-	}
-	if !auth.ValidUsername(input.Username) || !auth.ValidPassword(input.Password) {
-		return input, &auth.Error{Code: auth.InvalidArgument}
-	}
-	return input, nil
-}
-
 func peer(r *http.Request) netip.Addr {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
@@ -513,31 +497,6 @@ func peer(r *http.Request) netip.Addr {
 	}
 	value, _ := netip.ParseAddr(host)
 	return value.Unmap()
-}
-
-func (a *authHTTP) loginJSON(w http.ResponseWriter, r *http.Request) {
-	if !a.originAllowed(r, false) {
-		jsonFailure(w, &auth.Error{Code: auth.Forbidden})
-		return
-	}
-	if len(r.Header.Values("Authorization")) != 0 || len(r.Header.Values("Cookie")) != 0 || !mediaType(r, "application/json") {
-		jsonFailure(w, &auth.Error{Code: auth.InvalidArgument})
-		return
-	}
-	input, err := decodeLogin(r)
-	if err == nil {
-		err = a.requireService()
-	}
-	if err != nil {
-		jsonFailure(w, err)
-		return
-	}
-	response, err := a.service.Login(r.Context(), auth.LoginInput{Username: input.Username, Password: input.Password, Kind: auth.CLI, Peer: peer(r)})
-	if err != nil {
-		jsonFailure(w, err)
-		return
-	}
-	writeJSON(w, 200, response)
 }
 
 func (a *authHTTP) authenticate(r *http.Request, token auth.Secret, kind auth.Kind) (auth.Session, error) {
@@ -802,8 +761,8 @@ func (a *authHTTP) approveBrowser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusSeeOther)
 }
 
-// tokenJSON redeems an approved code under the rules loginJSON enforces:
-// JSON only, bounded and strictly decoded, and never with a cookie or an
+// tokenJSON redeems an approved code under the JSON credential transport
+// rules: JSON only, bounded and strictly decoded, and never with a cookie or an
 // Authorization header. Those are refused before the service is called.
 func (a *authHTTP) tokenJSON(w http.ResponseWriter, r *http.Request) {
 	if !a.originAllowed(r, false) {
@@ -868,7 +827,7 @@ func (a *authHTTP) loginBrowser(w http.ResponseWriter, r *http.Request) {
 		a.loginFailure(w, r, values.Get("username"), next, err)
 		return
 	}
-	response, err := a.service.Login(r.Context(), auth.LoginInput{Username: values.Get("username"), Password: auth.Secret(values.Get("password")), Kind: auth.Browser, Peer: peer(r)})
+	response, err := a.service.Login(r.Context(), auth.LoginInput{Username: values.Get("username"), Password: auth.Secret(values.Get("password")), Peer: peer(r)})
 	if err != nil {
 		a.loginFailure(w, r, values.Get("username"), next, err)
 		return

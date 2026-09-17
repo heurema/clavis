@@ -39,7 +39,7 @@ func createMember(t *testing.T, s *LocalAuth, actor auth.Session, username strin
 	password := randomPassword(t)
 	record, err := s.CreateUser(t.Context(), actor, auth.CreateUserRequest{Username: username, Password: password})
 	require.NoError(t, err)
-	input := auth.LoginInput{Username: username, Password: password, Kind: auth.CLI, Peer: actorPeer}
+	input := auth.LoginInput{Username: username, Password: password, Peer: actorPeer}
 	return record, input
 }
 
@@ -110,8 +110,7 @@ func TestCreateUserSignsInOnBothTransports(t *testing.T) {
 	cli := login(t, s, input)
 	require.Equal(t, record.ID, cli.User.ID)
 	require.Equal(t, auth.Member, cli.User.Role)
-	input.Kind = auth.Browser
-	browser := login(t, s, input)
+	browser := browserLogin(t, s, input)
 	session(t, s, cli, auth.CLI)
 	session(t, s, browser, auth.Browser)
 	input.Password = "not the member password"
@@ -273,8 +272,7 @@ func TestBlockRevokesSessionsAndUnblockRestoresLogin(t *testing.T) {
 	pool, s, admin, _ := adminFixture(t)
 	member, input := createMember(t, s, admin, "blocked-member")
 	cli := login(t, s, input)
-	input.Kind = auth.Browser
-	browser := login(t, s, input)
+	browser := browserLogin(t, s, input)
 	blocked, err := s.SetUserDisabled(t.Context(), admin, member.ID, true)
 	require.NoError(t, err)
 	require.True(t, blocked.SessionsRevoked)
@@ -303,7 +301,7 @@ func TestBlockRevokesSessionsAndUnblockRestoresLogin(t *testing.T) {
 	require.False(t, unblocked.SessionsRevoked)
 	require.False(t, unblocked.User.Disabled)
 	denied()
-	later := login(t, s, input)
+	later := browserLogin(t, s, input)
 	session(t, s, later, auth.Browser)
 	idempotent, err := s.SetUserDisabled(t.Context(), admin, member.ID, false)
 	require.NoError(t, err)
@@ -319,10 +317,9 @@ func TestResetPasswordRevokesSessionsAndRedacts(t *testing.T) {
 	pool, s, admin, _ := adminFixture(t)
 	created, err := s.CreateUser(t.Context(), admin, auth.CreateUserRequest{Username: "reset-member", Password: "SENTINEL_PRIVATE_CREATE_PASSWORD"})
 	require.NoError(t, err)
-	old := auth.LoginInput{Username: "reset-member", Password: "SENTINEL_PRIVATE_CREATE_PASSWORD", Kind: auth.CLI, Peer: actorPeer}
+	old := auth.LoginInput{Username: "reset-member", Password: "SENTINEL_PRIVATE_CREATE_PASSWORD", Peer: actorPeer}
 	cli := login(t, s, old)
-	old.Kind = auth.Browser
-	browser := login(t, s, old)
+	browser := browserLogin(t, s, old)
 	newPassword := auth.Secret("SENTINEL_PRIVATE_NEW_PASSWORD")
 	reset, err := s.ResetPassword(t.Context(), admin, created.ID, newPassword)
 	require.NoError(t, err)
@@ -340,7 +337,7 @@ func TestResetPasswordRevokesSessionsAndRedacts(t *testing.T) {
 	_, err = s.Login(t.Context(), old)
 	code(t, err, auth.InvalidCredentials)
 	old.Password = newPassword
-	session(t, s, login(t, s, old), auth.Browser)
+	session(t, s, browserLogin(t, s, old), auth.Browser)
 	_, err = s.ResetPassword(t.Context(), admin, randomTestID(t), newPassword)
 	code(t, err, auth.UserNotFound)
 	require.NotContains(t, err.Error(), "SENTINEL")

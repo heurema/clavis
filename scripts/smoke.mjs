@@ -16,6 +16,7 @@ import { createConnection, createServer } from "node:net"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath } from "node:url"
+import { browserSignIn } from "./browser-sign-in.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
 const reports = join(root, "reports")
@@ -273,17 +274,68 @@ try {
       assert(!JSON.stringify(result).includes(secret), "CLI exposed a password")
     return result
   }
+  // Sign-in runs `clavis login --no-browser` and does the browser's part:
+  // the form, Approve and the loopback callback. A refused form sign-in
+  // (expected 1) stops the waiting CLI and returns the refusal.
+  async function browserLogin(
+    logName,
+    args,
+    clientEnvironment,
+    username,
+    secret,
+    expected = 0,
+  ) {
+    const child = start(
+      join(root, "bin/clavis"),
+      ["login", "--no-browser", ...args],
+      logName,
+      {
+        env: clientEnvironment,
+      },
+    )
+    const signedIn = await browserSignIn({
+      child,
+      baseURL: apiURL,
+      username,
+      password: secret,
+    })
+    if (expected !== 0) {
+      assert.equal(signedIn.refused, true, `${logName} sign-in was not refused`)
+      assert.equal(signedIn.status, 401)
+      assert(signedIn.page.includes("Invalid username or password"))
+      assert.notEqual(signedIn.code, 0, "a refused sign-in must not succeed")
+      return signedIn
+    }
+    assert(
+      !signedIn.refused,
+      `${logName} sign-in was refused with ${signedIn.status}`,
+    )
+    assert.equal(
+      signedIn.code,
+      0,
+      `${logName} failed; see reports/smoke-${logName}.log`,
+    )
+    const result = signedIn.result
+    assert.equal(result.schemaVersion, 1)
+    assert.equal(result.ok, true)
+    assert(result.data.expiresAt && result.data.idleExpiresAt)
+    for (const secret of secrets)
+      assert(!JSON.stringify(result).includes(secret), "CLI exposed a password")
+    return result
+  }
   async function login(
     name,
     username = "smoke-admin",
     secret = password,
     expected = 0,
   ) {
-    return cli(
-      name,
-      ["login", "--username", username, "--password-stdin"],
+    return browserLogin(
+      `auth-${name}-login`,
+      ["--server", apiURL],
+      clientEnv(name),
+      username,
+      secret,
       expected,
-      secret + "\n",
     )
   }
   async function sql(statement, name) {
@@ -510,8 +562,8 @@ try {
     "UNAUTHENTICATED",
   )
   assert.equal(
-    (await login("member", "smoke-member", memberPassword, 1)).error.code,
-    "INVALID_CREDENTIALS",
+    (await login("member", "smoke-member", memberPassword, 1)).status,
+    401,
   )
   const unblocked = await cli("admin-one", [
     "users",
@@ -537,8 +589,8 @@ try {
     "UNAUTHENTICATED",
   )
   assert.equal(
-    (await login("member", "smoke-member", memberPassword, 1)).error.code,
-    "INVALID_CREDENTIALS",
+    (await login("member", "smoke-member", memberPassword, 1)).status,
+    401,
   )
   await login("member", "smoke-member", resetPassword)
   // Promotion authorizes the member's existing session; peers manage each
@@ -2379,11 +2431,12 @@ try {
     created: true,
     madeCurrent: true,
   })
-  const profileLogin = await profileCLI(
-    ["login", "--username", "smoke-admin", "--password-stdin"],
-    0,
-    {},
-    password + "\n",
+  const profileLogin = await browserLogin(
+    "profiles-login",
+    [],
+    clientEnv("profiles"),
+    "smoke-admin",
+    password,
   )
   assertTarget(profileLogin, "local")
   const profileWhoami = await profileCLI(["whoami"])

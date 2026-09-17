@@ -761,9 +761,9 @@ func (c *connectionListing) data() any {
 func documentedFailure(code, method, path string) bool {
 	switch code {
 	case auth.InvalidCredentials:
-		return path == auth.LoginPath
+		return path == auth.TokenPath
 	case auth.Unauthenticated:
-		return path != auth.LoginPath
+		return path != auth.TokenPath
 	case auth.UserNotFound, auth.UsernameTaken, auth.LastAdministrator, auth.SelfTarget, auth.RateLimited,
 		auth.ConnectionExists, auth.ConnectionNotFound, auth.ConnectionInUse, auth.CredentialsUnavailable,
 		auth.ConnectionDisabled, auth.GroupExists, auth.GroupNotFound, auth.GroupInUse,
@@ -845,7 +845,7 @@ func routeFailures(method, path string) []string {
 		return []string{auth.UserNotFound}
 	case target: // password reset and session revocation
 		return []string{auth.UserNotFound, auth.RateLimited}
-	default: // login, whoami, logout
+	default: // token exchange, whoami, logout
 		return []string{auth.RateLimited}
 	}
 }
@@ -894,15 +894,12 @@ type authTransport struct {
 
 // Each call uses a fresh transport, with no reusable connection on which net/http
 // could retry a request. Redirect destinations never receive credentials.
-func (a authTransport) request(ctx context.Context, path string, token auth.Secret, input *auth.LoginRequest, output any) *Result {
+func (a authTransport) request(ctx context.Context, path string, token auth.Secret, output any) *Result {
 	method := http.MethodPost
 	if path == auth.WhoAmIPath {
 		method = http.MethodGet
 	}
-	if input == nil {
-		return a.call(ctx, method, path, token, nil, output)
-	}
-	return a.call(ctx, method, path, token, input, output)
+	return a.call(ctx, method, path, token, nil, output)
 }
 
 // apiCall names one documented route: its method, path, optional query string

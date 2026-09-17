@@ -44,8 +44,7 @@ func memberBrowser(t *testing.T, username string) (*pgxpool.Pool, *LocalAuth, au
 func browserMember(t *testing.T, s *LocalAuth, admin auth.Session, username string) auth.Session {
 	t.Helper()
 	_, input := createMember(t, s, admin, username)
-	input.Kind = auth.Browser
-	return session(t, s, login(t, s, input), auth.Browser)
+	return session(t, s, browserLogin(t, s, input), auth.Browser)
 }
 
 func approve(t *testing.T, s *LocalAuth, browser auth.Session, link auth.CLIAuthorization) auth.Secret {

@@ -222,7 +222,7 @@ func TestLoadConfigRefusesLinksAndSpecialFiles(t *testing.T) {
 			case "fifo":
 				require.NoError(t, syscall.Mkfifo(path, 0o600))
 			}
-			for _, args := range [][]string{{"whoami"}, {"doctor"}, {"login", "--username=cli-test", "--password-stdin"}} {
+			for _, args := range [][]string{{"whoami"}, {"doctor"}, {"login"}} {
 				exit, result, unread := strictInvoke(t, "password-that-stays", args...)
 				require.Equal(t, 2, exit)
 				assert.Equal(t, "INVALID_ARGUMENT", result.Error.Code)
@@ -238,7 +238,7 @@ func TestLoadConfigRefusesLinksAndSpecialFiles(t *testing.T) {
 func TestDirectServerIgnoresCorruptConfig(t *testing.T) {
 	cliHome(t)
 	writeConfig(t, "output = \"text\"\n")
-	fixture, server := newCLIFixture(t, testToken())
+	fixture, server := newCLIFixture(t)
 	exit, result, _ := strictInvoke(t, "", "whoami", "--server", server.URL)
 	require.Equal(t, 1, exit)
 	assert.Equal(t, auth.Unauthenticated, result.Error.Code)
@@ -266,18 +266,18 @@ func TestResolutionFailsBeforeInputAndStorage(t *testing.T) {
 		want string
 	}{
 		{name: "login with a corrupt file", file: "[profiles.fce]\nserver = \"https://fce.example.com\"\nextra = 1\n",
-			args: []string{"login", "--profile", "fce", "--username=cli-test", "--password-stdin"}, want: "config.toml: profiles.fce.extra is not a known key"},
+			args: []string{"login", "--profile", "fce"}, want: "config.toml: profiles.fce.extra is not a known key"},
 		{name: "relative home", env: map[string]string{"CLAVIS_HOME": "relative/dir"},
-			args: []string{"login", "--server", "https://clavis.example.com", "--username=cli-test", "--password-stdin"}, want: "CLAVIS_HOME must be an absolute path"},
+			args: []string{"login", "--server", "https://clavis.example.com"}, want: "CLAVIS_HOME must be an absolute path"},
 		{name: "relative home before argument checks", env: map[string]string{"CLAVIS_HOME": "relative/dir"},
-			args: []string{"login", "--server", "SECRET", "--password-stdin"}, want: "CLAVIS_HOME must be an absolute path"},
-		{name: "empty server flag", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"login", "--server=", "--username=cli-test", "--password-stdin"}, want: "--server must not be empty"},
+			args: []string{"login", "--server", "SECRET"}, want: "CLAVIS_HOME must be an absolute path"},
+		{name: "empty server flag", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"login", "--server="}, want: "--server must not be empty"},
 		{name: "empty quoted server flag", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"whoami", "--server", ""}, want: "--server must not be empty"},
-		{name: "empty profile flag", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"login", "--profile=", "--username=cli-test", "--password-stdin"}, want: "--profile must not be empty"},
-		{name: "empty server with a profile", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"login", "--server=", "--profile", "fce", "--username=cli-test", "--password-stdin"}, want: "--server must not be empty"},
+		{name: "empty profile flag", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"login", "--profile="}, want: "--profile must not be empty"},
+		{name: "empty server with a profile", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"login", "--server=", "--profile", "fce"}, want: "--server must not be empty"},
 		{name: "empty doctor flags", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"doctor", "--server=", "--profile", "fce"}, want: "--server must not be empty"},
 		{name: "empty doctor profile", file: "current = \"fce\"\n\n[profiles.fce]\nserver = \"https://fce.example.com\"\n", args: []string{"doctor", "--profile="}, want: "--profile must not be empty"},
-		{name: "server and profile", args: []string{"login", "--server", "https://clavis.example.com", "--profile", "fce", "--username=cli-test", "--password-stdin"}, want: "not both"},
+		{name: "server and profile", args: []string{"login", "--server", "https://clavis.example.com", "--profile", "fce"}, want: "not both"},
 		{name: "unknown profile for a new user", file: "[profiles.fce]\nserver = \"https://fce.example.com\"\n",
 			args: []string{"users", "create", "--profile", "prod", "--username=alice", "--password-stdin"}, want: "No profile named prod"},
 		{name: "nothing configured for a query", args: []string{"query", "--connection", "payments", "--sql-stdin"}, want: "No server is configured"},
@@ -309,9 +309,8 @@ func TestResolutionFailsBeforeInputAndStorage(t *testing.T) {
 // configuration.
 func TestProfilesSelectTheServer(t *testing.T) {
 	home := cliHome(t)
-	password := testToken()
-	fce, fceServer := newCLIFixture(t, password)
-	local, localServer := newCLIFixture(t, password)
+	fce, fceServer := newCLIFixture(t)
+	local, localServer := newCLIFixture(t)
 	path := writeConfig(t, "# written by hand\ncurrent = \"fce\"\n\n[profiles.fce]\nserver = \""+fceServer.URL+"\"\n\n[profiles.local]\nserver = \""+localServer.URL+"/\"\n")
 	before, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -325,19 +324,20 @@ func TestProfilesSelectTheServer(t *testing.T) {
 		return fce.login, local.login
 	}
 
-	exit, _, _ := cliInvoke(t, string(password), "login", "--username=cli-test", "--password-stdin")
+	exit, _, _, stderr := loginInvoke(t)
 	require.Equal(t, 0, exit)
+	assert.True(t, strings.HasPrefix(printedLink(t, stderr), fceServer.URL+auth.AuthorizePath+"?"), "the link names the current profile's server")
 	fceLogins, localLogins := logins()
 	assert.Equal(t, [2]int{1, 0}, [2]int{fceLogins, localLogins}, "login goes to the current profile")
-	exit, _, _ = cliInvoke(t, string(password), "login", "--profile", "local", "--username=cli-test", "--password-stdin")
+	exit, _, _, _ = loginInvoke(t, "--profile", "local")
 	require.Equal(t, 0, exit)
 	t.Setenv("CLAVIS_PROFILE", "local")
-	exit, _, _ = cliInvoke(t, string(password), "login", "--username=cli-test", "--password-stdin")
+	exit, _, _, _ = loginInvoke(t)
 	require.Equal(t, 0, exit)
 	fceLogins, localLogins = logins()
 	assert.Equal(t, [2]int{1, 2}, [2]int{fceLogins, localLogins})
 	t.Setenv("CLAVIS_PROFILE", "")
-	exit, _, _ = cliInvoke(t, string(password), "login", "--server", fceServer.URL, "--username=cli-test", "--password-stdin")
+	exit, _, _, _ = loginInvoke(t, "--server", fceServer.URL)
 	require.Equal(t, 0, exit)
 
 	after, err := os.ReadFile(path)
@@ -399,11 +399,10 @@ func TestProfilesSelectTheServer(t *testing.T) {
 
 func TestProfilesNamingOneServerShareASession(t *testing.T) {
 	cliHome(t)
-	password := testToken()
-	_, server := newCLIFixture(t, password)
+	_, server := newCLIFixture(t)
 	writeConfig(t, "current = \"prod\"\n\n[profiles.prod]\nserver = \""+server.URL+"\"\n\n[profiles.prod-admin]\nserver = \""+server.URL+"/\"\n")
 
-	exit, _, _ := cliInvoke(t, string(password), "login", "--username=cli-test", "--password-stdin")
+	exit, _, _, _ := loginInvoke(t)
 	require.Equal(t, 0, exit)
 	// Sessions are keyed by origin, so the other profile needs no sign-in.
 	exit, result, _ := cliInvoke(t, "", "whoami", "--profile", "prod-admin")
