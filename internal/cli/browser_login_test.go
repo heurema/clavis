@@ -244,6 +244,7 @@ func TestBrowserLoginRefusesForgedCallbacks(t *testing.T) {
 				{"GET", "/callback?" + url.Values{"code": {string(forged)}, "state": {state[:42]}}.Encode(), 400},
 				{"GET", "/callback?" + url.Values{"code": {string(forged)[:42]}, "state": {state}}.Encode(), 400},
 				{"GET", "/callback?" + url.Values{"code": {string(forged)}, "state": {state, state}}.Encode(), 400},
+				{"GET", "/callback?" + url.Values{"code": {string(forged)}, "state": {state}, "extra": {"1"}}.Encode(), 400},
 				{"POST", "/callback?" + url.Values{"code": {string(forged)}, "state": {state}}.Encode(), 400},
 				{"GET", "/other?" + url.Values{"code": {string(forged)}, "state": {state}}.Encode(), 404},
 				{"GET", "/", 404},
@@ -440,6 +441,35 @@ func TestLoginRefusedBeforeListening(t *testing.T) {
 	fixture.mu.Lock()
 	defer fixture.mu.Unlock()
 	require.Zero(t, fixture.requests)
+}
+
+// Scenario: a stored session file that is no longer private fails login
+// before anything listens, is printed or reaches the server.
+func TestLoginRefusesUnsafeSessionFileBeforeListening(t *testing.T) {
+	cliHome(t)
+	fixture, server := newCLIFixture(t)
+	loginCLI(t, server)
+	require.NoError(t, os.Chmod(cachePath(t, server.URL), 0o644))
+	previous := browserLoginWait
+	browserLoginWait = 500 * time.Millisecond
+	t.Cleanup(func() { browserLoginWait = previous })
+	fixture.mu.Lock()
+	requests := fixture.requests
+	fixture.mu.Unlock()
+	var out, errout bytes.Buffer
+	exit := RunWithIO(context.Background(), []string{"clavis", "login", "--server", server.URL}, IO{
+		Stdout: &out, Stderr: &errout,
+		OpenBrowser: func(context.Context, string) error {
+			t.Error("unsafe storage must fail before the opener runs")
+			return nil
+		},
+	})
+	require.Equal(t, 1, exit)
+	require.Equal(t, "CREDENTIAL_STORAGE_FAILED", decode(t, out.String()).Error.Code)
+	require.Empty(t, errout.String(), "no link may be printed")
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	require.Equal(t, requests, fixture.requests)
 }
 
 func cacheDirectory(t *testing.T) string {
