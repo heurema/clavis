@@ -91,8 +91,8 @@ func approvedCode(t *testing.T, handler http.Handler, username string, secret au
 	t.Helper()
 	verifier, link := randomPKCE(t)
 	form := http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}
-	response := requestAuth(handler, "POST", "/login",
-		url.Values{"username": {username}, "password": {string(secret)}, "next": {link.Link()}}.Encode(), form)
+	response := requestAuth(handler, "POST", "/login?"+url.Values{"next": {link.Link()}}.Encode(),
+		url.Values{"username": {username}, "password": {string(secret)}}.Encode(), form)
 	require.Equal(t, 303, response.Code)
 	require.Equal(t, link.Link(), response.Header().Get("Location"))
 	cookies := response.Result().Cookies()

@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -41,18 +42,30 @@ func TestAuthorizeInvalidDocumentEchoesNothing(t *testing.T) {
 	assert.NotContains(t, body, "<form")
 }
 
-func TestLoginRendersOnlyAValidReturnTarget(t *testing.T) {
+// The return target travels in the form's action, so every refusal renders it.
+// The document still keeps only a rebuilt link, and only on its own route.
+func TestLoginFormActionCarriesOnlyAValidReturnTarget(t *testing.T) {
 	link := viewLink()
-	reordered := "/authorize?state=" + link.State + "&port=51234&challenge=" + link.Challenge
-	body := renderAuth(t, 200, Login(LoginModel{Next: reordered}))
-	want := strings.ReplaceAll(link.Link(), "&", "&amp;")
-	assert.Contains(t, body, `<input type="hidden" name="next" value="`+want+`">`, "the target is rebuilt, not echoed")
-	assert.NotContains(t, body, "state="+link.State+"&amp;port")
-	for _, next := range []string{
-		"//evil.example" + link.Link(), "/admin/users", link.Link() + "&extra=1", `/authorize"><script>`,
+	reordered := "/login?next=" + url.QueryEscape("/authorize?state="+link.State+"&port=51234&challenge="+link.Challenge)
+	body := renderAuth(t, 200, Login(LoginModel{Action: reordered}))
+	want := "/login?next=" + url.QueryEscape(link.Link())
+	assert.Contains(t, body, `<form action="`+want+`" method="post"`, "the target is rebuilt, not echoed")
+	assert.NotContains(t, body, url.QueryEscape("state="+link.State+"&port"))
+	assert.NotContains(t, body, `type="hidden"`, "the target is no longer a form field")
+	for _, action := range []string{
+		"", "/login", "/login?next=" + url.QueryEscape("//evil.example"+link.Link()),
+		"/login?next=" + url.QueryEscape("/admin/users"),
+		"/login?next=" + url.QueryEscape(link.Link()+"&extra=1"),
+		"/login?next=" + url.QueryEscape(link.Link()) + "&next=" + url.QueryEscape(link.Link()),
+		"/login?next=" + url.QueryEscape(`/authorize"><script>`),
+		"//evil.example/login?next=" + url.QueryEscape(link.Link()),
+		"https://evil.example/login?next=" + url.QueryEscape(link.Link()),
+		"/admin/users?next=" + url.QueryEscape(link.Link()),
+		`javascript:alert(1)`,
 	} {
-		body := renderAuth(t, 200, Login(LoginModel{Next: next}))
-		require.NotContains(t, body, `name="next"`, next)
+		body := renderAuth(t, 200, Login(LoginModel{Action: action}))
+		require.Contains(t, body, `<form action="/login" method="post"`, action)
 		require.NotContains(t, body, "evil.example")
+		require.NotContains(t, body, "javascript:")
 	}
 }

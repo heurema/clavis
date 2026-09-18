@@ -85,14 +85,17 @@ export async function browserSignIn({
       })
     })
     const next = new URL(link).pathname + new URL(link).search
-    const form = await fetch(`${baseURL}/login`, {
+    // The return target travels in the form's action, the way the sign-in
+    // document rendered for the link carries it; the body is the credentials.
+    const action = `/login?${new URLSearchParams({ next })}`
+    const form = await fetch(`${baseURL}${action}`, {
       method: "POST",
       redirect: "manual",
       headers: {
         Origin: origin,
         "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: new URLSearchParams({ username, password, next }),
+      body: new URLSearchParams({ username, password }),
       signal,
     })
     const page = await form.text()

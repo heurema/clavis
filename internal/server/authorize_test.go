@@ -69,11 +69,25 @@ func fixtureModel(t *testing.T, body string, into any) {
 	require.NoError(t, json.Unmarshal([]byte(body), into))
 }
 
-func requireDocumentHeaders(t *testing.T, response *httptest.ResponseRecorder) {
+// requireDocumentHeaders asserts the headers every response on the authorize
+// routes carries. The policy is pinned as a literal: "strict-origin" on every
+// document, because "no-referrer" makes Safari and Firefox send `Origin: null`
+// on a form POST from it, which the origin check refuses with 403 and which
+// broke browser sign-in outright; "no-referrer" only on the Approve redirect,
+// which governs the loopback GET that follows it and renders no form.
+func requireDocumentHeaders(t *testing.T, response *httptest.ResponseRecorder, policy string) {
 	t.Helper()
 	require.Equal(t, "frame-ancestors 'none'", response.Header().Get("Content-Security-Policy"))
 	require.Equal(t, "no-store", response.Header().Get("Cache-Control"))
-	require.Equal(t, "no-referrer", response.Header().Get("Referrer-Policy"))
+	require.Equal(t, policy, response.Header().Get("Referrer-Policy"))
+}
+
+// wantAction is the sign-in form action a document carries back for a link.
+func wantAction(next string) string {
+	if next == "" {
+		return "/login"
+	}
+	return "/login?next=" + url.QueryEscape(next)
 }
 
 // Scenario: invalid link parameters, on the link and on Approve.
@@ -98,7 +112,7 @@ func TestInvalidAuthorizationLinkRendersSafeDocument(t *testing.T) {
 			require.Equal(t, 400, response.Code)
 			require.Contains(t, response.Body.String(), "AUTHORIZE_INVALID")
 			require.NotContains(t, response.Body.String(), "SENTINEL")
-			requireDocumentHeaders(t, response)
+			requireDocumentHeaders(t, response, "strict-origin")
 			response = requestAuth(handler, "POST", "/authorize", query, browserHeaders())
 			require.Equal(t, 400, response.Code)
 			require.Contains(t, response.Body.String(), "AUTHORIZE_INVALID")
@@ -118,7 +132,7 @@ func TestAuthorizePageRendersForSessionOrSignIn(t *testing.T) {
 		handler := authHandler(t, f, nil, "http://127.0.0.1")
 		response := requestAuth(handler, "GET", path, "", http.Header{"Cookie": {developmentCookie + "=" + string(fixtureToken)}})
 		require.Equal(t, 200, response.Code)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "strict-origin")
 		var model web.AuthorizeModel
 		fixtureModel(t, response.Body.String(), &model)
 		require.Equal(t, web.AuthorizeModel{Username: fixtureIdentity.User.Username, Link: link}, model)
@@ -139,10 +153,10 @@ func TestAuthorizePageRendersForSessionOrSignIn(t *testing.T) {
 		handler := authHandler(t, f, nil, "http://127.0.0.1")
 		response := requestAuth(handler, "GET", path, "", http.Header{"Cookie": {tc.cookie}})
 		require.Equal(t, 200, response.Code, name)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "strict-origin")
 		var model web.LoginModel
 		fixtureModel(t, response.Body.String(), &model)
-		require.Equal(t, web.LoginModel{Next: link.Link()}, model, name)
+		require.Equal(t, web.LoginModel{Action: wantAction(link.Link())}, model, name)
 	}
 	for name, tc := range map[string]struct {
 		headers http.Header
@@ -158,7 +172,7 @@ func TestAuthorizePageRendersForSessionOrSignIn(t *testing.T) {
 		require.Equal(t, tc.status, response.Code, name)
 		require.NotContains(t, response.Body.String(), "SENTINEL", name)
 		require.NotContains(t, response.Body.String(), link.State, name)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "strict-origin")
 	}
 }
 
@@ -173,7 +187,7 @@ func TestApproveRedirectsToTheLoopbackCallback(t *testing.T) {
 		body := "state=" + link.State + "&challenge=" + link.Challenge + "&port=" + strconv.Itoa(port)
 		response := requestAuth(handler, "POST", "/authorize", body, browserHeaders())
 		require.Equal(t, 303, response.Code)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "no-referrer")
 		require.Equal(t, 1, f.approveCalls)
 		require.Equal(t, auth.CLIAuthorization{Port: port, Challenge: link.Challenge, State: link.State}, f.lastLink)
 		location, err := url.Parse(response.Header().Get("Location"))
@@ -213,7 +227,7 @@ func TestCrossSiteApprovalStoresNothing(t *testing.T) {
 		require.Contains(t, []int{400, 403}, response.Code, name)
 		require.Empty(t, response.Header().Get("Location"), name)
 		require.Zero(t, f.authCalls+f.approveCalls, name)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "strict-origin")
 	}
 }
 
@@ -222,7 +236,7 @@ func TestCrossSiteApprovalStoresNothing(t *testing.T) {
 func TestApproveWithoutSessionRedirectsToSignIn(t *testing.T) {
 	link := fixtureLink()
 	body := linkForm("51234", link.Challenge, link.State)
-	want := "/login?next=" + url.QueryEscape(link.Link())
+	want := wantAction(link.Link())
 	for name, tc := range map[string]struct {
 		cookie               string
 		authErr, approveErr  error
@@ -241,7 +255,7 @@ func TestApproveWithoutSessionRedirectsToSignIn(t *testing.T) {
 		require.Equal(t, want, response.Header().Get("Location"), name)
 		require.Equal(t, tc.authCalls, f.authCalls, name)
 		require.Equal(t, tc.approvals, f.approveCalls, name)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "no-referrer")
 	}
 	f := &backendFixture{}
 	f.approveErr = errors.New("SENTINEL_DRIVER")
@@ -249,22 +263,29 @@ func TestApproveWithoutSessionRedirectsToSignIn(t *testing.T) {
 	require.Equal(t, 503, response.Code)
 	require.Empty(t, response.Header().Get("Location"))
 	require.NotContains(t, response.Body.String(), "SENTINEL")
-	requireDocumentHeaders(t, response)
+	requireDocumentHeaders(t, response, "strict-origin")
+}
+
+// credentialForm is the whole body the sign-in form submits: the return target
+// travels in the action URL, so nothing else belongs in it.
+var credentialForm = url.Values{"username": {"personal-admin"}, "password": {"SENTINEL_PRIVATE_PASSWORD"}}.Encode()
+
+func signInHeaders() http.Header {
+	return http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}
 }
 
 // Scenarios: sign-in returns to a CLI authorization, and sign-in ignores any
-// other return target.
+// other return target. The target is read from the action the form posted to.
 func TestLoginReturnTarget(t *testing.T) {
 	link := fixtureLink()
 	query := strings.TrimPrefix(link.Link(), "/authorize")
 	signIn := func(next []string) *httptest.ResponseRecorder {
 		f := &backendFixture{}
-		values := url.Values{"username": {"personal-admin"}, "password": {"SENTINEL_PRIVATE_PASSWORD"}}
+		target := "/login"
 		if next != nil {
-			values["next"] = next
+			target += "?" + url.Values{"next": next}.Encode()
 		}
-		headers := http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}
-		return requestAuth(authHandler(t, f, nil, "http://127.0.0.1"), "POST", "/login", values.Encode(), headers)
+		return requestAuth(authHandler(t, f, nil, "http://127.0.0.1"), "POST", target, credentialForm, signInHeaders())
 	}
 	for _, next := range []string{
 		link.Link(),
@@ -296,20 +317,98 @@ func TestLoginReturnTarget(t *testing.T) {
 	// A failed sign-in keeps a valid return target for the retry, and only then.
 	f := &backendFixture{loginErr: &auth.Error{Code: auth.InvalidCredentials}}
 	handler := authHandler(t, f, nil, "http://127.0.0.1")
-	headers := http.Header{"Origin": {"http://127.0.0.1"}, "Content-Type": {"application/x-www-form-urlencoded"}}
 	for next, want := range map[string]string{link.Link(): link.Link(), "//evil.example/authorize" + query: ""} {
-		body := url.Values{"username": {"personal-admin"}, "password": {"SENTINEL_PRIVATE_PASSWORD"}, "next": {next}}.Encode()
-		response := requestAuth(handler, "POST", "/login", body, headers)
+		target := "/login?" + url.Values{"next": {next}}.Encode()
+		response := requestAuth(handler, "POST", target, credentialForm, signInHeaders())
 		require.Equal(t, 401, response.Code)
 		var model web.LoginModel
 		fixtureModel(t, response.Body.String(), &model)
-		require.Equal(t, want, model.Next)
+		require.Equal(t, wantAction(want), model.Action)
 		require.NotContains(t, response.Body.String(), "evil.example")
 	}
-	// An unknown field is still an invalid form.
-	body := url.Values{"username": {"personal-admin"}, "password": {"SENTINEL_PRIVATE_PASSWORD"}, "other": {"x"}}.Encode()
-	response := requestAuth(handler, "POST", "/login", body, headers)
-	require.Equal(t, 400, response.Code)
+	// The body carries exactly the two credential fields: a return target in it
+	// is an unknown field now that the action carries it, and so is any other.
+	for name, extra := range map[string]url.Values{"next": {"next": {link.Link()}}, "other": {"other": {"x"}}} {
+		values := url.Values{"username": {"personal-admin"}, "password": {"SENTINEL_PRIVATE_PASSWORD"}}
+		for key, value := range extra {
+			values[key] = value
+		}
+		before := f.loginCalls
+		target := "/login?" + url.Values{"next": {link.Link()}}.Encode()
+		response := requestAuth(handler, "POST", target, values.Encode(), signInHeaders())
+		require.Equal(t, 400, response.Code, name)
+		require.Equal(t, before, f.loginCalls, name)
+		var model web.LoginModel
+		fixtureModel(t, response.Body.String(), &model)
+		require.Equal(t, wantAction(link.Link()), model.Action, name)
+	}
+}
+
+// Scenario: a refused sign-in keeps the return target. Every refusal renders
+// the sign-in document, and the action it renders carries the link back,
+// including the refusals raised before the body is read and the timeout
+// fallback, which cannot read the body at all.
+func TestRefusedSignInKeepsTheReturnTarget(t *testing.T) {
+	link := fixtureLink()
+	target := "/login?" + url.Values{"next": {link.Link()}}.Encode()
+	withHeader := func(key, value string) http.Header {
+		headers := signInHeaders()
+		headers.Set(key, value)
+		return headers
+	}
+	for name, tc := range map[string]struct {
+		body    string
+		headers http.Header
+		err     error
+		status  int
+		calls   int
+	}{
+		"foreign origin":       {credentialForm, withHeader("Origin", "https://attacker.invalid"), nil, 403, 0},
+		"null origin":          {credentialForm, withHeader("Origin", "null"), nil, 403, 0},
+		"absent origin":        {credentialForm, http.Header{"Content-Type": {"application/x-www-form-urlencoded"}}, nil, 403, 0},
+		"cross-site":           {credentialForm, withHeader("Sec-Fetch-Site", "cross-site"), nil, 403, 0},
+		"authorization header": {credentialForm, withHeader("Authorization", "Bearer "+string(fixtureToken)), nil, 400, 0},
+		"wrong media type":     {credentialForm, withHeader("Content-Type", "application/json"), nil, 400, 0},
+		"duplicate sessions":   {credentialForm, withHeader("Cookie", developmentCookie+"="+string(fixtureToken)+"; "+developmentCookie+"="+string(fixtureToken)), nil, 400, 0},
+		"invalid input":        {"username=A&password=x", signInHeaders(), nil, 400, 0},
+		"oversized body":       {credentialForm + "&password=" + strings.Repeat("x", auth.MaxCredentialBody), signInHeaders(), nil, 400, 0},
+		"wrong credentials":    {credentialForm, signInHeaders(), &auth.Error{Code: auth.InvalidCredentials}, 401, 1},
+		"throttled":            {credentialForm, signInHeaders(), &auth.Error{Code: auth.RateLimited, RetryAfter: 3 * time.Second}, 429, 1},
+		"unavailable storage":  {credentialForm, signInHeaders(), errors.New("SENTINEL_DRIVER"), 503, 1},
+	} {
+		f := &backendFixture{loginErr: tc.err}
+		response := requestAuth(authHandler(t, f, nil, "http://127.0.0.1"), "POST", target, tc.body, tc.headers)
+		require.Equal(t, tc.status, response.Code, name)
+		require.Equal(t, tc.calls, f.loginCalls, name)
+		require.Empty(t, response.Header().Get("Set-Cookie"), name)
+		require.NotContains(t, response.Body.String(), "SENTINEL", name)
+		var model web.LoginModel
+		fixtureModel(t, response.Body.String(), &model)
+		require.Equal(t, wantAction(link.Link()), model.Action, name)
+	}
+	// The timeout fallback answers after the handler consumed the body, and the
+	// request URL still carries the target.
+	f := &backendFixture{block: func(ctx context.Context) { <-ctx.Done() }}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	request := httptest.NewRequest("POST", target, strings.NewReader(credentialForm)).WithContext(ctx)
+	request.Header = signInHeaders()
+	response := httptest.NewRecorder()
+	authHandler(t, f, nil, "http://127.0.0.1").ServeHTTP(response, request)
+	cancel()
+	require.Equal(t, 503, response.Code)
+	var model web.LoginModel
+	fixtureModel(t, response.Body.String(), &model)
+	require.Equal(t, wantAction(link.Link()), model.Action)
+	// A target that is not an authorization link renders the bare action, and a
+	// refusal still refuses.
+	for _, next := range []string{"//evil.example" + link.Link(), "/admin/users", link.Link() + "&extra=1", strings.Repeat("x", 8192)} {
+		response := requestAuth(authHandler(t, &backendFixture{}, nil, "http://127.0.0.1"), "POST",
+			"/login?"+url.Values{"next": {next}}.Encode(), credentialForm, withHeader("Origin", "https://attacker.invalid"))
+		require.Equal(t, 403, response.Code)
+		fixtureModel(t, response.Body.String(), &model)
+		require.Equal(t, "/login", model.Action)
+		require.NotContains(t, response.Body.String(), "evil.example")
+	}
 }
 
 // The sign-in document keeps a valid return target from its query without
@@ -322,13 +421,14 @@ func TestLoginDocumentReadsReturnTargetFromQuery(t *testing.T) {
 		"next=" + url.QueryEscape(link.Link()):                  link.Link(),
 		"next=" + url.QueryEscape("//evil.example"+link.Link()): "",
 		"next=" + url.QueryEscape(link.Link()) + "&next=/admin": "",
-		"": "",
+		"next=" + strings.Repeat("x", 8192):                     "",
+		"":                                                      "",
 	} {
 		response := requestAuth(handler, "GET", "/login?"+query, "", nil)
 		require.Equal(t, 200, response.Code)
 		var model web.LoginModel
 		fixtureModel(t, response.Body.String(), &model)
-		require.Equal(t, want, model.Next, query)
+		require.Equal(t, wantAction(want), model.Action, query)
 	}
 	require.Zero(t, f.authCalls)
 }
@@ -406,6 +506,6 @@ func TestAuthorizeDeadlineReturnsTheSafeDocument(t *testing.T) {
 		require.Contains(t, response.Body.String(), "<!doctype html>", method)
 		require.Contains(t, response.Body.String(), auth.ServiceUnavailable, method)
 		require.Empty(t, response.Header().Get("Location"), method)
-		requireDocumentHeaders(t, response)
+		requireDocumentHeaders(t, response, "strict-origin")
 	}
 }
