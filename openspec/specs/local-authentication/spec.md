@@ -110,7 +110,7 @@ The system SHALL allow users to revoke their current session and current adminis
 ### Requirement: Protected browser authentication
 
 
-The same server SHALL provide a public sign-in document at `/login`, same-origin login/logout form actions and an administrator-only shell with one page per list at `/admin/users`, `/admin/groups`, `/admin/connections` and `/admin/grants`; `GET /admin` SHALL redirect to `/admin/users`. Successful browser sign-in SHALL redirect to `/admin/users`, except when the login form carries a return target that is a valid CLI authorization link as defined in "CLI authorization through the browser"; the server SHALL then redirect to that link rebuilt from its parsed parameters, never to the submitted text, and SHALL ignore any other return target. Browser sessions SHALL use host-only HttpOnly cookies, SameSite protection and Secure cookies on HTTPS, and a cookie's expiry SHALL be the session's absolute expiry. Authentication tokens SHALL NOT appear in URLs, rendered HTML, JavaScript storage or application logs. Browser mutations SHALL reject absent, null, multiple or nonmatching configured Origin headers and cross-site Fetch Metadata. GET requests SHALL only validate existing credentials, which MAY renew a valid session's idle expiry, and SHALL never issue, rotate or revoke credentials or mutate accounts. Authentication documents SHALL reject framing. Every administration page SHALL render inside the shell, which SHALL show the signed-in username and role, the sign-out form, the appearance control and the four navigation entries with their bounded counts; each page SHALL load all four bounded lists for those counts and SHALL fail closed when any of them cannot be loaded.
+The same server SHALL provide a public sign-in document at `/login`, same-origin login/logout form actions and an administrator-only shell with one page per list at `/admin/users`, `/admin/groups`, `/admin/connections` and `/admin/grants`; `GET /admin` SHALL redirect to `/admin/users`. Successful browser sign-in SHALL redirect to `/admin/users`, except when the sign-in request carries a return target that is a valid CLI authorization link as defined in "CLI authorization through the browser"; the server SHALL then redirect to that link rebuilt from its parsed parameters, never to the submitted text, and SHALL ignore any other return target. The return target SHALL travel in the sign-in form's action URL, and every response to a refused sign-in SHALL render the sign-in document carrying the target the refused request carried. Browser sessions SHALL use host-only HttpOnly cookies, SameSite protection and Secure cookies on HTTPS, and a cookie's expiry SHALL be the session's absolute expiry. Authentication tokens SHALL NOT appear in URLs, rendered HTML, JavaScript storage or application logs. Browser mutations SHALL reject absent, null, multiple or nonmatching configured Origin headers and cross-site Fetch Metadata. A failed sign-in SHALL state its reason in one short application-owned sentence, without restating what the rendered form already shows. GET requests SHALL only validate existing credentials, which MAY renew a valid session's idle expiry, and SHALL never issue, rotate or revoke credentials or mutate accounts. Authentication documents SHALL reject framing. A document whose form a browser submits SHALL use a referrer policy that keeps the browser's `Origin` header on a same-origin submission while withholding the document's URL from other origins; a policy that makes a browser send an opaque origin SHALL NOT be used on such a document. Every administration page SHALL render inside the shell, which SHALL show the signed-in username and role, the sign-out form, the appearance control and the four navigation entries with their bounded counts; each page SHALL load all four bounded lists for those counts and SHALL fail closed when any of them cannot be loaded.
 
 #### Scenario: Browser sign-in and protected navigation
 - **WHEN** a user signs in through the same-origin form
@@ -153,6 +153,21 @@ The same server SHALL provide a public sign-in document at `/login`, same-origin
 #### Scenario: Old administration bookmark
 - **WHEN** a browser requests `GET /admin`
 - **THEN** the server redirects to `/admin/users` without reading the database
+
+#### Scenario: A refused sign-in keeps the return target
+- **WHEN** a sign-in request carrying a valid CLI authorization link is refused for a bad origin, an unsupported media type, duplicate session credentials, invalid input, wrong credentials, throttling, unavailable storage or an operation timeout
+- **THEN** the rendered sign-in document carries that return target, rebuilt from its parsed parameters
+- **AND** a successful sign-in submitted from that document redirects to the authorization link rather than `/admin/users`
+
+#### Scenario: A browser posts the sign-in form from an authorization document
+- **WHEN** a browser that withholds the referrer under a `no-referrer` policy submits the sign-in or approval form rendered by the authorization page
+- **THEN** the request carries the document's own origin rather than an opaque one, and the submission is not refused for its origin
+- **AND** the document's URL, with its challenge and state, is still not sent to another origin
+
+#### Scenario: A refused sign-in states one short reason
+- **WHEN** a sign-in fails for wrong credentials, a refused origin, throttling or unavailable storage
+- **THEN** the document shows one short sentence for that failure and no further line describing the form's own state
+
 ### Requirement: Explicit authentication transports
 
 
